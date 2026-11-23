@@ -16,7 +16,7 @@ Kuintessence 工作流使用控制流 DSL，由 Server 编排，Agent 向目标 
 - [workflow-schema.yaml](./workflow-schema.yaml)：Draft 2020-12 JSON Schema 的 YAML 表达。
 - [workflow-schema-spec.yaml](./workflow-schema-spec.yaml)：四组结构示例，提交前需替换资产引用并核对节点限制。
 
-YAML Schema 的计算节点尚未完整覆盖 named asset references，Script 已使用 canonical 字段。
+计算节点可使用成对的用例与软件版本 UUID，或成对的命名资产选择器。选择器在提交时解析为固定修订。
 提交时由 shared Zod Schema、静态校验器和 Server 预检共同校验。
 Server 的 `/api/dsl/schema/workflow` 提供机器可读 Schema；各字段的执行支持情况见下文。
 
@@ -53,9 +53,9 @@ spec:
 
 ### 表达式
 
-表达式为 `{ expr: "..." }`，使用 CEL 风格子集，支持标量和列表字面量、字段访问、索引、算术、比较、逻辑、三元运算，
-以及 `size()`、`has()`、`string()`；不支持任意 I/O、自定义函数或完整 CEL 标准库。
-`.map/.filter`、字符串方法和 `math.*` 尚未实现。条件只有求值为布尔 `true` 才成立。
+表达式为 `{ expr: "..." }`，使用 CEL 风格子集，支持标量、列表和字符串键映射字面量、字段访问、索引、算术、比较、逻辑、三元运算，
+以及成员运算 `in`、字符串方法 `contains/startsWith/endsWith` 和 `size()`、`has()`、`string()`；不支持任意 I/O、自定义函数或完整 CEL 标准库。
+列表支持 `map(x, expression)` 与 `filter(x, predicate)`，过滤条件须为布尔值。数学函数支持 `math.abs/floor/ceil/round/sqrt/pow/min/max`。每条表达式共享一百万步预算，嵌套宏、字符串操作及返回值展开后的元素和字符串长度计入预算。条件只有求值为布尔 `true` 才成立。
 
 | 上下文 | 含义 |
 |---|---|
@@ -123,7 +123,7 @@ inputSlots:
 | `SoftwareUsecaseComputing` | 解析用例与软件版本，物化并提交 Job，回收值和文件 |
 | `Script` | 经受管 Sandbox 执行；需要脚本 revision、runtime、身份、签名与目标能力 |
 | `NoAction` | no-op 成功，返回空 values，不自动透传输入 |
-| `Milestone` | 未接入叶子执行器，执行时失败 |
+| `Milestone` | 向提交人记录站内通知，按个人设置排队发送邮件和 Webhook。若声明 URL，必须匹配提交人登记的 Webhook。受限联邦工作流禁止外发。 |
 | `Generate` | 在 Server 内生成列表，不提交 scheduler job |
 | `Switch` | 按 cases 顺序选择第一个 `when=true` 的目标，否则选 default；无命中且无 default 时跳过所有目标 |
 | `Loop` | ForEach 并发迭代或 While 有界迭代，body 为子图 |
@@ -140,17 +140,18 @@ outputs 还可配置 validator、locality、durability、sizeHint。运行绑定
 可选执行字段包括 executionIdentity、schedulingStrategy、requirements、placementConstraint；
 缺省身份为 Inherit、调度为 Auto，具体授权与 runtime 可用性由 Sandbox 检查。
 
-Generate 支持 `Enumeration/Range/Linspace/FixedCount/CartesianProduct/Zip`。
+Generate 支持 `Enumeration/Range/Linspace/FixedCount/CartesianProduct/Zip/Sampling`。
 Range 包含起点和步长可达的终点，step 不得为 0；Zip 各轴必须等长。
 复合 axes 不得为空，FixedCount 的 Enumeration filler 不得为空；
 Range、Linspace、FixedCount 和 CartesianProduct 的规模计算设有百万项限制；大列表会增加 Server 内存占用。
-`Sampling` 与 `FromFile` 虽有 Schema 定义，当前 engine 未接入解析，执行失败；
-`output.as: BatchFiles` 不会生成实际文件，当前输出仍是列表。
+`Sampling` 支持 Random、LatinHypercube、Sobol 和 Grid，可选择 Uniform、Normal、Choice 分布。Random 与 LatinHypercube 默认使用种子 0；Sobol 省略种子时使用标准序列，指定种子时使用数字移位。Grid 取网格单元中点。每次最多生成一百万个坐标值。
+`FromFile` 读取当前提交人拥有的固定版本文件，最大 8 MiB，校验摘要后解析 UTF-8 CSV、JSON 数组或 JSONL。来源可选上游节点输出或 `source: upload`（工作流参数 `upload` 中的单文件引用）。`mapping` 的键为输出字段名，值为源列名。
+本地工作流的 `output.as: BatchFiles` 将每一项保存为独立 JSON 文件，在 NetDrive 的 `workflows/<runId>/generated/` 下可下载。每批最多 256 个文件，共 8 MiB；全部对象校验后在同一事务中发布文件引用和访问权限。
 
 ForEach 的 `over` 必须求值为列表；长度超过 `maxIterations` 时失败，空列表成功并返回空聚合。
 `maxParallel` 为正整数；省略时并发度可达列表长度。叶子 Job 仍受 scheduler 配额限制。
 每轮 body 输出按原始 index 顺序聚合，声明输出缺失会使 Loop 失败。
-`aggregate` 的不同枚举目前未分派不同算法，ForEach 实际按列表收集。
+`aggregate: Collect` 按迭代顺序保留值，`Concat` 将标量依次拼成文本。ForEach 默认 Collect，While 默认返回最后一轮的值。统计与表格使用独立 Reduce 节点。
 
 While 每轮先执行 body，再计算 `until`；`maxIterations` 必须解析为正整数。
 达到上界默认失败，`onExhausted: SucceedWithLast` 返回最后一轮输出。
@@ -161,8 +162,10 @@ While 每轮先执行 body，再计算 `until`；`maxIterations` 必须解析为
 Reduce 的 `from` 指向 Loop 与其输出 descriptor；Collect 返回列表，空列表有效。
 Concat 只接受标量并拼接文本；ExtractTable 按迭代生成 CSV 文本，至少声明一列；
 Statistics 至少指定一个 metric，输入必须是非空有限数值序列。
-`Command` reducer 尚未接入；`SingleFile/OrderedFolder/fileName` 不会自动发布文件 artifact，
-实际产物存放在 `values[output.descriptor]`，文本与统计结果不会自动转换为 FileValue。
+`Value` 将聚合值传给下游节点。本地持久工作流的 `SingleFile` 返回可下载的 NetDrive 文件引用。字符串按 UTF-8 写入，结构化值按 JSON 写入，单个文件引用按其固定版本复制字节。`OrderedFolder` 接受列表，在同一目录中按迭代顺序生成带序号的文件并返回引用数组。`fileName` 可指定文件名，每批最多 256 个文件、8 MiB。
+`Command` 以 `items` 接收 Loop 的有序列表，执行结果取自 `output.descriptor` 指定的输出。用例通过 `usecaseRef.usecaseVersionId` 与 `softwareVersionId` 指定修订，`items` 为 JSON 编码的 Text 输入。Sandbox 脚本通过 `script.source` 指定固定修订或内联内容，并选择 `runtimeProfileId` 或 `runtimeContractRef`；脚本从 `/kq/inputs/items` 读取 JSON，将 JSON 结果写到对应的 `/kq/outputs/<descriptor>`。
+
+签名目录中的用例汇总同时填写 `reducer.usecaseRef` 和 `reducer.softwareRef` 两个名称选择器。脚本汇总填写 `reducer.script.scriptRef`、`runtimeContractRef` 和 `executionIdentity: { type: MappedAuto }`。发布时校验配对关系，修订目录时同步更新名称与版本，提交工作流时固定为具体修订。执行器沿用节点的作业身份和调用记录。受限联邦工作流中的脚本须继承协议身份（`Inherit`），其软件、脚本与运行环境由接收方按绑定复核。
 Collect 聚合得到的 `FileValue[]` 可用于 `isBatch: true` 的 File 输入。
 
 SubWorkflow 的 `maxDepth` 为调用深度上界；ByVersion 在 Server 中按 `workflow_templates.id` 读取 YAML。
@@ -172,8 +175,59 @@ SubWorkflow 的 `maxDepth` 为调用深度上界；ByVersion 在 Server 中按 `
 `onDepthExceeded: SucceedWithLast` 超限时成功但返回空 values，并不保留上次结果。
 Web 的 ByVersion readiness 会拒绝无法解析或成环的模板，提交时也需通过这项检查。
 
-同一 scope 当前按拓扑顺序逐节点执行，ForEach 才提供 body 间并发；
-尚不支持将 ForEach 自动转换为 Slurm array。外部 Job 的执行时限由 scheduler 控制。
+同一作用域按拓扑顺序执行节点。ForEach 可以并发执行多个迭代，外部 Job 的执行时限由调度器控制。
+
+并发 ForEach 的直接用例节点落在同一 Slurm Agent 时，Agent 会把 25 毫秒内准备就绪、队列与资源指令相同的 2 至 6 个作业作为一个 job array 提交。各项沿用自己的工作目录、输入、环境、日志和退出码。数组下标只标识这次提交中的成员，工作流仍按原迭代顺序收集结果。独立运行、不同节点及嵌套循环的不同调用分别分组。
+
+使用受管 Spack 软件的普通用例须有相同的 spec 才能合批。携带软件锁定信息（pin）的成员还须有完全一致的 pin，与只指定 spec 的成员分开提交。软件操作队列和站点策略一致时，同组并发成员可以共用一次进行中的环境加载，各自执行自己的命令。加载结束、其间插入其他软件操作或策略变更后，到达的成员重新核验环境。单个成员取消或超时后，其余成员可以继续加载。
+
+只有一个成员、使用 Sandbox 或联邦授权、要求受限网络、携带受管数据交付或许可材料挂载时，Agent 逐项提交。含自定义 `#SBATCH` 指令或单项生成脚本超过 16 KiB 的作业也单独提交。嵌入式运行器共用工作目录，有输入文件需要复制或有输出文件需要采集的用例也逐项提交。Slurm 明确拒绝数组格式时，Agent 改为逐项提交。`sbatch` 回执丢失时，服务模式的 Agent 按持久记录、调度器注释中的作业 UUID 及数组下标找回对应成员；身份无法确认时保留待核对记录。取消仍折叠在父记录中的成员时，Agent 先按下标请求 hold，确认成员拥有独立记录后再取消。
+
+<a id="usecase-hooks"></a>
+#### 用例的前处理与后处理
+
+在工作流 YAML 的 `SoftwareUsecaseComputing` 节点上声明 `hooks.pre` 或 `hooks.post`。下面的节点把参数 `raw` 交给前处理脚本，将脚本的 `normalized` 输出作为用例的同名输入，再将主作业的 `result` 文件交给后处理脚本。下游通过 `{ node: solve, output: summary }` 读取最终结果。示例 ID 和摘要须替换为站点的真实修订。
+
+```yaml
+type: SoftwareUsecaseComputing
+id: solve
+name: Solve
+usecaseVersionId: 10000000-0000-4000-8000-000000000010
+softwareVersionId: 10000000-0000-4000-8000-000000000011
+inputSlots:
+  - { type: Text, descriptor: raw, from: { param: raw } }
+outputSlots:
+  - { type: File, descriptor: result, isBatch: false, origin: UsecaseOut }
+hooks:
+  pre:
+    source: { type: AssetRevision, assetId: 10000000-0000-4000-8000-000000000012, revision: 1, sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa }
+    runtimeProfileId: 10000000-0000-4000-8000-000000000001
+    inputs: { raw: { type: Text } }
+    outputs: { normalized: { type: Text } }
+  post:
+    source: { type: AssetRevision, assetId: 10000000-0000-4000-8000-000000000013, revision: 2, sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb }
+    runtimeProfileId: 10000000-0000-4000-8000-000000000001
+    inputs: { result: { type: File } }
+    outputs: { summary: { type: Text } }
+```
+
+签名生态模板的前后处理可以引用同一发布清单中的脚本。例如，前处理使用以下写法：
+
+```yaml
+hooks:
+  pre:
+    scriptRef: { source: platform-fork, name: Normalize input, version: "2" }
+    runtimeContractRef: { name: python-3.12-stdlib-v1, version: "1" }
+    executionIdentity: { type: MappedAuto }
+    inputs: { raw: { type: Text } }
+    outputs: { normalized: { type: Text } }
+```
+
+每个钩子选择一对引用：固定的 `source` 与 `runtimeProfileId`，或命名的 `scriptRef` 与 `runtimeContractRef`。Registry 导入时核对脚本名称、版本与运行时契约。Server 在创建运行前检查提交人对脚本的使用权。对于生态发布的脚本，Server 从当前已验签的发布中冻结修订 ID 和内容摘要。
+
+解析器在放置与执行之前把钩子展开为普通 Script 节点。前处理接收用例节点的 `inputSlots`，它声明的输出构成主作业的输入。后处理按自己的输入声明读取主作业的同名输出，文件和文件批次须在主作业 `outputSlots` 中声明。最后一个阶段提供该节点对下游的输出。
+
+例中的三个执行 ID 依次为 `solve__pre`、`solve__main`、`solve`。单独配置前处理时，主作业保留 `solve`。工作流内的条件和分支选择作用于首个阶段，失败会取消后续阶段。每个阶段继承用例节点的调度策略与资源要求，有独立的执行与恢复记录。提交体中的逐节点放置约束使用展开后的 ID。每个钩子均可声明 `executionIdentity`，默认继承运行身份。
 
 <a id="execution"></a>
 ## 执行与配置
@@ -256,7 +310,7 @@ run 状态包括 `submitted/queued/awaiting_approval/running/cancelling/complete
 
 本地权限模式下非管理员仅访问自己的 run；enforce 模式按 `workflow#view/cancel` 授权。
 replan 和 approve 使用 cancel 权限；叶子 Job 仍接受 queue、软件、数据及组织治理检查。
-Server 使用进程内编排和完成通知，需单实例部署；暂不支持分布式协调或中间节点续跑。
+Server 通过数据库租约恢复运行中的工作流，并复用执行日志中已完成的节点和作业。当前 Helm 部署使用单实例，Agent 会话与调度任务的跨实例接管仍待验收。
 
 ### 资源与环境
 
@@ -268,8 +322,10 @@ queue registry 提供 partition/QoS，仍受可见性、启用状态、`queue#su
 无可用 Agent、通道关闭或 stage-in 失败会回传失败，不自动等待 Agent 重连重试提交。
 
 用例节点 `requirements.cpuCores` 映射 Job cpus，`maxWallTime` 映射 wallTimeSec，单位为秒。
-`nodeCount/maxCpuTime/stopTime` 可通过 Schema 校验，但执行器尚未将其映射到 Job resources。
-用例声明的 `resources.memoryMiB` 透传为 Job `memoryMb`，供放置、调度与 Slurm/PBS 资源申请使用。
+`nodeCount` 指实际分配的节点数。Slurm、PBS Pro 和 Torque 将作业总 CPU 与内存分配到各节点，资源总量须能被节点数整除。节点和用例均省略 CPU 时，每节点申请一个核。Kubernetes Job 和受管 Sandbox 限单节点。
+`maxCpuTime` 以秒限制整个作业的累计 CPU 时间，由 PBS Pro 或 Torque 的 `cput` 执行。
+`stopTime` 为 UTC Unix 秒，配合 `maxWallTime` 生成 Slurm 的 `--deadline`。超过截止时间或后端无法落实声明的约束时，放置会拒绝该候选。
+工作流从用例包继承 CPU、内存、GPU 和墙钟时间。节点可覆盖 CPU 与墙钟时间。
 未声明时保持 1024 MiB 默认值；未声明 CPU 时使用 1 CPU。
 
 | 配置 | 作用与注意事项 |
@@ -300,8 +356,22 @@ QoS 拒绝规则取决于目标 Slurm accounting 配置。Web 显示预计时间
 
 当前 Server governed resolver 要求可执行的治理能力包（`GovernedUsecasePackage`），
 通过 `softwareRef` 结构识别，并校验其 software selector 与冻结 revision 一致。
-它目前只接受 Spack package payload 和 Spack 用例，按 exact revision 的 `defaultSpec` 解析软件；
-shared 支持 `Bare/Singularity` 命令包装，Server 的这一执行路径暂未接入。
+Spack 用例读取已冻结软件修订中的 `defaultSpec`。签名目录可为 Spack 软件使用不同于实际包名的展示名称。此时 `softwareRef.name` 使用目录名称，Server 核对激活发布的签名和修订，再按修订中的 Spack spec 生成作业。本地治理工作流和用例作业也支持站点预装的 Bare 程序和 Singularity SIF 镜像。二者使用已激活签名生态包中的 `site-runtime` 软件修订，`softwareRef.source` 为 `platform-fork`。
+
+例如，Bare 软件的发布条目可使用以下 payload。示例摘要需替换为计算节点上文件的实际 SHA-256。
+
+```yaml
+kind: site-runtime
+siteIds: [example-site]
+runtime:
+  kind: Bare
+  path: /opt/site/solver/1.0/solve
+  sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+```
+
+Bare 用例的 `commandFile` 填写程序的文件名或完整路径。对于 SIF，填写 `runtime.kind: Singularity`，`path` 指向 SIF 文件，`sha256` 取该文件的摘要。`runtime.image` 和 `runtime.tag` 须与用例声明一致。签名清单包含站点 ID、软件身份、版本和许可证。Server 解析修订和筛选站点时使用 `ECOSYSTEM_RELEASE_TRUSTED_KEYS` 验签，核对当前激活的修订、站点范围和使用权限；这些预装资产用于本地执行。站点管理员负责安装程序和镜像。
+
+站点管理员须在所列站点的作业执行环境提供不可变、作业用户只读的程序或镜像路径，升级时发布新路径和摘要。计算节点须有 GNU `/usr/bin/sha256sum` 和 `/usr/bin/env`。作业脚本启动应用前校验文件内容，文件缺失或摘要不符时作业失败。SIF 通过站点的 `/usr/bin/apptainer exec --cleanenv --no-eval` 启动，应用环境变量传入容器。
 ```text
 节点输入 + 冻结能力包
   → resolvePackage → materialize → wrapCommand
@@ -322,13 +392,13 @@ shared 支持 `Bare/Singularity` 命令包装，Server 的这一执行路径暂�
 | `FilesomeOutput` | Normal 文件路径或 Batched glob，生成 expectedOutputs |
 
 输入暂存和输出路径须通过安全相对路径约束，不能借 `..` 访问工作目录外。
-shared `wrapCommand()` 最终仍输出 shell command：argv 做 shell quoting，
-Spack 使用 `spack load --sh` 激活，Singularity 使用 `apptainer exec`，Bare 直接运行。
+嵌入式运行器的 `wrapCommand()` 对 argv 逐项做 shell quoting。Spack 使用 `spack load --sh` 激活，Singularity 使用 `apptainer exec`，Bare 直接运行。
 软件 spec、镜像与 commandFile 由发布者审核，其中的 shell 内容可直接影响执行命令。
 
-shared 另有 `${...}` CEL 模板渲染函数，仅接受标量结果；
-当前用例 executor 不自动读取 `templateFiles` 或调用该函数。
-也未接入通用 collectors/validators/flag 注入流水线。
+shared 提供独立的 `${...}` CEL 模板渲染函数，表达式结果须为标量。用例节点支持的输入文件通过 `FileInputRef` 声明。
+用例 `outputs[].validators` 与 Sandbox `outputs.<descriptor>.validator` 支持 `{kind: finite}` 和 `{kind: cel, expr: "value >= 0"}`。
+用例校验提取后的值或文件引用；Sandbox 校验文本、JSON 或文件的 `sha256/sizeBytes/members`，整批校验通过后开始登记产物。
+环境材料的键使用 shell 变量名，值中的空白原样传递。
 输入文件渲染和复杂验证需使用受管 Script 或已发布用例。
 
 单作业接口独立于工作流：`POST /api/jobs/usecase/materialize` 返回物化结果，
@@ -418,17 +488,16 @@ Server 从 `stepJobs` 找到已提交 Job，对尚未 completed/failed 的 Job �
 
 ### Server 重启
 
-Server 暂不支持从中间节点续跑，重启后按运行状态恢复或清理：
-| 重启时状态 | 当前处理 |
-|---|---|
-| `queued` 且持久化输入完整 | 重新调度该 run，执行前重新校验身份与数据 |
-| `cancelling` | 继续已提交 Job 的取消清理 |
-| `running` | 写入 `WORKFLOW_INTERRUPTED` 并转 cancelling；远端清理成功后标为 failed |
-| 其余被扫描的 active 状态，或不可恢复输入 | 标记 failed / `WORKFLOW_INTERRUPTED`，要求人工复核 |
+Server 将新提交的普通和联邦工作流写入 PostgreSQL 执行日志。恢复器取得 run 租约后重新校验提交身份和组织范围，再按原工作流定义继续执行。
 
-`submitted` 和 `awaiting_approval` 按表中“其余 active 状态”处理；running run 不会从头重放。
-`stepJobs` 保留用于追踪，清理未完成时状态保持 cancelling。
-重新提交前先确认旧 scheduler job 和数据交付已清理，避免重复占用资源。
+| 重启时状态 | 恢复行为 |
+|---|---|
+| `queued` | 重新领取已授权的 run |
+| `running` | 读取已完成节点与循环迭代的检查点，已有作业按持久调用标识恢复等待或归集 |
+| `awaiting_approval` | 保留审批状态，批准后进入队列 |
+| `cancelling` | 继续取消已提交作业并等待确认 |
+
+检查点冲突需要人工核对。计算程序中途退出后的续算由应用本身提供的 checkpoint 决定。
 
 ### Agent 重启
 

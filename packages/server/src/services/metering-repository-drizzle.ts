@@ -37,12 +37,16 @@ import {
   meteringUsageMonthly,
   meteringUsageRaw,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
-import { and, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, eq, getTableName, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import type {
+  ExportRequest,
   JobUsageRecord,
   MeteringRepository,
   Period,
+  QueryResult,
+  QueryResultRow,
   RawQueryFilter,
   TenantScope,
   UsageBucketRow,
@@ -55,7 +59,10 @@ type BucketTable =
   | typeof meteringUsageMonthly;
 
 export class DrizzleMeteringRepository implements MeteringRepository {
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly connection: PgDb,
+    private readonly db: PgDb | PgTransaction = connection,
+  ) {}
 
   async insertRaw(record: JobUsageRecord, recordedAt: Date): Promise<UsageRawRow | null> {
     // Idempotent on jobId: if a row already exists, return null so the
@@ -99,6 +106,46 @@ export class DrizzleMeteringRepository implements MeteringRepository {
       return null;
     }
     return rawDbRowToDomain(row);
+  }
+
+  async *streamGroups(scope: TenantScope, req: ExportRequest): AsyncGenerator<QueryResult> {
+    const client = this.connection.$client;
+    const raw = req.period === "raw";
+    const table = client(
+      getTableName(req.period === "raw" ? meteringUsageRaw : bucketTableFor(req.period)),
+    );
+    const time = client(raw ? "started_at" : "bucket_start");
+    const group =
+      req.grouping === "app"
+        ? raw
+          ? client`coalesce(app_template_key,'<no-app>')`
+          : client`'app:unavailable-on-app'::text`
+        : client({ user: "user_id", org: "org_id", cluster: "cluster_name" }[req.grouping]);
+    const filter =
+      scope.kind === "all"
+        ? client`true`
+        : client`org_id = any(${client.array(scope.orgIds)}::uuid[])`;
+    // One statement gives the count and all pages the same MVCC snapshot.
+    const cursor = client<(QueryResultRow & { total: number })[]>`
+      with grouped as (
+        select ${group}::text as "groupKey",
+          sum(cpu_core_seconds)::float8 as "cpuCoreSeconds",sum(gpu_seconds)::float8 as "gpuSeconds",
+          sum(memory_mb_seconds)::float8 as "memoryMbSeconds",sum(storage_mb_seconds)::float8 as "storageMbSeconds",
+          sum(network_egress_mb)::float8 as "networkEgressMb",
+          ${raw ? client`count(*)` : client`sum(job_count)`}::float8 as "jobCount"
+        from ${table} where ${time} between ${req.from}::timestamptz and ${req.to}::timestamptz and ${filter}
+        group by 1
+      )
+      select totals.total,page.* from (select count(*)::int as total from grouped) totals
+      left join (select * from grouped order by "groupKey" collate "C" limit ${req.limit ?? null} offset ${req.offset}) page on true
+      order by page."groupKey" collate "C"
+    `.cursor(512);
+    for await (const batch of cursor) {
+      yield {
+        total: batch[0]?.total ?? 0,
+        rows: batch.flatMap(({ total: _, ...row }) => (row.groupKey === null ? [] : [row])),
+      };
+    }
   }
 
   async selectRaw(filter: RawQueryFilter): Promise<UsageRawRow[]> {

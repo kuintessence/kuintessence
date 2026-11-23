@@ -2,7 +2,7 @@
 //
 // Endpoints (mounted behind `protectedApi`):
 //   - GET    /api/metering/query   — aggregate query (raw|hourly|daily|monthly)
-//   - GET    /api/metering/export  — CSV / JSON export
+//   - GET    /api/metering/export  — CSV / JSON / Parquet export
 //   - GET    /api/metering/webhook — list webhooks for the principal's org
 //   - POST   /api/metering/webhook — create a webhook
 //   - DELETE /api/metering/webhook/:id — delete a webhook
@@ -16,7 +16,7 @@
 // webhooks: it accepts a small {@link WebhookRepository} port so tests can
 // drop an in-memory fake without spinning up Postgres.
 
-import { meteringWebhook, type PgDb } from "@kuintessence/db";
+import { meteringWebhook, type PgDb, type PgTransaction } from "@kuintessence/db";
 import { AppError, ErrorCode, hasRole, type RoleName } from "@kuintessence/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
@@ -34,11 +34,10 @@ import {
   narrowScope,
   type Period,
   QueryRequestSchema,
-  type QueryResult,
   type TenantScope,
   tenantScopeFromPrincipal,
 } from "../services/metering";
-import { exportCsv } from "../services/metering-export";
+import { exportChunks, suggestedFilename } from "../services/metering-export";
 import type { WebhookConfig } from "../services/metering-webhook";
 import type { WorkflowNetDriveAttributionReader } from "../services/metering-workflow-attribution";
 import { isPubliclyRoutableHttpUrl } from "../services/webhook-url-guard";
@@ -85,7 +84,7 @@ export interface WebhookRepository {
 }
 
 export class DrizzleWebhookRepository implements WebhookRepository {
-  constructor(private readonly db: PgDb) {}
+  constructor(private readonly db: PgDb | PgTransaction) {}
 
   async listForOrg(orgId: string): Promise<WebhookRecord[]> {
     const rows = await this.db
@@ -402,38 +401,39 @@ export function buildMeteringRouter(deps: MeteringRoutesDeps) {
       "metering-export",
     );
 
-    const queryReq = QueryRequestSchema.parse({
+    const window = QueryRequestSchema.omit({ limit: true }).parse({
+      ...params,
+      orgIds: orgIdList,
       from: new Date(params.from).toISOString(),
       to: new Date(params.to).toISOString(),
-      period: params.period as Period,
-      grouping: params.grouping as Grouping,
-      ...(orgIdList ? { orgIds: orgIdList } : {}),
-      // Cap export rows at the ceiling. Real exports stream — TODO when
-      // payloads grow past 1000 rows.
-      limit: params.limit ?? 1000,
-      offset: params.offset ?? 0,
     });
-
-    if (params.format === "parquet") {
-      const err = new AppError(
-        ErrorCode.EXPORT_FORMAT_NOT_SUPPORTED,
-        "Parquet export is not enabled",
-        422,
-        { reason: "EXPORT_FORMAT_NOT_SUPPORTED" },
+    const pages = deps.service.exportGroups(authorizedScope, { ...window, limit: params.limit });
+    if (params.format !== "json")
+      c.header(
+        "Content-Disposition",
+        `attachment; filename="${suggestedFilename(params.format, new Date(window.from), new Date(window.to))}"`,
       );
-      return c.json(err.toJSON(), 422);
-    }
-
-    const result: QueryResult = await deps.service.query(authorizedScope, queryReq);
-    if (params.format === "json") {
-      return c.json({ rows: result.rows, total: result.total });
-    }
-    const csv = exportCsv(result);
-    const fromDate = new Date(params.from).toISOString().slice(0, 10);
-    const toDate = new Date(params.to).toISOString().slice(0, 10);
-    c.header("Content-Type", "text/csv; charset=utf-8");
-    c.header("Content-Disposition", `attachment; filename="metering-${fromDate}_${toDate}.csv"`);
-    return c.body(csv);
+    c.header(
+      "Content-Type",
+      {
+        json: "application/json",
+        csv: "text/csv; charset=utf-8",
+        parquet: "application/vnd.apache.parquet",
+      }[params.format],
+    );
+    const chunks = exportChunks(params.format, pages);
+    return c.body(
+      new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const chunk = await chunks.next();
+          if (chunk.done) controller.close();
+          else controller.enqueue(chunk.value);
+        },
+        async cancel() {
+          await chunks.return(undefined);
+        },
+      }),
+    );
   });
 
   r.get("/metering/workflow-runs/:runId/netdrive-attribution", async (c) => {

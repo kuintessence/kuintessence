@@ -8,6 +8,7 @@ import {
 } from "@kuintessence/shared";
 
 export interface StoredSoftwareRevision {
+  signedRelease?: boolean;
   asset: {
     id: string;
     source: string;
@@ -59,10 +60,31 @@ export function createPackageResolver(
       throw new Error("frozen software revision does not match the usecase software selector");
     }
     const payload = SoftwareAssetPayloadSchema.parse(revision.payload);
+    if (payload.kind === "site-runtime") {
+      if (!row.usecasePackageId || lockedExecution || revision.asset.source !== "platform-fork") {
+        throw new Error("Site runtimes require a locally authorized signed release");
+      }
+      usecase.assertSiteRuntimeMatches(pkg.software, pkg.usecase.commandFile, payload.runtime);
+      return {
+        ...pkg,
+        usecaseVersionId,
+        ...(row.usecasePackageId ? { usecasePackageId: row.usecasePackageId } : {}),
+        siteRuntime: payload.runtime,
+        softwareRequirements: [
+          {
+            assetId: revision.asset.id,
+            siteRuntimeRevisionId: softwareVersionId,
+            name: revision.asset.name,
+            version: revision.asset.version,
+            installable: false,
+          },
+        ],
+      };
+    }
     if (payload.kind !== "spack-package") {
       throw new Error("frozen software revision is not a Spack package");
     }
-    if (payload.spack.packageName !== revision.asset.name) {
+    if (payload.spack.packageName !== revision.asset.name && !revision.signedRelease) {
       throw new Error("frozen software revision package name does not match its asset");
     }
     if (pkg.software.kind !== "Spack") {
@@ -72,12 +94,12 @@ export function createPackageResolver(
       payload.spack.defaultSpec ?? `${payload.spack.packageName}@${revision.asset.version}`
     ).trim();
     const pin = lockedExecution ? SpackExecutionPinSchema.parse(lockedExecution.pin) : undefined;
-    const installationSpec = lockedExecution
-      ? SpackExecutionSchema.shape.spec.parse(lockedExecution.spec)
-      : spackSpec;
+    const installationSpec = SpackExecutionSchema.shape.spec.parse(
+      [spackSpec, ...pkg.software.argumentList].join(" "),
+    );
     if (
       lockedExecution &&
-      [spackSpec, ...pkg.software.argumentList].join(" ").trim() !== installationSpec
+      installationSpec !== SpackExecutionSchema.shape.spec.parse(lockedExecution.spec)
     )
       throw new Error("Frozen software specification differs from the authorized environment lock");
     return {
@@ -93,7 +115,7 @@ export function createPackageResolver(
         {
           assetId: revision.asset.id,
           spec: installationSpec,
-          name: payload.spack.packageName,
+          name: revision.asset.name,
           version: revision.asset.version,
           installable: (await canInstall?.(revision.asset.id, installationSpec)) ?? false,
         },

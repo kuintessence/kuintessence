@@ -162,6 +162,31 @@ describe("applyDesensitizationToBody — array of records", () => {
 });
 
 describe("applyDesensitizationToBody — nested envelope", () => {
+  test("protects nested arrays and applies the strictest leaf or dotted rule", async () => {
+    const config: DesensitizeConfig = {
+      globalEnabled: true,
+      providers: [],
+      clusters: [],
+      fields: [
+        { field: "email", action: "redact" },
+        { field: "groups.members.email", action: "passthrough" },
+        { field: "groups.members.secret", action: "hide" },
+        { field: "groups.tokens", action: "hide" },
+      ],
+    };
+    const body = {
+      groups: [
+        {
+          members: [{ email: "a@example.test", secret: "private", at: new Date(0) }],
+          tokens: ["private"],
+        },
+      ],
+    };
+    expect(await applyDesensitizationToBody<unknown>(config, body, ctx())).toEqual({
+      groups: [{ members: [{ email: "***", at: new Date(0) }] }],
+    });
+    expect(body.groups[0]?.tokens).toEqual(["private"]);
+  });
   test("walks into a top-level `entries` array (audit-log shape)", async () => {
     const cfg: DesensitizeConfig = {
       globalEnabled: true,

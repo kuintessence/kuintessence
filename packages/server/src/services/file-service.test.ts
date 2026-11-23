@@ -87,12 +87,13 @@ describe("buildClusterLsCommand", () => {
     // The entire path appears inside single quotes (literal, no expansion).
     expect(cmd).toContain(`'${evil}'`);
     // No double-quote interpolation remains.
-    expect(cmd).not.toContain('"');
+    expect(cmd).not.toContain(`"${evil}"`);
   });
 
   test("produces a read-only ls for a normal path (no mkdir side effect)", () => {
     const cmd = buildClusterLsCommand("/data");
-    expect(cmd).toBe("ls -la --time-style=long-iso '/data'");
+    expect(cmd).toContain("realpath -m -- '/data'");
+    expect(cmd).toContain("ls -la --time-style=long-iso -- .");
     // A GET listing must not mutate the filesystem.
     expect(cmd).not.toContain("mkdir");
   });
@@ -320,7 +321,6 @@ test("resume keeps transfer identity, reauthorizes before dispatch and rejects c
   });
   await waitForTransferState(service, "owner", "failed");
   expect(started).toHaveLength(2);
-  service.shutdown();
 });
 
 test("resume finalizes a durable completion with an offline Agent while still reauthorizing", async () => {
@@ -345,5 +345,4 @@ test("resume finalizes a durable completion with an offline Agent while still re
   await service.resumeTransfer("owner", transfer.id, { beforeDispatch: async () => undefined });
   await waitForTransferState(service, "owner", "running");
   expect(started).toEqual([transfer.id]);
-  service.shutdown();
 });

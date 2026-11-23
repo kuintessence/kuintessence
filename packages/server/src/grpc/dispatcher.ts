@@ -1,5 +1,11 @@
 import { create } from "@bufbuild/protobuf";
-import { jobCancellations, jobWorkRootReleases, type PgDb } from "@kuintessence/db";
+import {
+  jobCancellations,
+  jobs,
+  jobWorkRootReleases,
+  type PgDb,
+  sandboxPvcReleases,
+} from "@kuintessence/db";
 import {
   AgentUpdateRequestSchema,
   CancelJobSchema,
@@ -7,6 +13,7 @@ import {
   DataDeliveryEntrySchema,
   DataDeliveryMethod,
   DataDeliveryRevokeSchema,
+  type DataReplicaCommand,
   DataScanRequestSchema,
   DispatchJobSchema,
   FederationAccountingRequestSchema,
@@ -50,9 +57,10 @@ import type {
 } from "@kuintessence/shared";
 import { createLogger, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import type { FederationAccountingRequest } from "@kuintessence/shared/federation";
-import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { ResolvedDataDelivery } from "../services/data-delivery";
 import { enqueueJobCancellation } from "../services/job-cancellation";
+import { enqueueTerminalSandboxPvc } from "../services/sandbox-pvc-release";
 
 import { sandboxIdentityToProto } from "./sandbox-identity";
 
@@ -152,6 +160,10 @@ export function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
 }
 
 export interface AgentChannel {
+  controlSessionId?: string;
+  dataReplicaCopy?: boolean;
+  replicaRangeTransfer?: boolean;
+  jobSchedulerLimits?: boolean;
   agentUpdateV1?: boolean;
   push(msg: ServerMessage): void;
   close(): void;
@@ -192,6 +204,26 @@ export interface AgentChannel {
  * specific agent without the caller needing to know about the underlying stream.
  */
 export class AgentDispatcher {
+  interactionRelay?: Pick<
+    import("./interaction-relay").InteractionRelay,
+    "channel" | "online" | "reply"
+  >;
+  interactionChannel(agentId: string) {
+    return this.getChannel(agentId) ?? this.interactionRelay?.channel(agentId);
+  }
+  interactionAgentIds() {
+    return [...new Set([...this.onlineAgentIds(), ...(this.interactionRelay?.online() ?? [])])];
+  }
+  private pushInteraction(agentId: string, message: ServerMessage) {
+    const channel = this.interactionChannel(agentId);
+    if (!channel) return false;
+    try {
+      channel.push(message);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   private channels = new Map<string, AgentChannel>();
 
   pushAgentUpdate(agentId: string, requestId: string, release: string): boolean {
@@ -280,6 +312,8 @@ export class AgentDispatcher {
 
   pushPreparedDispatch(agentId: string, message: ServerMessage): boolean {
     if (message.payload.case !== "dispatchJob") throw new Error("Expected a job dispatch message");
+    if (message.payload.value.schedulerLimits && !this.getChannel(agentId)?.jobSchedulerLimits)
+      return false;
     if (
       message.payload.value.inputStaging.some((input) => input.localDataSource) &&
       (!message.payload.value.federationExecution ||
@@ -400,6 +434,7 @@ export class AgentDispatcher {
       qos?: string | null;
       sandboxExecution?: SandboxSignedManifest;
       spackExecution?: SpackExecution;
+      forEachGroup?: string;
       licensedMaterialMounts?: Array<{
         selector: string;
         mappingId?: string;
@@ -435,11 +470,19 @@ export class AgentDispatcher {
         value: create(DispatchJobSchema, {
           jobId,
           name: job.name,
+          forEachGroup: job.forEachGroup,
           command: job.command,
           cpus: job.resources.cpus,
           memoryMb: BigInt(job.resources.memoryMb),
           gpus: job.resources.gpus ?? 0,
           wallTimeSec: BigInt(job.resources.wallTimeSec ?? 0),
+          schedulerLimits: job.resources.schedulerLimits && {
+            ...job.resources.schedulerLimits,
+            stopTime:
+              job.resources.schedulerLimits.stopTime === undefined
+                ? undefined
+                : BigInt(job.resources.schedulerLimits.stopTime),
+          },
           workingDir: job.workingDir ?? "",
           envVars: job.envVars ?? {},
           inputStaging: (job.inputStaging ?? []).map((input) =>
@@ -520,6 +563,30 @@ export class AgentDispatcher {
     );
   }
 
+  replicaChannel(agentId: string, range = false) {
+    const channel = this.channels.get(agentId);
+    return channel?.dataReplicaCopy && (!range || channel.replicaRangeTransfer)
+      ? channel.verifiedCertFingerprint
+      : undefined;
+  }
+
+  pushReplica(agentId: string, fingerprint: string, command: DataReplicaCommand) {
+    if (this.replicaChannel(agentId) !== fingerprint) return false;
+    return this.pushToAgent(
+      agentId,
+      create(ServerMessageSchema, { payload: { case: "dataReplicaCommand", value: command } }),
+    );
+  }
+
+  pushReplicaRange(
+    agentId: string,
+    fingerprint: string,
+    payload: Extract<ServerMessage["payload"], { case: "replicaRangeRead" | "replicaRangeResult" }>,
+  ) {
+    if (this.replicaChannel(agentId, true) !== fingerprint) return false;
+    return this.pushToAgent(agentId, create(ServerMessageSchema, { payload }));
+  }
+
   pushDataScanRequest(
     agentId: string,
     request: {
@@ -569,13 +636,13 @@ export class AgentDispatcher {
         value: create(ShellExecRequestSchema, { requestId, input, timeoutSec }),
       },
     });
-    return this.pushToAgent(agentId, msg);
+    return this.pushInteraction(agentId, msg);
   }
 
   pushFederationAccounting(agentId: string, request: FederationAccountingRequest): boolean {
-    const channel = this.channels.get(agentId);
-    if (!channel?.federationAccountingV1) return false;
-    channel.push(
+    if (this.getChannel(agentId) && !this.getChannel(agentId)?.federationAccountingV1) return false;
+    return this.pushInteraction(
+      agentId,
       create(ServerMessageSchema, {
         payload: {
           case: "federationAccountingRequest",
@@ -585,7 +652,6 @@ export class AgentDispatcher {
         },
       }),
     );
-    return true;
   }
 
   pushJobLogsRequest(
@@ -608,7 +674,7 @@ export class AgentDispatcher {
         }),
       },
     });
-    return this.pushToAgent(agentId, msg);
+    return this.pushInteraction(agentId, msg);
   }
 
   pushFileTransfer(
@@ -648,7 +714,7 @@ export class AgentDispatcher {
         }),
       },
     });
-    return this.pushToAgent(agentId, msg);
+    return this.pushInteraction(agentId, msg);
   }
 
   pushFileTransferCancel(agentId: string, requestId: string): boolean {
@@ -658,9 +724,20 @@ export class AgentDispatcher {
         value: create(FileTransferCancelSchema, { requestId }),
       },
     });
-    return this.pushToAgent(agentId, msg);
+    return this.pushInteraction(agentId, msg);
   }
 
+  pushReleaseSandboxPvc(agentId: string, jobId: string): boolean {
+    return this.pushToAgent(
+      agentId,
+      create(ServerMessageSchema, {
+        payload: {
+          case: "releaseSandboxPvc",
+          value: create(ReleaseJobWorkRootSchema, { jobId }),
+        },
+      }),
+    );
+  }
   pushReleaseJobWorkRoot(agentId: string, jobId: string): boolean {
     return this.pushToAgent(
       agentId,
@@ -920,8 +997,61 @@ export class JobCancellationOutbox {
 export class JobWorkRootReleaseOutbox {
   constructor(
     private readonly db: PgDb,
-    private readonly dispatcher: Pick<AgentDispatcher, "pushReleaseJobWorkRoot">,
+    private readonly dispatcher: Pick<AgentDispatcher, "pushReleaseJobWorkRoot"> &
+      Partial<Pick<AgentDispatcher, "pushReleaseSandboxPvc">>,
   ) {}
+
+  async enqueuePvc(agentId: string, jobId: string) {
+    await this.db.transaction(async (tx) => {
+      const [job] = await tx
+        .select({ id: jobs.id, agentId: jobs.agentId, sandboxExecution: jobs.sandboxExecution })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.id, jobId),
+            eq(jobs.agentId, agentId),
+            inArray(jobs.status, ["completed", "failed", "cancelled"]),
+          ),
+        )
+        .for("share");
+      if (job) await enqueueTerminalSandboxPvc(tx, job);
+    });
+    await this.redeliverPvc(agentId);
+  }
+  async redeliverPvc(agentId: string) {
+    if (!this.dispatcher.pushReleaseSandboxPvc) return;
+    const due = this.db
+      .select({ jobId: sandboxPvcReleases.jobId })
+      .from(sandboxPvcReleases)
+      .where(
+        and(eq(sandboxPvcReleases.agentId, agentId), isNull(sandboxPvcReleases.acknowledgedAt)),
+      )
+      .orderBy(
+        sql`${sandboxPvcReleases.lastAttemptAt} nulls first`,
+        asc(sandboxPvcReleases.createdAt),
+        asc(sandboxPvcReleases.jobId),
+      )
+      .limit(128)
+      .for("update", { skipLocked: true });
+    const rows = await this.db
+      .update(sandboxPvcReleases)
+      .set({ lastAttemptAt: new Date() })
+      .where(inArray(sandboxPvcReleases.jobId, due))
+      .returning({ jobId: sandboxPvcReleases.jobId });
+    for (const row of rows) this.dispatcher.pushReleaseSandboxPvc(agentId, row.jobId);
+  }
+  async acknowledgePvc(agentId: string, jobId: string) {
+    await this.db
+      .update(sandboxPvcReleases)
+      .set({ acknowledgedAt: new Date() })
+      .where(
+        and(
+          eq(sandboxPvcReleases.agentId, agentId),
+          eq(sandboxPvcReleases.jobId, jobId),
+          isNull(sandboxPvcReleases.acknowledgedAt),
+        ),
+      );
+  }
 
   async enqueue(agentId: string, jobId: string): Promise<void> {
     await this.db

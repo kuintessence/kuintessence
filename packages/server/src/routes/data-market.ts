@@ -96,16 +96,13 @@ const UploadCommitSchema = z
   })
   .strict();
 
-export const DataMarketReplicaInputSchema = z
-  .object({
-    agentId: z.string().trim().min(1).max(255),
-    siteId: z.string().trim().min(1).max(255),
-    clusterId: z.string().trim().min(1).max(255),
-    locationKind: DataLocationKindSchema,
-    managedRootId: z.string().uuid().optional(),
-    relativePath: z.string().trim().min(1).max(2_048).optional(),
-  })
-  .strict();
+export const DataMarketReplicaInputSchema = z.strictObject({
+  agentId: z.string().trim().min(1).max(255),
+  managedRootId: z.uuid(),
+  siteId: z.string().trim().min(1).max(255).optional(),
+  clusterId: z.string().trim().min(1).max(255).optional(),
+  locationKind: z.literal("cp-local"),
+});
 
 export const CpDataImportInputSchema = z
   .object({

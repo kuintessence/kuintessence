@@ -6,7 +6,6 @@ import type {
   DataAsset,
   DataAssetFile,
   DataAssetImport,
-  DataAssetReplica,
   DataAssetVersion,
   DataMarketRepository,
   DataUploadPort,
@@ -122,6 +121,9 @@ class MemoryRepository implements DataMarketRepository {
   async listReplicas() {
     return { replicas: [], total: 0 };
   }
+  async cancelCpLocalImport() {
+    throw new Error("Data import not found");
+  }
   async listImports() {
     return { imports: [], total: 0 };
   }
@@ -196,6 +198,14 @@ class MemoryRepository implements DataMarketRepository {
     this.versions.push(version);
     return version;
   }
+  async importNetDriveFile(): ReturnType<DataMarketRepository["importNetDriveFile"]> {
+    throw new Error("unexpected copy");
+  }
+  async importCommittedUpload(
+    _input: Parameters<DataMarketRepository["importCommittedUpload"]>[0],
+  ): ReturnType<DataMarketRepository["importCommittedUpload"]> {
+    throw new Error("A committed upload for this asset and version is required");
+  }
   async createCpLocalImport(input: Parameters<DataMarketRepository["createCpLocalImport"]>[0]) {
     const version: DataAssetVersion = {
       id: `version-${this.versions.length + 1}`,
@@ -223,14 +233,6 @@ class MemoryRepository implements DataMarketRepository {
       completedAt: null,
     };
     return { version, dataImport, created: true };
-  }
-  async createReplica(input: Parameters<DataMarketRepository["createReplica"]>[0]) {
-    return {
-      id: "replica-1",
-      ...input,
-      status: "pending",
-      verifiedAt: null,
-    } satisfies DataAssetReplica;
   }
   async createAccessRequest(input: Parameters<DataMarketRepository["createAccessRequest"]>[0]) {
     const request = {
@@ -761,11 +763,6 @@ describe("DataMarketService", () => {
 
   test("replica creation is unavailable before it can persist a pending replica", async () => {
     const repository = new MemoryRepository();
-    let replicaWrites = 0;
-    repository.createReplica = async () => {
-      replicaWrites += 1;
-      throw new Error("replica persistence must not be reached");
-    };
     const service = new DataMarketService({ repository, uploadPort });
     await expect(
       service.createReplica(
@@ -781,11 +778,11 @@ describe("DataMarketService", () => {
           siteId: "s1",
           clusterId: "c1",
           locationKind: "cp-local",
+          managedRootId: "root",
         },
         "replica-key",
       ),
-    ).rejects.toThrow("DATA_REPLICA_UNAVAILABLE");
-    expect(replicaWrites).toBe(0);
+    ).rejects.toThrow("DATA_OBJECT_STORAGE_UNAVAILABLE");
   });
 
   test("SpiceDB hook receives the local decision and can deny an otherwise public asset", async () => {
@@ -1203,15 +1200,15 @@ describe("DataMarketService", () => {
     });
   });
 
-  test("NetDrive import states that a copy backend is unavailable", async () => {
+  test("NetDrive import requires a provider-managed asset", async () => {
     const service = new DataMarketService({ repository: new MemoryRepository(), uploadPort });
     await expect(
       service.startProviderImport(
         actor({
           userId: "owner",
           role: "org_admin",
-          orgId: "provider-org",
-          orgIds: ["provider-org"],
+          orgId: "other-org",
+          orgIds: ["other-org"],
         }),
         {
           assetId: "public-asset",
@@ -1220,10 +1217,10 @@ describe("DataMarketService", () => {
         },
         "netdrive-import",
       ),
-    ).rejects.toThrow("NetDrive copy backend");
+    ).rejects.toMatchObject({ statusCode: 403 });
   });
 
-  test("unsupported import sources are rejected before looking up or writing an asset", async () => {
+  test("platform-object imports require a provider-managed asset", async () => {
     const repository = new MemoryRepository();
     let importWrites = 0;
     repository.createCpLocalImport = async () => {
@@ -1249,17 +1246,12 @@ describe("DataMarketService", () => {
         },
         "platform-object-import",
       ),
-    ).rejects.toThrow("platform-object upload commit");
+    ).rejects.toThrow("Data asset not found");
     expect(importWrites).toBe(0);
   });
 
   test("provider manager scope cannot create a replica for another organization", async () => {
     const repository = new MemoryRepository();
-    let replicaWrites = 0;
-    repository.createReplica = async () => {
-      replicaWrites += 1;
-      throw new Error("replica persistence must not be reached");
-    };
     const service = new DataMarketService({ repository, uploadPort });
     await expect(
       service.createReplica(
@@ -1276,11 +1268,11 @@ describe("DataMarketService", () => {
           siteId: "s1",
           clusterId: "c1",
           locationKind: "cp-local",
+          managedRootId: "root",
         },
         "cross-provider-replica",
       ),
-    ).rejects.toThrow("Not authorized");
-    expect(replicaWrites).toBe(0);
+    ).rejects.toThrow("active organization");
   });
 
   test("platform administrator active organization cannot manage another provider asset", async () => {

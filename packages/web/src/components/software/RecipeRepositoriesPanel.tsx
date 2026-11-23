@@ -101,12 +101,6 @@ function RepositoryPanel({
     };
   }, []);
   const currentSession = () => mounted.current && isCurrent();
-  const canWriteRepository = (repository: string) =>
-    currentSession() &&
-    canWriteRecipeRepository(repository, { canManage, organizationId, capabilities });
-  const writableOrganizationId =
-    organizationId && canWriteRepository(`org/${organizationId}/recipes`) ? organizationId : null;
-  const canImport = Boolean(writableOrganizationId) || canWriteRepository("public/recipes");
   const scopeKey = [...KEY, sessionKey, accessKey, organizationId];
   const listKey = [...scopeKey, "list"];
   const repositories = useQuery({
@@ -114,6 +108,27 @@ function RepositoryPanel({
     queryFn: listRecipeRepositories,
     retry: false,
   });
+  const namespaceWrite = (name: string) =>
+    currentSession() && canWriteRecipeRepository(name, { canManage, organizationId, capabilities });
+  function canWriteRepository(name: string, detail?: RecipeRepository) {
+    const view = detail ?? repositories.data?.find((row) => row.repository === name);
+    if (view?.migrated) return false;
+    return (
+      namespaceWrite(name) ||
+      Boolean(
+        currentSession() &&
+          canManage &&
+          capabilities?.capabilities.includes("software.publish") &&
+          view?.delegatedWrite,
+      )
+    );
+  }
+  const writableOrganizationId =
+    organizationId && namespaceWrite(`org/${organizationId}/recipes`) ? organizationId : null;
+  const canImportByNamespace = Boolean(writableOrganizationId) || namespaceWrite("public/recipes");
+  const canImport =
+    canImportByNamespace ||
+    repositories.data?.some((row) => canWriteRepository(row.repository, row));
   function refresh() {
     if (currentSession()) void client.invalidateQueries({ queryKey: scopeKey });
   }
@@ -153,7 +168,7 @@ function RepositoryPanel({
         </Button>
       </div>
       <div className="flex flex-wrap gap-2">
-        {["validationMode", "concretizationStatus", "agentDeliveryStatus"].map((key) => (
+        {["validationMode", "concretizationStatus"].map((key) => (
           <Badge key={key} variant="outline">
             {t(`recipes.${key}`)}
           </Badge>
@@ -166,10 +181,10 @@ function RepositoryPanel({
           onImported={updateRepository}
         />
       ) : null}
-      {canImport && !isLocalMode() ? (
+      {canImportByNamespace && !isLocalMode() ? (
         <SpackOnlineImport
           kind="recipe"
-          canWriteRepository={canWriteRepository}
+          canWriteRepository={(name) => namespaceWrite(name) && canWriteRepository(name)}
           isCurrent={currentSession}
           onImported={async (result) => {
             if (result.kind !== "recipe" || !currentSession()) return;
@@ -201,9 +216,9 @@ function RepositoryPanel({
                 <TableRow key={repository.id} className="border-b border-border">
                   <TableCell className="break-all p-2 font-mono">
                     {repository.repository}
-                    {!canWriteRepository(repository.repository) ? (
+                    {!canWriteRepository(repository.repository, repository) ? (
                       <Badge className="ml-2 font-sans" variant="outline">
-                        {t("recipes.readOnly")}
+                        {t(repository.migrated ? "recipes.migrated" : "recipes.readOnly")}
                       </Badge>
                     ) : null}
                   </TableCell>
@@ -235,6 +250,7 @@ function RepositoryPanel({
           id={selectedId}
           queryKey={[...scopeKey, selectedId]}
           canWriteRepository={canWriteRepository}
+          namespaceWrite={namespaceWrite}
           onUpdated={updateRepository}
           onRefresh={refresh}
         />

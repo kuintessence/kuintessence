@@ -81,6 +81,8 @@ export const QueryRequestSchema = z.object({
 
 export type QueryRequest = z.infer<typeof QueryRequestSchema>;
 
+export type ExportRequest = Omit<QueryRequest, "limit"> & { limit?: number };
+
 export interface QueryResultRow {
   /** Group key value (userId / orgId / clusterName / appTemplateKey). */
   groupKey: string;
@@ -121,6 +123,7 @@ export interface RollupBucket {
 }
 
 export interface MeteringRepository {
+  streamGroups?(scope: TenantScope, req: ExportRequest): AsyncIterable<QueryResult>;
   /** Insert a raw usage row. Returns null when a row for the same jobId already exists (idempotent skip). */
   insertRaw(row: JobUsageRecord, recordedAt: Date): Promise<UsageRawRow | null>;
   /** Read raw rows in a window scoped by tenant. */
@@ -175,7 +178,10 @@ export class MeteringService {
    * caller (route layer) is responsible for translating the JWT principal
    * to a {@link TenantScope}.
    */
-  async query(scope: TenantScope, req: QueryRequest): Promise<QueryResult> {
+  async query(
+    scope: TenantScope,
+    req: Omit<QueryRequest, "limit"> & { limit?: number },
+  ): Promise<QueryResult> {
     const from = parseIso(req.from, "from");
     const to = parseIso(req.to, "to");
     if (from > to) {
@@ -193,6 +199,14 @@ export class MeteringService {
       to,
     });
     return groupBucketRows(buckets, req.grouping, req.limit, req.offset);
+  }
+
+  async *exportGroups(scope: TenantScope, req: ExportRequest): AsyncGenerator<QueryResult> {
+    const from = parseIso(req.from, "from");
+    const to = parseIso(req.to, "to");
+    if (from > to) throw new Error("metering.export: invalid date range");
+    if (this.repo.streamGroups) yield* this.repo.streamGroups(narrowScope(scope, req.orgIds), req);
+    else yield await this.query(scope, req);
   }
 
   /** Repository accessor for the aggregator/exporter to share the same backend. */
@@ -281,7 +295,7 @@ function validateUsageRecord(r: JobUsageRecord): void {
 function groupRawRows(
   rows: UsageRawRow[],
   grouping: Grouping,
-  limit: number,
+  limit: number | undefined,
   offset: number,
 ): QueryResult {
   const acc = new Map<string, QueryResultRow>();
@@ -299,13 +313,16 @@ function groupRawRows(
   const all = Array.from(acc.values()).sort((a, b) =>
     a.groupKey < b.groupKey ? -1 : a.groupKey > b.groupKey ? 1 : 0,
   );
-  return { rows: all.slice(offset, offset + limit), total: all.length };
+  return {
+    rows: all.slice(offset, limit === undefined ? undefined : offset + limit),
+    total: all.length,
+  };
 }
 
 function groupBucketRows(
   rows: UsageBucketRow[],
   grouping: Grouping,
-  limit: number,
+  limit: number | undefined,
   offset: number,
 ): QueryResult {
   // Bucket rows already collapse over jobId; grouping only collapses
@@ -332,7 +349,10 @@ function groupBucketRows(
   const all = Array.from(acc.values()).sort((a, b) =>
     a.groupKey < b.groupKey ? -1 : a.groupKey > b.groupKey ? 1 : 0,
   );
-  return { rows: all.slice(offset, offset + limit), total: all.length };
+  return {
+    rows: all.slice(offset, limit === undefined ? undefined : offset + limit),
+    total: all.length,
+  };
 }
 
 function pickGroupKey(row: UsageRawRow, grouping: Grouping): string {

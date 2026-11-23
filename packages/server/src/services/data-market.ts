@@ -22,6 +22,7 @@ import {
 } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
 import type { DataGrantRevocationCoordinator } from "./data-delivery-revocations";
+import type { DataReplicaCoordinator } from "./data-replica";
 import type { DataScanCoordinator } from "./data-scan-coordinator";
 
 export type DataAssetVisibility = DataVisibility;
@@ -176,11 +177,10 @@ export interface DataVersionInput {
 export interface DataReplicaInput {
   versionId: string;
   agentId: string;
-  siteId: string;
-  clusterId: string;
-  locationKind: DataLocationKind;
-  managedRootId?: string;
-  relativePath?: string;
+  siteId?: string;
+  clusterId?: string;
+  locationKind: "cp-local";
+  managedRootId: string;
 }
 
 export interface DataAssetListQuery {
@@ -240,6 +240,7 @@ export interface DataMarketRepository {
     versionId: string,
     query: DataAssetPageQuery,
   ): Promise<{ replicas: DataAssetReplica[]; total: number }>;
+  cancelCpLocalImport(assetId: string, importId: string): Promise<void>;
   listImports(
     providerOrgIds: string[],
     query: DataAssetPageQuery,
@@ -292,6 +293,20 @@ export interface DataMarketRepository {
   listFiles(versionId: string): Promise<DataAssetFile[]>;
   createAsset(input: DataAssetInput & { ownerUserId: string }): Promise<DataAsset>;
   createVersion(input: DataVersionInput & { createdBy: string }): Promise<DataAssetVersion>;
+  importCommittedUpload(input: {
+    assetId: string;
+    version: string;
+    requesterId: string;
+    sessionId: string;
+    idempotencyKey: string;
+  }): Promise<{ version: DataAssetVersion; dataImport: DataAssetImport; replayed: boolean }>;
+  importNetDriveFile(input: {
+    assetId: string;
+    version: string;
+    requesterId: string;
+    netdriveFileId: string;
+    idempotencyKey: string;
+  }): Promise<{ version: DataAssetVersion; dataImport: DataAssetImport; replayed: boolean }>;
   createCpLocalImport(input: {
     assetId: string;
     version: string;
@@ -302,9 +317,6 @@ export interface DataMarketRepository {
     managedRootId: string;
     relativePath: string;
   }): Promise<{ version: DataAssetVersion; dataImport: DataAssetImport; created: boolean }>;
-  createReplica(
-    input: DataReplicaInput & { providerOrgId: string; manifestDigest: string },
-  ): Promise<DataAssetReplica>;
   createAccessRequest(input: {
     assetId: string;
     requesterUserId: string;
@@ -345,6 +357,7 @@ export interface DataMarketServiceDeps {
   repository: DataMarketRepository;
   uploadPort: DataUploadPort;
   authz?: DataMarketAuthzHook;
+  replicaCoordinator?: Pick<DataReplicaCoordinator, "create" | "cancel">;
   dataScanCoordinator?: Pick<DataScanCoordinator, "requestScan"> &
     Partial<Pick<DataScanCoordinator, "requestScanIfMissing">>;
   grantProjector?: {
@@ -435,28 +448,42 @@ export class DataMarketService {
     return { ...result, limit: query.limit, offset: query.offset };
   }
 
+  async cancelProviderImport(actor: DataMarketActor, assetId: string, importId: string) {
+    await this.requireProviderManagedAsset(actor, assetId);
+    await this.assertLocalContent(assetId);
+    await this.deps.repository.cancelCpLocalImport(assetId, importId);
+  }
+
   async startProviderImport(
     actor: DataMarketActor,
     input: CpDataImportInput,
     idempotencyKey: string,
   ) {
     const source = input.source;
-    if (source.kind === "netdrive") {
-      throw new AppError(
-        ErrorCode.INTERNAL_ERROR,
-        "DATA_IMPORT_UNAVAILABLE: NetDrive copy backend is not configured",
-        503,
-      );
-    }
-    if (source.kind === "platform-object") {
-      throw new AppError(
-        ErrorCode.INTERNAL_ERROR,
-        "DATA_IMPORT_UNAVAILABLE: platform-object upload commit is not configured",
-        503,
-      );
-    }
     const asset = await this.requireProviderManagedAsset(actor, input.assetId);
     await this.assertLocalContent(asset.id);
+    if (source.kind === "netdrive") {
+      const result = await this.deps.repository.importNetDriveFile({
+        assetId: asset.id,
+        version: input.version,
+        requesterId: actor.userId,
+        netdriveFileId: source.netdriveFileId,
+        idempotencyKey,
+      });
+      return { ...result, dispatchState: "completed" as const };
+    }
+    if (source.kind === "platform-object") {
+      const result = await this.deps.repository.importCommittedUpload({
+        assetId: asset.id,
+        version: input.version,
+        requesterId: actor.userId,
+        sessionId: source.uploadSessionId,
+        idempotencyKey,
+      });
+      return { ...result, dispatchState: "completed" as const };
+    }
+    if (source.relativePath.split(/[\\/]/).includes(".kq-replicas"))
+      throw new AppError(ErrorCode.FORBIDDEN, "Managed replica directory", 403);
     if (source.relativePath.split(/[\\/]/).includes(".federation-media"))
       throw new AppError(
         ErrorCode.FORBIDDEN,
@@ -505,7 +532,11 @@ export class DataMarketService {
       return {
         dataImport: created.dataImport,
         dispatchState:
-          created.dataImport.status === "pending" ? ("queued" as const) : ("dispatched" as const),
+          created.dataImport.status === "pending"
+            ? ("queued" as const)
+            : created.dataImport.status === "running"
+              ? ("dispatched" as const)
+              : created.dataImport.status,
         replayed: true,
         version: created.version,
       };
@@ -850,27 +881,44 @@ export class DataMarketService {
     );
   }
 
-  async createReplica(actor: DataMarketActor, input: DataReplicaInput, _idempotencyKey: string) {
+  async createReplica(actor: DataMarketActor, input: DataReplicaInput, idempotencyKey: string) {
     const version = await this.findVersionById(input.versionId);
+    const asset = await this.requireProviderManagedAsset(actor, version.assetId);
+    await this.assertLocalContent(asset.id);
     if (version.status !== "ready" || !version.manifestDigest) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Data replica requires a ready version", 409);
     }
-    const asset = await this.requireAsset(version.assetId);
-    await this.assertAuthorized(actor, asset, "manage");
-    const providerOrgId = asset.providerOrgId;
-    if (!providerOrgId) {
+    if (!actor.orgId || actor.orgId !== asset.providerOrgId)
       throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        "Private assets cannot create CP replicas",
-        400,
+        ErrorCode.FORBIDDEN,
+        "Replica requires an active provider organization",
+        403,
       );
-    }
-    assertProviderManager(actor, providerOrgId);
-    throw new AppError(
-      ErrorCode.INTERNAL_ERROR,
-      "DATA_REPLICA_UNAVAILABLE: replica coordinator is not configured",
-      501,
+    return this.replicaCoordinator().create(
+      input,
+      actor.userId,
+      actor.orgId,
+      version.manifestDigest,
+      idempotencyKey,
     );
+  }
+
+  async cancelReplica(actor: DataMarketActor, versionId: string, replicaId: string) {
+    const version = await this.findVersionById(versionId);
+    const asset = await this.requireProviderManagedAsset(actor, version.assetId);
+    if (!actor.orgId || actor.orgId !== asset.providerOrgId)
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "Replica requires an active provider organization",
+        403,
+      );
+    await this.replicaCoordinator().cancel(versionId, replicaId, actor.orgId);
+  }
+
+  private replicaCoordinator() {
+    if (!this.deps.replicaCoordinator)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "DATA_OBJECT_STORAGE_UNAVAILABLE", 503);
+    return this.deps.replicaCoordinator;
   }
 
   async requestAccess(

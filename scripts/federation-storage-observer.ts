@@ -1,9 +1,13 @@
+import { createPublicKey } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
+  extendStorageHistory,
   loadStorageObserverKey,
   observeStorage,
+  readSignedStorageObservation,
   readStorageFile,
+  type StorageObservation,
   StorageObserverConfigSchema,
   signStorageObservation,
 } from "../packages/server/src/federation/storage-capacity";
@@ -26,9 +30,21 @@ export async function runStorageObserver(configFile: string, once = false) {
     throw new Error(
       "Storage report directory must be owned by the observer and not world-writable",
     );
+  let previous: StorageObservation | null = null;
+  try {
+    previous = await readSignedStorageObservation(config.reportFile, createPublicKey(key));
+  } catch {
+    // A missing or unverifiable baseline starts a fresh observation window.
+  }
   do {
-    const report = signStorageObservation(await observeStorage(config), key);
+    const current = extendStorageHistory(
+      await observeStorage(config),
+      previous,
+      config.intervalSec,
+    );
+    const report = signStorageObservation(current, key);
     await writeStorageFile(config.reportFile, report, 0o640);
+    previous = current;
     if (!once) await Bun.sleep(config.intervalSec * 1000);
   } while (!once);
 }

@@ -6,6 +6,20 @@ const VALID_BASE = {
 };
 
 describe("loadRegistryConfig", () => {
+  test("offline delivery trust distinguishes unconfigured sites from an empty trusted key set", () => {
+    expect(loadRegistryConfig(VALID_BASE).OFFLINE_DELIVERY_TRUSTED_KEYS).toBeUndefined();
+    expect(
+      loadRegistryConfig({ ...VALID_BASE, OFFLINE_DELIVERY_TRUSTED_KEYS: "" })
+        .OFFLINE_DELIVERY_TRUSTED_KEYS,
+    ).toBeUndefined();
+    expect(
+      loadRegistryConfig({ ...VALID_BASE, OFFLINE_DELIVERY_TRUSTED_KEYS: "{}" })
+        .OFFLINE_DELIVERY_TRUSTED_KEYS,
+    ).toEqual({});
+    expect(() =>
+      loadRegistryConfig({ ...VALID_BASE, OFFLINE_DELIVERY_TRUSTED_KEYS: "[]" }),
+    ).toThrow();
+  });
   test.each([undefined, ""])("material epoch treats %j as unset", (epoch) => {
     expect(
       loadRegistryConfig({ ...VALID_BASE, SPACK_MATERIAL_EPOCH: epoch }).SPACK_MATERIAL_EPOCH,

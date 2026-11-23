@@ -1,11 +1,18 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { create } from "@bufbuild/protobuf";
 import { createSqliteDb } from "@kuintessence/db";
-import type { AgentMessage } from "@kuintessence/proto";
+import { type AgentMessage, type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
+import { SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import pino from "pino";
 import type { JobSpec, SchedulerAdapter } from "./adapters/base";
-import { ActiveRemoteJobs } from "./queue/active-remote-jobs";
+import { SlurmAdapter } from "./adapters/slurm";
+import { ActiveRemoteJobs, PENDING_SCHEDULER_SUBMISSION } from "./queue/active-remote-jobs";
 import { InboundAcks } from "./queue/inbound-acks";
 import { OutboundQueue } from "./queue/outbound-queue";
+import { SpackManager } from "./spack";
 import { AgentStream, type AgentStreamDeps } from "./stream";
 
 test.each([
@@ -169,5 +176,139 @@ test.each([
     expect(await records.listActive()).toEqual([]);
   } finally {
     await stream.stop();
+  }
+});
+
+test.each([
+  false,
+  true,
+])("Slurm array dispatch survives a lost sbatch reply and SQLite reopen with separate terminal reports (managed Spack=%s)", async (managed) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-array-replay-"));
+  const path = join(root, "agent.sqlite");
+  const group = "e".repeat(64);
+  const ids = [crypto.randomUUID(), crypto.randomUUID()];
+  const spackManager = await SpackManager.bootstrap({
+    requireServerMaterials: true,
+    spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+  });
+  let loads = 0;
+  const ready = Promise.withResolvers<void>();
+  spackManager.runSoftwareOperation = async (action, spec) => {
+    expect([action, spec]).toEqual(["load", "hello@1.0"]);
+    loads++;
+    await ready.promise;
+    return { outcome: "succeeded", stdout: "export KQ_HELLO=ready", installed: [] };
+  };
+  const scripts: string[] = [];
+  const received = Promise.withResolvers<void>();
+  const adapter = new SlurmAdapter("23", {
+    spawner: {
+      async run(argv, options) {
+        const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });
+        if (argv[0] === "sbatch") {
+          scripts.push(options?.stdin ?? "");
+          received.resolve();
+          return { exitCode: 1, stdout: "", stderr: "controller reply lost" };
+        }
+        if (argv[0] === "id") return ok("1000");
+        if (argv[0] === "squeue") return ok(argv.includes("--json") ? '{"jobs":[]}' : "");
+        if (argv[0] === "sacct" && argv.includes("--allocations")) {
+          const comment = /#SBATCH --comment=(KQ_ARRAY=.*)/.exec(scripts[0] ?? "")?.[1];
+          const name = /#SBATCH --job-name=([^\n]+)/.exec(scripts[0] ?? "")?.[1];
+          return ok([1, 0].map((i) => `300_${i}|${name}|${comment}|science`).join("\n"));
+        }
+        if (argv[0] === "sacct")
+          return ok("FAILED|7:0|300_1|2|1|00:00:01\nCOMPLETED|0:0|300_0|2|1|00:00:01");
+        throw new Error(`unexpected scheduler command ${argv[0]}`);
+      },
+    },
+  });
+  const open = () => {
+    const db = createSqliteDb(path);
+    const records = new ActiveRemoteJobs(db);
+    const outbound = new OutboundQueue(db);
+    const stream = new AgentStream({
+      client: {} as AgentStreamDeps["client"],
+      adapter,
+      spackManager,
+      activeRemoteJobs: records,
+      inboundAcks: new InboundAcks(db),
+      outboundQueue: outbound,
+      agentId: "fixture",
+      siteName: "fixture",
+      heartbeatIntervalMs: 60000,
+      jobPollIntervalMs: 1,
+      logger: pino({ level: "silent" }),
+    });
+    const harness = stream as unknown as {
+      handleServerMessage(msg: ServerMessage): Promise<void>;
+      recoverActiveRemoteJobs(): Promise<void>;
+      pool: { await(id: string): Promise<void> };
+    };
+    return { db, stream, records, outbound, harness };
+  };
+  let agent = open();
+  try {
+    for (const jobId of ids)
+      await agent.harness.handleServerMessage(
+        create(ServerMessageSchema, {
+          payload: {
+            case: "dispatchJob",
+            value: {
+              jobId,
+              name: "worker",
+              command: managed ? SPACK_EXECUTION_PLACEHOLDER : "true",
+              ...(managed
+                ? { spackExecution: { spec: "hello@1.0", command: `hello ${jobId}` } }
+                : {}),
+              cpus: 1,
+              memoryMb: 64n,
+              wallTimeSec: 30n,
+              workingDir: root,
+              forEachGroup: group,
+              dispatchEpoch: 1n,
+            },
+          },
+        }),
+      );
+    ready.resolve();
+    await received.promise;
+    await Promise.all(ids.map((id) => agent.harness.pool.await(id)));
+    const before = await agent.records.listActive();
+    expect(before).toHaveLength(2);
+    for (const row of before) {
+      expect(row.schedulerJobId).toBe(PENDING_SCHEDULER_SUBMISSION);
+      expect(row.spec.schedulerName).toBe(`kqa-${row.spec.forEachGroup}`);
+      if (managed) {
+        expect(row.spec.command).toContain("export KQ_HELLO=ready");
+        expect(row.spec.command.endsWith(`\nhello ${row.spec.jobId}`)).toBe(true);
+        expect(scripts[0]).toContain(`hello ${row.spec.jobId}`);
+      } else expect(row.spec.forEachGroup).toBe(group);
+    }
+    await agent.stream.stop();
+    agent.db.$client.close();
+    agent = open();
+    await agent.harness.recoverActiveRemoteJobs();
+    await Promise.all(ids.map((id) => agent.harness.pool.await(id)));
+    const reports = (await agent.outbound.loadForReplay()).flatMap(({ item }) =>
+      item.kind === "jobStatus" ? [item.report] : [],
+    );
+    const members = /KQ_ARRAY=([^\n]+)/.exec(scripts[0] ?? "")?.[1]?.split(",");
+    expect(new Set(members)).toEqual(new Set(ids));
+    for (const [i, id] of (members ?? []).entries())
+      expect(
+        reports.find((r) => r.jobId === id && (r.status === "completed" || r.status === "failed")),
+      ).toMatchObject({
+        schedulerJobId: `300_${i}`,
+        status: i === 0 ? "completed" : "failed",
+        exitCode: i === 0 ? 0 : 7,
+      });
+    expect(loads).toBe(managed ? 1 : 0);
+    expect(scripts).toHaveLength(1);
+    expect(await agent.records.listActive()).toHaveLength(0);
+  } finally {
+    await agent.stream.stop();
+    agent.db.$client.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

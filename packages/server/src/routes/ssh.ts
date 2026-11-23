@@ -67,10 +67,11 @@ export interface SshRoutesDeps {
    * Resolve cluster credentials for the given agent. Production injects the
    * encrypted vault resolver (`makeVaultResolver` over the `ssh_credentials`
    * table — see `auth/ssh-credential-vault.ts` / `ssh-credential-store.ts`).
-   * When omitted, this falls back to {@link envCredentialResolver}, a dev-only
-   * `SSH_CRED_<AGENT_ID>` env mock.
    */
-  resolveCredentials?: (agentId: string) => SshCredentials | null | Promise<SshCredentials | null>;
+  resolveCredentials: (
+    agentId: string,
+    authorizeHop?: (hop: string) => Promise<void>,
+  ) => SshCredentials | null | Promise<SshCredentials | null>;
   resolveAgentProviderOrg?: AgentProviderOrgResolver;
   resolveUserOrgIds?: (actor: ResolvedSshActor | null, user: TokenPayload) => Promise<string[]>;
   resolveUserProviderAdminOrgIds?: (
@@ -207,48 +208,6 @@ function hasTechnicalSshRole(actor: ResolvedSshActor): boolean {
 }
 
 // -----------------------------------------------------------------------------
-// Default credential resolver — env-driven mock
-// -----------------------------------------------------------------------------
-
-/**
- * Mock credential vault. Reads `SSH_CRED_<AGENT_ID>` (uppercased, dashes
- * replaced with underscores) as a JSON blob. Returns null when the env
- * var is missing or malformed — the route then closes the WS with 4404.
- *
- * **NOT FOR PRODUCTION** — a real vault must encrypt credentials at rest,
- * rotate them, scope them per-agent, and audit every read. The production
- * resolver (`makeVaultResolver` over `ssh_credentials`) does exactly that;
- * this mock exists only for local dev when no vault row is configured.
- */
-export function envCredentialResolver(agentId: string): SshCredentials | null {
-  const key = `SSH_CRED_${agentId.toUpperCase().replace(/-/g, "_")}`;
-  const raw = process.env[key];
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (
-      typeof parsed.host !== "string" ||
-      typeof parsed.port !== "number" ||
-      typeof parsed.username !== "string"
-    ) {
-      logger.warn({ key }, "SSH credential env is missing host/port/username");
-      return null;
-    }
-    return {
-      host: parsed.host,
-      port: parsed.port,
-      username: parsed.username,
-      password: typeof parsed.password === "string" ? parsed.password : undefined,
-      privateKey: typeof parsed.privateKey === "string" ? parsed.privateKey : undefined,
-      passphrase: typeof parsed.passphrase === "string" ? parsed.passphrase : undefined,
-    };
-  } catch (err) {
-    logger.warn({ err, key }, "SSH credential env is not valid JSON");
-    return null;
-  }
-}
-
-// -----------------------------------------------------------------------------
 // Audit-log adapter
 // -----------------------------------------------------------------------------
 
@@ -259,7 +218,9 @@ function makeAuditLogger(db: PgDb) {
     const diff: Record<string, unknown> = {
       after: {
         sessionId: event.sessionId,
-        ...(event.kind === "session_open" ? { sourceIp: event.sourceIp } : null),
+        ...(event.kind === "session_open"
+          ? { sourceIp: event.sourceIp, subsystem: event.subsystem }
+          : null),
         ...(event.kind === "session_close"
           ? { reason: event.reason, durationMs: event.durationMs }
           : null),
@@ -288,7 +249,7 @@ function makeAuditLogger(db: PgDb) {
  */
 export function createSshRoutes(deps: SshRoutesDeps) {
   const r = new Hono();
-  const resolve = deps.resolveCredentials ?? envCredentialResolver;
+  const resolve = deps.resolveCredentials;
   const resolveAgentProviderOrg =
     deps.resolveAgentProviderOrg ?? createAgentProviderOrgResolver(deps.db);
   const resolveUserOrgIds =
@@ -300,6 +261,10 @@ export function createSshRoutes(deps: SshRoutesDeps) {
 
   r.get("/sessions/:agentId", async (c, next) => {
     const agentId = c.req.param("agentId");
+    const subsystem = c.req.query("subsystem");
+    if (subsystem !== undefined && subsystem !== "sftp")
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Unknown SSH subsystem", 400);
+    const sftp = subsystem === "sftp";
     if (!agentId) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Missing agentId", 400);
     }
@@ -339,8 +304,43 @@ export function createSshRoutes(deps: SshRoutesDeps) {
         throw localAccess.error ?? new AppError(ErrorCode.FORBIDDEN, "SSH access denied", 403);
       }
       try {
-        creds = await resolve(agentId);
+        creds = await resolve(agentId, async (hop) => {
+          const provider = await resolveAgentProviderOrg(agentId);
+          if (!provider || (await resolveAgentProviderOrg(hop)) !== provider)
+            throw new AppError(
+              ErrorCode.FORBIDDEN,
+              "SSH jump credential is outside the provider organization",
+              403,
+            );
+          const access = await evaluateLocalSshAgentAccess(
+            boundActor,
+            hop,
+            resolveAgentProviderOrg,
+            boundOrgIds,
+            providerAdminOrgIds,
+          );
+          if (deps.authz?.mode !== "enforce" && !access.allowed)
+            throw access.error ?? new AppError(ErrorCode.FORBIDDEN, "SSH jump access denied", 403);
+          if (deps.authz && deps.authz.mode !== "off") {
+            const probe = randomUUID();
+            try {
+              await authorizeSshThroughSpice(
+                deps.authz,
+                user,
+                actorUserId,
+                hop,
+                probe,
+                access.allowed,
+                boundActor?.role,
+                boundActor?.email,
+              );
+            } finally {
+              await cleanupSshSessionAuthorization(deps.authz, probe, hop);
+            }
+          }
+        });
       } catch (err) {
+        if (err instanceof AppError) throw err;
         logger.error(
           { err, agentId },
           "Failed to resolve SSH credentials (decryption failure? key rotated?)",
@@ -382,6 +382,7 @@ export function createSshRoutes(deps: SshRoutesDeps) {
           agentId,
           ws: createNoopWs(),
           credentials: creds,
+          sftp,
           user: auditActor,
           actorUserId,
           sourceIp: extractSourceIp(c),
@@ -392,6 +393,7 @@ export function createSshRoutes(deps: SshRoutesDeps) {
         // that hook to keep DB writes deterministic. We mirror it here.
         await audit({
           kind: "session_open",
+          ...(sftp ? { subsystem: "sftp" as const } : {}),
           sessionId,
           agentId,
           user: auditActor,
@@ -423,6 +425,7 @@ export function createSshRoutes(deps: SshRoutesDeps) {
               agentId,
               ws,
               credentials: creds,
+              sftp,
               user: auditActor,
               actorUserId,
               sourceIp,
@@ -432,6 +435,7 @@ export function createSshRoutes(deps: SshRoutesDeps) {
             });
             audit({
               kind: "session_open",
+              ...(sftp ? { subsystem: "sftp" as const } : {}),
               sessionId,
               agentId,
               user: auditActor,
@@ -459,7 +463,7 @@ export function createSshRoutes(deps: SshRoutesDeps) {
           // A JSON text frame `{type:"resize",cols,rows}` is a control message;
           // everything else (the browser sends keystrokes as binary frames) is
           // raw stdin forwarded verbatim.
-          const resize = parseResizeFrame(evt.data);
+          const resize = sftp ? null : parseResizeFrame(evt.data);
           if (resize) {
             deps.gateway.forwardResize(sessionId, resize.cols, resize.rows);
             return;

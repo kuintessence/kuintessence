@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createSqliteDb } from "@kuintessence/db";
+import { JobRunner, type JobStatusReport } from "../embedded/job-executor";
 import { ActiveRemoteJobs } from "./active-remote-jobs";
 
 describe("ActiveRemoteJobs", () => {
@@ -123,6 +124,10 @@ test.each([
     dispatchId: "job:7",
     expectedOutputs: [],
   });
+  await store.recordCompleted(
+    { spec, schedulerJobId: "scheduler", expectedOutputs: [] },
+    { status: "completed", exitCode: 0 },
+  );
   const [restored] = await new ActiveRemoteJobs(db).listActive();
   expect(restored?.dispatchId).toBe("job:7");
   expect(restored?.spec).toMatchObject(spec);
@@ -130,6 +135,33 @@ test.each([
   expect(restored?.spec.sandbox?.resources).toEqual(
     legacy ? undefined : { cpus: 1, memoryMb: 128 },
   );
+  if (!restored?.completionSnapshot) throw new Error("missing Sandbox completion");
+  const reports: JobStatusReport[] = [];
+  let validated = false;
+  await new JobRunner({
+    adapter: {
+      type: "kubernetes",
+      version: "test",
+      submit: async () => {
+        throw new Error("unexpected submission");
+      },
+      cancel: async () => {},
+      status: async () => {
+        throw new Error("scheduler history purged");
+      },
+    },
+    sleep: async () => {},
+    validateSandboxOutputs: async (sandbox) => {
+      expect(sandbox.mounts).toEqual(spec.sandbox.mounts);
+      validated = true;
+      return { fact: "checked" };
+    },
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+  }).resume(restored.spec, restored.schedulerJobId, [], undefined, restored.completionSnapshot);
+  expect(validated).toBe(true);
+  expect(reports).toMatchObject([{ status: "completed", collected: { fact: "checked" } }]);
 });
 
 test("submission identity and inputs remain immutable across retries and concurrent confirmations", async () => {

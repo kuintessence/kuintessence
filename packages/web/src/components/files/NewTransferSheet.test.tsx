@@ -95,12 +95,15 @@ const otherAgent = { ...agent, agentId: "agent-b", siteName: "site-b" };
 const cloudObjects = [
   {
     id: "cloud-a",
-    userId: "user-a",
-    key: "users/me/source.txt",
+    ownerId: "user-a",
+    path: "users/me/source.txt",
+    storageKey: "objects/source",
+    sha256: "a".repeat(64),
+    canDelete: false,
     size: 16,
     contentType: "text/plain",
     createdAt: "2026-07-13T00:00:00.000Z",
-    modifiedAt: "2026-07-13T00:00:00.000Z",
+    mtime: "2026-07-13T00:00:00.000Z",
     etag: "etag-a",
     canUse: true,
   },
@@ -353,16 +356,13 @@ describe("transfer selection revalidation", () => {
     onCreated: vi.fn(),
   };
 
-  test.each([
-    false,
-    undefined,
-  ])("blocks a picker source after canUse becomes %s", async (canUse) => {
+  test("blocks a picker source after use permission is revoked", async () => {
     const { rerender } = render(<NewTransferSheet {...baseProps} />);
     fireEvent.click(screen.getByTestId("files-new-transfer-source"));
     rerender(
       <NewTransferSheet
         {...baseProps}
-        cloudObjects={cloudObjects.map((file) => ({ ...file, canUse }))}
+        cloudObjects={cloudObjects.map((file) => ({ ...file, canUse: false }))}
       />,
     );
     expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", true);

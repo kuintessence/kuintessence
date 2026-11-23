@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createLogger } from "@kuintessence/shared";
+import { createLogger, EnvironmentNameSchema } from "@kuintessence/shared";
 import { z } from "zod";
 import { schedulerAccounting } from "./accounting";
 import {
@@ -17,11 +17,13 @@ import {
   type ListedJob,
   observedComputeHealth,
   realSpawner,
+  type SandboxPvcPreparation,
   type SchedulerAdapter,
   type Spawner,
   sandboxInterpreter,
   shellQuote,
   unknownComputeHealth,
+  validateSchedulerLimits,
 } from "./base";
 
 const logger = createLogger("k8s-adapter");
@@ -146,8 +148,12 @@ export class K8sAdapter implements SchedulerAdapter {
    * The manifest is serialised as JSON and passed to `kubectl apply -f -`.
    */
   buildJobManifest(spec: JobSpec): Record<string, unknown> {
+    validateSchedulerLimits(spec, "kubernetes");
     if (spec.sandbox) return this.buildSandboxResources(spec);
-    const env = Object.entries(spec.envVars).map(([name, value]) => ({ name, value }));
+    const env = Object.entries(spec.envVars).map(([name, value]) => ({
+      name: EnvironmentNameSchema.parse(name),
+      value,
+    }));
     const namespace = spec.queueName ?? this.namespace;
 
     const limits: Record<string, string> = {
@@ -382,7 +388,10 @@ export class K8sAdapter implements SchedulerAdapter {
   }
 
   async submit(spec: JobSpec): Promise<JobResult> {
-    if (spec.sandbox) await this.requireSandboxSeccompProfile().assertCurrent();
+    if (spec.sandbox) {
+      await this.requireSandboxSeccompProfile().assertCurrent();
+      await this.assertPvcBinding(spec.sandbox);
+    }
     const manifest = this.buildJobManifest(spec);
     const manifestJson = JSON.stringify(manifest, null, 2);
 
@@ -754,14 +763,183 @@ export class K8sAdapter implements SchedulerAdapter {
     ) {
       throw new Error("Kubernetes Sandbox input stager requires OCI and a managed PVC");
     }
-    const namespace = sandbox.identity.namespace;
+    await this.withPvcHelper(
+      {
+        namespace: sandbox.identity.namespace,
+        serviceAccount: sandbox.identity.serviceAccount,
+        claim: sandbox.kubernetesArtifactPvc,
+        image: sandbox.runtimePath,
+      },
+      jobId,
+      `kq-${jobId}-stage`,
+      async (namespace, stagerName) => {
+        await this.assertPvcBinding(sandbox);
+        for (const directory of new Set(
+          outputs.map(
+            (mount) =>
+              `/artifacts/${mount.ioType === "FileBatch" ? mount.relativePath : dirname(mount.relativePath)}`,
+          ),
+        )) {
+          const prepared = await this.spawner.run([
+            "kubectl",
+            "exec",
+            stagerName,
+            "-n",
+            namespace,
+            "-c",
+            "stager",
+            "--",
+            "mkdir",
+            "-p",
+            directory,
+          ]);
+          if (prepared.exitCode !== 0)
+            throw new Error(
+              `Kubernetes Sandbox output directory create failed: ${prepared.stderr.trim()}`,
+            );
+        }
+        for (const mount of inputs) {
+          const targetPath = `/artifacts/${mount.relativePath}`;
+          const directory = mount.ioType === "FileBatch" ? targetPath : dirname(targetPath);
+          const prepared = await this.spawner.run([
+            "kubectl",
+            "exec",
+            stagerName,
+            "-n",
+            namespace,
+            "-c",
+            "stager",
+            "--",
+            "mkdir",
+            "-p",
+            directory,
+          ]);
+          if (prepared.exitCode !== 0) {
+            throw new Error(
+              `Kubernetes Sandbox input directory create failed: ${prepared.stderr.trim()}`,
+            );
+          }
+          const sourcePath = mount.ioType === "FileBatch" ? `${mount.hostPath}/.` : mount.hostPath;
+          const copied = await this.spawner.run([
+            "kubectl",
+            "cp",
+            sourcePath,
+            `${namespace}/${stagerName}:${targetPath}`,
+            "-c",
+            "stager",
+          ]);
+          if (copied.exitCode !== 0) {
+            throw new Error(
+              `Kubernetes Sandbox input copy failed for ${mount.descriptor}: ${copied.stderr.trim()}`,
+            );
+          }
+        }
+      },
+    );
+  }
+
+  private async assertPvcBinding(sandbox: NonNullable<JobSpec["sandbox"]>) {
+    if (!sandbox.kubernetesArtifactPvcUid) return;
+    if (
+      sandbox.identity.backend !== "Kubernetes" ||
+      !sandbox.kubernetesArtifactPvc ||
+      (await this.pvcUid(sandbox.identity.namespace, sandbox.kubernetesArtifactPvc)) !==
+        sandbox.kubernetesArtifactPvcUid
+    )
+      throw new Error("Sandbox PVC identity changed");
+  }
+
+  private async pvcUid(namespace: string, claim: string) {
+    const result = await this.spawner.run([
+      "kubectl",
+      "get",
+      "pvc",
+      claim,
+      "-n",
+      namespace,
+      "-o",
+      "jsonpath={.metadata.uid}",
+    ]);
+    if (result.exitCode !== 0) throw new Error("Cannot confirm the Sandbox PVC identity");
+    return z.uuid().parse(result.stdout.trim());
+  }
+  async identifySandboxPvc(
+    sandbox: NonNullable<JobSpec["sandbox"]>,
+    jobId: string,
+  ): Promise<SandboxPvcPreparation | undefined> {
+    const mounts = sandbox.mounts.filter((m) => m.mode === "WriteOnly" || !m.inlineContentBase64);
+    if (!mounts.length || sandbox.runtimeKind !== "OCI") return;
+    if (sandbox.identity.backend !== "Kubernetes" || !sandbox.kubernetesArtifactPvc)
+      throw new Error("Missing Sandbox PVC binding");
+    const paths = mounts.map((m) => m.relativePath.split("/"));
+    const preparationId = z.uuid().parse(paths[0]?.[2]);
+    z.uuid().parse(jobId);
+    if (
+      paths.some(
+        (parts, index) =>
+          parts[0] !== "jobs" ||
+          parts[1] !== jobId ||
+          parts[2] !== preparationId ||
+          parts[3] !== (mounts[index]?.mode === "ReadOnly" ? "inputs" : "outputs") ||
+          parts.length < 5 ||
+          parts.some((p) => !p || p === "." || p === ".."),
+      )
+    )
+      throw new Error("Invalid Sandbox preparation path");
+    return {
+      jobId,
+      preparationId,
+      binding: {
+        namespace: sandbox.identity.namespace,
+        serviceAccount: sandbox.identity.serviceAccount,
+        claim: sandbox.kubernetesArtifactPvc,
+        claimUid: await this.pvcUid(sandbox.identity.namespace, sandbox.kubernetesArtifactPvc),
+        image: sandbox.runtimePath,
+      },
+    };
+  }
+
+  async releaseSandboxPvc({ jobId, preparationId, binding }: SandboxPvcPreparation) {
+    z.uuid().parse(jobId);
+    z.uuid().parse(preparationId);
+    if ((await this.pvcUid(binding.namespace, binding.claim)) !== binding.claimUid)
+      throw new Error("Sandbox PVC identity changed");
+    const name = `kq-${preparationId}-gc`;
+    await this.withPvcHelper(binding, jobId, name, async (namespace, pod) => {
+      if ((await this.pvcUid(namespace, binding.claim)) !== binding.claimUid)
+        throw new Error("Sandbox PVC identity changed");
+      const result = await this.spawner.run([
+        "kubectl",
+        "exec",
+        pod,
+        "-n",
+        namespace,
+        "-c",
+        "stager",
+        "--",
+        "sh",
+        "-ec",
+        'test ! -L /artifacts/jobs && test ! -L "/artifacts/jobs/$1" && rm -rf -- "/artifacts/jobs/$1/$2"',
+        "cleanup",
+        jobId,
+        preparationId,
+      ]);
+      if (result.exitCode !== 0) throw new Error("Sandbox PVC preparation removal failed");
+    });
+  }
+
+  private async withPvcHelper(
+    binding: Pick<
+      SandboxPvcPreparation["binding"],
+      "namespace" | "serviceAccount" | "claim" | "image"
+    >,
+    jobId: string,
+    stagerName: string,
+    work: (namespace: string, pod: string) => Promise<void>,
+  ) {
+    const namespace = binding.namespace;
     const sandboxSeccompProfile = this.requireSandboxSeccompProfile();
     await sandboxSeccompProfile.assertCurrent();
-    const stagerName = `kq-${jobId}-stage`
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "-")
-      .slice(0, 63)
-      .replace(/-+$/g, "");
     const networkPolicyName = `${stagerName}-deny-network`.slice(0, 63).replace(/-+$/g, "");
     const labels = {
       "kuintessence.io/job-id": jobId,
@@ -785,7 +963,7 @@ export class K8sAdapter implements SchedulerAdapter {
           spec: {
             restartPolicy: "Never",
             terminationGracePeriodSeconds: 5,
-            serviceAccountName: sandbox.identity.serviceAccount,
+            serviceAccountName: binding.serviceAccount,
             automountServiceAccountToken: false,
             nodeName: sandboxSeccompProfile.nodeName,
             securityContext: {
@@ -798,7 +976,7 @@ export class K8sAdapter implements SchedulerAdapter {
             containers: [
               {
                 name: "stager",
-                image: sandbox.runtimePath,
+                image: binding.image,
                 command: ["/bin/sh", "-c", "sleep 300"],
                 securityContext: {
                   allowPrivilegeEscalation: false,
@@ -818,7 +996,7 @@ export class K8sAdapter implements SchedulerAdapter {
             volumes: [
               {
                 name: "artifacts",
-                persistentVolumeClaim: { claimName: sandbox.kubernetesArtifactPvc },
+                persistentVolumeClaim: { claimName: binding.claim },
               },
               { name: "tmp", emptyDir: { sizeLimit: "32Mi" } },
             ],
@@ -852,66 +1030,7 @@ export class K8sAdapter implements SchedulerAdapter {
       if (ready.exitCode !== 0) {
         throw new Error(`Kubernetes Sandbox input stager was not ready: ${ready.stderr.trim()}`);
       }
-      for (const directory of new Set(
-        outputs.map(
-          (mount) =>
-            `/artifacts/${mount.ioType === "FileBatch" ? mount.relativePath : dirname(mount.relativePath)}`,
-        ),
-      )) {
-        const prepared = await this.spawner.run([
-          "kubectl",
-          "exec",
-          stagerName,
-          "-n",
-          namespace,
-          "-c",
-          "stager",
-          "--",
-          "mkdir",
-          "-p",
-          directory,
-        ]);
-        if (prepared.exitCode !== 0)
-          throw new Error(
-            `Kubernetes Sandbox output directory create failed: ${prepared.stderr.trim()}`,
-          );
-      }
-      for (const mount of inputs) {
-        const targetPath = `/artifacts/${mount.relativePath}`;
-        const directory = mount.ioType === "FileBatch" ? targetPath : dirname(targetPath);
-        const prepared = await this.spawner.run([
-          "kubectl",
-          "exec",
-          stagerName,
-          "-n",
-          namespace,
-          "-c",
-          "stager",
-          "--",
-          "mkdir",
-          "-p",
-          directory,
-        ]);
-        if (prepared.exitCode !== 0) {
-          throw new Error(
-            `Kubernetes Sandbox input directory create failed: ${prepared.stderr.trim()}`,
-          );
-        }
-        const sourcePath = mount.ioType === "FileBatch" ? `${mount.hostPath}/.` : mount.hostPath;
-        const copied = await this.spawner.run([
-          "kubectl",
-          "cp",
-          sourcePath,
-          `${namespace}/${stagerName}:${targetPath}`,
-          "-c",
-          "stager",
-        ]);
-        if (copied.exitCode !== 0) {
-          throw new Error(
-            `Kubernetes Sandbox input copy failed for ${mount.descriptor}: ${copied.stderr.trim()}`,
-          );
-        }
-      }
+      await work(namespace, stagerName);
     } finally {
       await this.spawner.run([
         "kubectl",
@@ -1020,6 +1139,7 @@ export class K8sAdapter implements SchedulerAdapter {
           `Kubernetes Sandbox collector did not become ready: ${ready.stderr.trim()}`,
         );
       }
+      await this.assertPvcBinding(sandbox);
       for (const mount of sandbox.mounts.filter((item) => item.mode === "WriteOnly")) {
         if (!mount.required) {
           const exists = await this.spawner.run([

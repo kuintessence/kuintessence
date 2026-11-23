@@ -3,6 +3,7 @@ import {
   federationResultImports,
   netdriveFiles,
   netdriveTransferLog,
+  netdriveUploadReservations,
   type PgDb,
   storageQuotaGrants,
   storageQuotaPolicies,
@@ -46,9 +47,19 @@ export async function lockCloudWrites(
 
 export class StorageQuotaService {
   constructor(
-    private readonly db: Pick<PgDb, "select" | "insert" | "update">,
+    private readonly db: Pick<PgDb, "select" | "insert" | "update" | "transaction">,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  private pendingUploads(userId: string) {
+    const holds = netdriveUploadReservations;
+    return this.db
+      .select({ path: holds.path, size: sql<number>`max(${holds.size})`.as("pending_size") })
+      .from(holds)
+      .where(and(eq(holds.ownerId, userId), gt(holds.expiresAt, this.now())))
+      .groupBy(holds.path)
+      .as("pending_uploads");
+  }
 
   async getSummary(
     userId: string,
@@ -76,7 +87,25 @@ export class StorageQuotaService {
             .from(federationInputImports)
             .where(eq(federationInputImports.ownerId, userId))
         : [];
-    const reservedBytes = Number(reservation?.bytes ?? 0) + Number(inputs?.bytes ?? 0);
+    const pending = this.pendingUploads(userId);
+    const [uploads] =
+      scope === "cloud"
+        ? await this.db
+            .select({
+              bytes: sql<number>`coalesce(sum(greatest(${pending.size} - coalesce(${netdriveFiles.size}, 0), 0)), 0)`,
+            })
+            .from(pending)
+            .leftJoin(
+              netdriveFiles,
+              and(
+                eq(netdriveFiles.ownerId, userId),
+                eq(netdriveFiles.path, pending.path),
+                isNull(netdriveFiles.deletedAt),
+              ),
+            )
+        : [];
+    const reservedBytes =
+      Number(reservation?.bytes ?? 0) + Number(inputs?.bytes ?? 0) + Number(uploads?.bytes ?? 0);
     const usage =
       scope === "cloud"
         ? await this.getCloudUsage(userId)
@@ -134,25 +163,30 @@ export class StorageQuotaService {
         400,
       );
     const summary = await this.getSummary(userId);
-    let replacedBytes = 0;
+    let delta = additionalReservationBytes;
     if (writes.length) {
-      const [existing] = await this.db
-        .select({ bytes: sql<number>`coalesce(sum(${netdriveFiles.size}), 0)` })
+      const paths = writes.map((file) => file.path);
+      const current = await this.db
+        .select({ path: netdriveFiles.path, size: netdriveFiles.size })
         .from(netdriveFiles)
         .where(
           and(
             eq(netdriveFiles.ownerId, userId),
-            inArray(
-              netdriveFiles.path,
-              writes.map((file) => file.path),
-            ),
+            inArray(netdriveFiles.path, paths),
             isNull(netdriveFiles.deletedAt),
           ),
         );
-      replacedBytes = Number(existing?.bytes ?? 0);
+      const pending = this.pendingUploads(userId);
+      const held = await this.db.select().from(pending).where(inArray(pending.path, paths));
+      const sizes = new Map(current.map((file) => [file.path, file.size]));
+      const reservations = new Map(held.map((file) => [file.path, Number(file.size)]));
+      for (const file of writes) {
+        // Concurrent uploads to one logical path can only publish one live file.
+        const floor = reservations.get(file.path) ?? 0;
+        delta += Math.max(floor, file.size) - Math.max(floor, sizes.get(file.path) ?? 0);
+      }
     }
-    const projectedBytes =
-      summary.usedBytes + (summary.reservedBytes ?? 0) - replacedBytes + requestedBytes;
+    const projectedBytes = summary.usedBytes + (summary.reservedBytes ?? 0) + delta;
     if (projectedBytes <= summary.quotaBytes) return;
     throw new AppError(
       ErrorCode.STORAGE_QUOTA_EXCEEDED,
@@ -169,75 +203,83 @@ export class StorageQuotaService {
   }
 
   async createRequest(userId: string, input: StorageQuotaRequestCreate) {
-    const policy = await this.getEffectivePolicy(input.scope, input.scopeId);
-    if (policy.requestMode === "disabled") {
-      throw new AppError(ErrorCode.FORBIDDEN, "当前存储范围暂不接受配额申请", 403);
-    }
-    if (policy.maxQuotaBytes != null && input.requestedQuotaBytes > policy.maxQuotaBytes) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "申请配额超过当前策略允许的上限", 400, {
-        maxQuotaBytes: policy.maxQuotaBytes,
-      });
-    }
-    const requestedExpiresAt = input.requestedExpiresAt ? new Date(input.requestedExpiresAt) : null;
-    if (requestedExpiresAt && requestedExpiresAt <= this.now()) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "临时配额到期时间必须晚于当前时间", 400);
-    }
-    const [pendingRequest] = await this.db
-      .select({ id: storageQuotaRequests.id })
-      .from(storageQuotaRequests)
-      .where(
-        and(
-          eq(storageQuotaRequests.userId, userId),
-          eq(storageQuotaRequests.scope, input.scope),
-          eq(storageQuotaRequests.scopeId, input.scopeId),
-          eq(storageQuotaRequests.status, "pending"),
-        ),
-      )
-      .limit(1);
-    if (pendingRequest) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "当前存储范围已有待审批的配额申请", 409, {
-        requestId: pendingRequest.id,
-      });
-    }
-    const autoApproved =
-      policy.requestMode === "auto" &&
-      (policy.autoApproveLimitBytes == null ||
-        input.requestedQuotaBytes <= policy.autoApproveLimitBytes);
-    const timestamp = this.now();
-    const [request] = await this.db
-      .insert(storageQuotaRequests)
-      .values({
-        userId,
-        scope: input.scope,
-        scopeId: input.scopeId,
-        requestedQuotaBytes: input.requestedQuotaBytes,
-        requestedExpiresAt,
-        reason: input.reason,
-        status: autoApproved ? "approved" : "pending",
-        decidedBy: autoApproved ? userId : null,
-        decisionNote: autoApproved ? "根据配额策略自动批准" : null,
-        decidedAt: autoApproved ? timestamp : null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      })
-      .returning();
-    if (!request) {
-      throw new AppError(ErrorCode.INTERNAL_ERROR, "Failed to create storage quota request", 500);
-    }
-    if (autoApproved) {
-      await this.createGrantRow({
-        userId,
-        scope: input.scope,
-        scopeId: input.scopeId,
-        quotaBytes: input.requestedQuotaBytes,
-        expiresAt: requestedExpiresAt,
-        source: "auto",
-        requestId: request.id,
-        grantedBy: userId,
-        note: "根据配额策略自动批准",
-      });
-    }
-    return request;
+    return this.db.transaction(async (tx) => {
+      const service = new StorageQuotaService(tx, this.now);
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["storage-quota-request", userId, input.scope, input.scopeId])}, 0))`,
+      );
+      const policy = await service.getEffectivePolicy(input.scope, input.scopeId);
+      if (policy.requestMode === "disabled") {
+        throw new AppError(ErrorCode.FORBIDDEN, "当前存储范围暂不接受配额申请", 403);
+      }
+      if (policy.maxQuotaBytes != null && input.requestedQuotaBytes > policy.maxQuotaBytes) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "申请配额超过当前策略允许的上限", 400, {
+          maxQuotaBytes: policy.maxQuotaBytes,
+        });
+      }
+      const requestedExpiresAt = input.requestedExpiresAt
+        ? new Date(input.requestedExpiresAt)
+        : null;
+      if (requestedExpiresAt && requestedExpiresAt <= this.now()) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "临时配额到期时间必须晚于当前时间", 400);
+      }
+      const [pendingRequest] = await tx
+        .select({ id: storageQuotaRequests.id })
+        .from(storageQuotaRequests)
+        .where(
+          and(
+            eq(storageQuotaRequests.userId, userId),
+            eq(storageQuotaRequests.scope, input.scope),
+            eq(storageQuotaRequests.scopeId, input.scopeId),
+            eq(storageQuotaRequests.status, "pending"),
+          ),
+        )
+        .limit(1);
+      if (pendingRequest) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "当前存储范围已有待审批的配额申请", 409, {
+          requestId: pendingRequest.id,
+        });
+      }
+      const autoApproved =
+        policy.requestMode === "auto" &&
+        (policy.autoApproveLimitBytes == null ||
+          input.requestedQuotaBytes <= policy.autoApproveLimitBytes);
+      const timestamp = this.now();
+      const [request] = await tx
+        .insert(storageQuotaRequests)
+        .values({
+          userId,
+          scope: input.scope,
+          scopeId: input.scopeId,
+          requestedQuotaBytes: input.requestedQuotaBytes,
+          requestedExpiresAt,
+          reason: input.reason,
+          status: autoApproved ? "approved" : "pending",
+          decidedBy: autoApproved ? userId : null,
+          decisionNote: autoApproved ? "根据配额策略自动批准" : null,
+          decidedAt: autoApproved ? timestamp : null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+        .returning();
+      if (!request) {
+        throw new AppError(ErrorCode.INTERNAL_ERROR, "Failed to create storage quota request", 500);
+      }
+      if (autoApproved) {
+        await service.createGrantRow({
+          userId,
+          scope: input.scope,
+          scopeId: input.scopeId,
+          quotaBytes: input.requestedQuotaBytes,
+          expiresAt: requestedExpiresAt,
+          source: "auto",
+          requestId: request.id,
+          grantedBy: userId,
+          note: "根据配额策略自动批准",
+        });
+      }
+      return request;
+    });
   }
 
   async listUserRequests(userId: string) {
@@ -271,57 +313,64 @@ export class StorageQuotaService {
   }
 
   async decideRequest(requestId: string, actorUserId: string, input: StorageQuotaRequestDecision) {
-    const [request] = await this.db
-      .select()
-      .from(storageQuotaRequests)
-      .where(eq(storageQuotaRequests.id, requestId))
-      .limit(1);
-    if (!request) {
-      throw new AppError(ErrorCode.NOT_FOUND, "Storage quota request not found", 404);
-    }
-    if (request.status !== "pending") {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "该配额申请已经处理", 409);
-    }
-    const policy = await this.getEffectivePolicy(request.scope as StorageScope, request.scopeId);
-    if (
-      input.decision === "approved" &&
-      policy.maxQuotaBytes != null &&
-      request.requestedQuotaBytes > policy.maxQuotaBytes
-    ) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "申请配额已超过当前策略上限", 409, {
-        maxQuotaBytes: policy.maxQuotaBytes,
-      });
-    }
-    const expiresAt = input.expiresAt ? new Date(input.expiresAt) : request.requestedExpiresAt;
-    if (input.decision === "approved" && expiresAt && expiresAt <= this.now()) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "临时配额到期时间必须晚于当前时间", 400);
-    }
-    const timestamp = this.now();
-    const [updated] = await this.db
-      .update(storageQuotaRequests)
-      .set({
-        status: input.decision,
-        decidedBy: actorUserId,
-        decisionNote: input.note,
-        decidedAt: timestamp,
-        updatedAt: timestamp,
-      })
-      .where(eq(storageQuotaRequests.id, requestId))
-      .returning();
-    if (input.decision === "approved") {
-      await this.createGrantRow({
-        userId: request.userId,
-        scope: request.scope as StorageScope,
-        scopeId: request.scopeId,
-        quotaBytes: request.requestedQuotaBytes,
-        expiresAt,
-        source: "request",
-        requestId,
-        grantedBy: actorUserId,
-        note: input.note,
-      });
-    }
-    return updated;
+    return this.db.transaction(async (tx) => {
+      const service = new StorageQuotaService(tx, this.now);
+      const [request] = await tx
+        .select()
+        .from(storageQuotaRequests)
+        .where(eq(storageQuotaRequests.id, requestId))
+        .limit(1)
+        .for("update");
+      if (!request) {
+        throw new AppError(ErrorCode.NOT_FOUND, "Storage quota request not found", 404);
+      }
+      if (request.status !== "pending") {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "该配额申请已经处理", 409);
+      }
+      const policy = await service.getEffectivePolicy(
+        request.scope as StorageScope,
+        request.scopeId,
+      );
+      if (
+        input.decision === "approved" &&
+        policy.maxQuotaBytes != null &&
+        request.requestedQuotaBytes > policy.maxQuotaBytes
+      ) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "申请配额已超过当前策略上限", 409, {
+          maxQuotaBytes: policy.maxQuotaBytes,
+        });
+      }
+      const expiresAt = input.expiresAt ? new Date(input.expiresAt) : request.requestedExpiresAt;
+      if (input.decision === "approved" && expiresAt && expiresAt <= this.now()) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "临时配额到期时间必须晚于当前时间", 400);
+      }
+      const timestamp = this.now();
+      const [updated] = await tx
+        .update(storageQuotaRequests)
+        .set({
+          status: input.decision,
+          decidedBy: actorUserId,
+          decisionNote: input.note,
+          decidedAt: timestamp,
+          updatedAt: timestamp,
+        })
+        .where(eq(storageQuotaRequests.id, requestId))
+        .returning();
+      if (input.decision === "approved") {
+        await service.createGrantRow({
+          userId: request.userId,
+          scope: request.scope as StorageScope,
+          scopeId: request.scopeId,
+          quotaBytes: request.requestedQuotaBytes,
+          expiresAt,
+          source: "request",
+          requestId,
+          grantedBy: actorUserId,
+          note: input.note,
+        });
+      }
+      return updated;
+    });
   }
 
   async upsertPolicy(actorUserId: string, input: StorageQuotaPolicyInput) {

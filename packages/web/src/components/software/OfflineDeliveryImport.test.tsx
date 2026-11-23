@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import i18n from "../../lib/i18n";
 import { requestSoftwareJson } from "../../lib/software-client";
+import { uploadSpackMaterial } from "../../lib/spack-materials-client";
 import { nativeControl } from "../../lib/test-resource-field";
 import { OfflineDeliveryImport } from "./OfflineDeliveryImport";
 
@@ -61,6 +62,38 @@ test("delivery requires preflight and preserves explicit actions in the request"
       }),
     ),
   );
+});
+
+test("checks the exact signed envelope before any selected file can be uploaded", async () => {
+  const file = new File(["x"], "one");
+  const manifest = {
+    ...plan,
+    files: [{ path: "one", blob: { digest: `sha256:${"a".repeat(64)}`, size: 1 } }],
+  };
+  const signed = {
+    format: "kq-signed-offline-delivery-v1",
+    keyId: "issuer",
+    payload: JSON.stringify(manifest, null, 2),
+    signature: `${"A".repeat(86)}==`,
+  };
+  vi.mocked(requestSoftwareJson).mockRejectedValueOnce(new Error("DELIVERY_SIGNATURE_INVALID"));
+  render(<OfflineDeliveryImport isCurrent={() => true} canWriteRepository={() => true} />);
+  fireEvent.change(nativeControl(screen.getByLabelText("交付清单")), {
+    target: { files: [new File([JSON.stringify(signed)], "signed.json")] },
+  });
+  const button = screen.getByRole("button", { name: "上传并预检" });
+  await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+  fireEvent.change(nativeControl(screen.getByLabelText("交付目录")), { target: { files: [file] } });
+  fireEvent.click(button);
+  await waitFor(() =>
+    expect(requestSoftwareJson).toHaveBeenCalledWith(
+      "/offline-deliveries/verify",
+      expect.objectContaining({ body: JSON.stringify(signed) }),
+    ),
+  );
+  await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+  expect(uploadSpackMaterial).not.toHaveBeenCalled();
+  expect(requestSoftwareJson).toHaveBeenCalledTimes(1);
 });
 
 test("revoked sessions cannot issue import requests", async () => {

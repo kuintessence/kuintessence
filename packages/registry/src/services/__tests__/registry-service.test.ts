@@ -4,6 +4,9 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   auditRelease,
   createPgDb,
@@ -17,7 +20,7 @@ import {
   type PgDb,
 } from "@kuintessence/db";
 import { eq, like } from "drizzle-orm";
-import { InMemoryBlobStore } from "../blob-store";
+import { FilesystemBlobStore, InMemoryBlobStore } from "../blob-store";
 import type { ParsedNamespace, RbacPrincipal } from "../namespace";
 import { type AuditPort, NoopAuditPort, RegistryError, RegistryService } from "../registry-service";
 
@@ -70,6 +73,40 @@ describe("RegistryService", () => {
 
   afterAll(async () => {
     await db.delete(ociRepository).where(like(ociRepository.name, "regtest-%"));
+  });
+
+  test("mount rechecks source ownership after the initial HEAD", async () => {
+    const reached = Promise.withResolvers<void>(),
+      resume = Promise.withResolvers<void>();
+    class PausedStore extends InMemoryBlobStore {
+      pause = false;
+      override async exists(digest: string) {
+        if (this.pause) {
+          this.pause = false;
+          reached.resolve();
+          await resume.promise;
+        }
+        return super.exists(digest);
+      }
+    }
+    const blobs = new PausedStore();
+    const service = new RegistryService(db, blobs, new NoopAuditPort());
+    const srcNs = { ...NS, name: "regtest-mount-source" },
+      dstNs = { ...NS, name: "regtest-mount-target" };
+    const source = await service.ensureRepository(srcNs, PRINCIPAL);
+    const bytes = Buffer.from("mount race");
+    const digest = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+    const { uploadId } = await service.startUpload(source.id);
+    await service.completeUpload(source.id, uploadId, digest, bytes);
+    blobs.pause = true;
+    const mounted = service.tryMountBlob({ srcNs, dstNs, digest, principal: PRINCIPAL });
+    try {
+      await reached.promise;
+      await db.delete(ociRepositoryBlob).where(eq(ociRepositoryBlob.repositoryId, source.id));
+    } finally {
+      resume.resolve();
+    }
+    expect(await mounted).toEqual({ mounted: false });
   });
 
   test("ensureRepository is idempotent", async () => {
@@ -284,12 +321,15 @@ describe("RegistryService", () => {
           uploadedAt: new Date(1000),
         })
         .onConflictDoNothing();
-    await db.insert(ociBlob).values({
-      digest: late.digest,
-      size: late.size,
-      storageKey: late.digest,
-      uploadedAt: new Date(3000),
-    });
+    await db
+      .insert(ociBlob)
+      .values({
+        digest: late.digest,
+        size: late.size,
+        storageKey: late.digest,
+        uploadedAt: new Date(3000),
+      })
+      .onConflictDoNothing();
     const layers = [blob, late].map((item) => ({
       digest: item.digest,
       size: item.size,
@@ -403,6 +443,50 @@ describe("RegistryService", () => {
       metadata: {},
     });
     expect(r2).toBeUndefined();
+  });
+
+  test("two Registry instances resume by committed offset and replay a finished PUT", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kq-registry-upload-"));
+    const otherDb = createPgDb(TEST_DB_URL, { max: 3 });
+    try {
+      const first = new RegistryService(db, new FilesystemBlobStore(root), audit, {
+        maxActiveUploadsPerRepository: 1,
+      });
+      const second = new RegistryService(otherDb, new FilesystemBlobStore(root), audit, {
+        maxActiveUploadsPerRepository: 1,
+      });
+      const repo = await first.ensureRepository(
+        { ...NS, name: "regtest-shared-upload" },
+        PRINCIPAL,
+      );
+      const starts = await Promise.allSettled([
+        first.startUpload(repo.id),
+        second.startUpload(repo.id),
+      ]);
+      const active = starts.find((result) => result.status === "fulfilled");
+      if (active?.status !== "fulfilled") throw new Error("Upload not started");
+      expect(starts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const { uploadId } = active.value;
+      const push = (service: RegistryService) =>
+        service.appendChunk(repo.id, uploadId, Buffer.from("abc"), { start: 0, end: 2 });
+      const writes = await Promise.allSettled([push(first), push(second)]);
+      expect(writes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(await second.uploadStatus(repo.id, uploadId)).toEqual({ totalUploaded: 3 });
+      await expect(
+        first.appendChunk(repo.id, uploadId, Buffer.from("uncommitted"), { start: 3, end: 4 }),
+      ).rejects.toMatchObject({ status: 416 });
+      const blob = Buffer.from("abcdef");
+      const digest = `sha256:${createHash("sha256").update(blob).digest("hex")}`;
+      const finish = () =>
+        second.completeUpload(repo.id, uploadId, digest, blob.subarray(3), { start: 3, end: 5 });
+      expect(await finish()).toEqual({ digest, size: 6 });
+      expect(await finish()).toEqual({ digest, size: 6 });
+      const got = await new FilesystemBlobStore(root).get(digest);
+      expect(await new Response(got.stream).text()).toBe("abcdef");
+    } finally {
+      await otherDb.$client.end();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("appendChunk refuses to grow a slot past maxUploadBytes and evicts it (413)", async () => {

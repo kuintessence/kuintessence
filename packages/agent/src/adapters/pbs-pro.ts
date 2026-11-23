@@ -31,6 +31,7 @@ import {
   schedulerCommand,
   shellQuote,
   unknownComputeHealth,
+  validateSchedulerLimits,
 } from "./base";
 import {
   availableQueueInventory,
@@ -230,6 +231,8 @@ export class PbsProAdapter implements SchedulerAdapter {
   }
 
   buildSubmitScript(spec: JobSpec): string {
+    validateSchedulerLimits(spec, "pbs-pro");
+    const nodes = spec.schedulerLimits?.nodeCount ?? 1;
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
@@ -238,12 +241,13 @@ export class PbsProAdapter implements SchedulerAdapter {
     lines.push(`#PBS -v KQ_JOB_ID=${spec.jobId}`);
     lines.push(`#PBS -o ${join(logRoot, `kq-pbs-${spec.jobId}.out`)}`);
     lines.push(`#PBS -e ${join(logRoot, `kq-pbs-${spec.jobId}.err`)}`);
-    const select = `select=1:ncpus=${spec.cpus}:mem=${spec.memoryMb}mb${
-      spec.gpus > 0 ? `:ngpus=${spec.gpus}` : ""
+    const select = `select=${nodes}:ncpus=${spec.cpus / nodes}:mem=${spec.memoryMb / nodes}mb${
+      spec.gpus > 0 ? `:ngpus=${spec.gpus / nodes}` : ""
     }`;
     lines.push(
       `#PBS -l ${select}${spec.sandbox ? `:host=${spec.sandbox.attestedNodes?.[0]}` : ""}`,
     );
+    if (nodes > 1) lines.push("#PBS -l place=scatter");
     if (spec.queueName) {
       lines.push(`#PBS -q ${spec.queueName}`);
     }
@@ -253,6 +257,8 @@ export class PbsProAdapter implements SchedulerAdapter {
     if (spec.sandbox?.identity.backend === "Unix" && spec.sandbox.identity.schedulerAccount) {
       lines.push(`#PBS -A ${spec.sandbox.identity.schedulerAccount}`);
     }
+    if (spec.schedulerLimits?.maxCpuTime)
+      lines.push(`#PBS -l cput=${this.formatWallTime(spec.schedulerLimits.maxCpuTime)}`);
     if (spec.wallTimeSec > 0) {
       lines.push(`#PBS -l walltime=${this.formatWallTime(spec.wallTimeSec)}`);
     }

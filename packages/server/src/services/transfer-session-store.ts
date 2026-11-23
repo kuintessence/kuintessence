@@ -1,5 +1,5 @@
 import { fileTransfers, type PgDb } from "@kuintessence/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
 const schema = z
@@ -36,6 +36,22 @@ export interface TransferSessionStore {
 }
 export class PgTransferSessionStore implements TransferSessionStore {
   constructor(private readonly db: PgDb) {}
+  async releasedCheckpointKeys(agentId: string, keys: string[]): Promise<string[]> {
+    if (keys.length === 0 || keys.length > 64 || keys.some((key) => !/^[a-f0-9]{64}$/.test(key)))
+      return [];
+    const key = sql<string>`encode(sha256(${fileTransfers.id}::text::bytea), 'hex')`;
+    const rows = await this.db
+      .select({ key })
+      .from(fileTransfers)
+      .where(
+        and(
+          sql`direction = 'cluster_to_cloud' and state in ('succeeded', 'cancelled')`,
+          sql`coalesce(${fileTransfers.resumeSession}->>'agentId', ${fileTransfers.agentId}) = ${agentId} and (${fileTransfers.agentId} is null or ${fileTransfers.agentId} = ${agentId})`,
+          inArray(key, keys),
+        ),
+      );
+    return rows.map((row) => row.key);
+  }
   async load(ownerId: string, id: string) {
     const [row] = await this.db
       .select({ session: fileTransfers.resumeSession })
@@ -74,7 +90,11 @@ export class PgTransferSessionStore implements TransferSessionStore {
       }
       await tx
         .update(fileTransfers)
-        .set({ resumeSession: next, updatedAt: new Date() })
+        .set({
+          resumeSession: next,
+          agentId: sql`coalesce(${fileTransfers.agentId}, ${next?.agentId ?? previous?.agentId ?? null})`,
+          updatedAt: new Date(),
+        })
         .where(binding);
       return next;
     });

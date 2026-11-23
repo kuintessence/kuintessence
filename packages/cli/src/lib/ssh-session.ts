@@ -12,13 +12,7 @@
 //   - clean close: code 1000 (server-initiated "ssh ended" or client-initiated
 //     "client closed")
 //
-// Window resize is forwarded as a JSON text control frame
-// (`{type:"resize",cols,rows}`) that the Server gateway recognises — binary
-// frames remain raw stdin. Out of scope here (TODOs):
-//   - SFTP / scp
-//   - ProxyJump / multi-hop
-//   - identity selection on the client (server picks creds by agentId)
-//   - local session recording
+// Terminal sessions send resize frames. SFTP relays only subsystem bytes.
 // -----------------------------------------------------------------------------
 
 /**
@@ -78,6 +72,7 @@ export interface SshSessionDeps {
   noTty: boolean;
   /** Used only for the connection banner / error text. */
   agentId: string;
+  recordOutput?: (bytes: Uint8Array) => void;
   /** Optional terminal-size source; enables PTY resize forwarding in TTY mode. */
   resize?: SshResizeSource;
 }
@@ -173,6 +168,7 @@ export function runSshSession(deps: SshSessionDeps): Promise<SshSessionResult> {
     };
 
     ws.addEventListener("open", () => {
+      if (resolved) return;
       opened = true;
       stderr.write(`ssh: connected to agent ${agentId}\n`);
 
@@ -216,9 +212,18 @@ export function runSshSession(deps: SshSessionDeps): Promise<SshSessionResult> {
     });
 
     ws.addEventListener("message", (evt: MessageEvent<unknown>) => {
+      if (resolved) return;
       const bytes = coerceInboundBytes(evt.data);
       if (bytes && bytes.length > 0) {
-        stdout.write(bytes);
+        try {
+          deps.recordOutput?.(bytes);
+          stdout.write(bytes);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          stderr.write(`ssh: terminal output failed: ${reason}\n`);
+          finish(1, reason);
+          ws.close(1011, "terminal output failed");
+        }
       }
     });
 

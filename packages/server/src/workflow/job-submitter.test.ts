@@ -10,20 +10,26 @@ describe("createJobSubmitter", () => {
       submit: async (spec) => {
         expect(spec.invocation).toEqual(invocation);
         expect(spec.nodeId).toBe("solve");
+        expect(spec).not.toHaveProperty("forEachGroup");
         return { id: "job-invocation" };
       },
-      dispatch: async () => {},
+      dispatch: async (...args) => {
+        expect(args[8]).toBe("test-group");
+      },
       awaitCompletion: async () => ({ status: "completed", collected: {} }),
     });
-    await submit({
-      nodeId: "solve",
-      invocation,
-      name: "solve",
-      command: "true",
-      envVars: {},
-      inputStaging: [],
-      expectedOutputs: [],
-    });
+    await submit(
+      {
+        nodeId: "solve",
+        invocation,
+        name: "solve",
+        command: "true",
+        envVars: {},
+        inputStaging: [],
+        expectedOutputs: [],
+      },
+      "test-group",
+    );
   });
   test("passes the complete prepared Spack intent to submission and dispatch", async () => {
     const execution: SpackExecution = {

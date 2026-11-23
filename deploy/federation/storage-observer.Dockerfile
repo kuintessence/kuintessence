@@ -4,7 +4,7 @@ COPY package.json bun.lock ./
 COPY packages ./packages
 COPY contracts ./contracts
 COPY scripts/federation-storage-observer.ts scripts/federation-storage-reserve.ts ./scripts/
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.npmrc,target=/build/.npmrc bun install --frozen-lockfile --ignore-scripts
 RUN bun build scripts/federation-storage-observer.ts --target=bun --outfile=/observer.js
 RUN bun build scripts/federation-storage-reserve.ts --target=bun --outfile=/reserve.js
 

@@ -1,6 +1,8 @@
 import { hasRole, type RoleName } from "@kuintessence/shared";
 import type { AgentRow, FilterStage, PlacementContext, StageResult } from "../types";
 
+import { softwareAvailabilityKey } from "./software";
+
 /**
  * If any software requirement has installable=true, the user must have org_admin
  * role or higher to trigger a new software install on the target agent.
@@ -13,7 +15,7 @@ export class InstallRightsFilter implements FilterStage {
   evaluate(agent: AgentRow, ctx: PlacementContext): StageResult {
     const reqs = ctx.job.softwareRequirements ?? [];
     const wantsInstall = reqs.some((r) => {
-      const key = r.version ? `${r.name}@${r.version}` : r.name;
+      const key = softwareAvailabilityKey(r);
       return (
         r.installable === true && this.availability?.get(key)?.get(agent.agentId)?.length !== 0
       );

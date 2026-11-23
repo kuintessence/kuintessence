@@ -27,9 +27,11 @@ import {
   type PgDb,
 } from "@kuintessence/db";
 import { eq } from "drizzle-orm";
+import { parquetReadObjects } from "hyparquet";
 import { DrizzleWebhookRepository } from "../../routes/metering";
 import type { JobUsageRecord, UsageBucketRow } from "../metering";
 import { MeteringAggregator } from "../metering-aggregator";
+import { exportChunks } from "../metering-export";
 import { DrizzleMeteringRepository } from "../metering-repository-drizzle";
 
 // Default to the local dev PG when no env is set — matches the suite-wide
@@ -120,6 +122,40 @@ describeIfPg("DrizzleMeteringRepository", () => {
     // Suppress unused-tracking-list lint by inspecting at teardown.
     void insertedJobIds.length;
     void insertedWebhookIds.length;
+  });
+
+  test("streams a tenant snapshot across cursor batches and preserves totals beyond the last page", async () => {
+    const orgId = crypto.randomUUID();
+    const startedAt = new Date("2026-06-01T00:00:00Z");
+    try {
+      await db.insert(meteringUsageRaw).values(
+        Array.from({ length: 1025 }, () => ({
+          ...makeJobUsage({ orgId, userId: crypto.randomUUID(), startedAt }),
+          networkEgressMb: "1.25",
+        })),
+      );
+      const req = {
+        period: "raw" as const,
+        grouping: "user" as const,
+        from: startedAt.toISOString(),
+        to: startedAt.toISOString(),
+        offset: 0,
+      };
+      const scope = { kind: "orgs" as const, orgIds: [orgId] };
+      const parts: Buffer[] = [];
+      for await (const data of exportChunks("parquet", repo.streamGroups(scope, req)))
+        parts.push(Buffer.from(data));
+      const result = await parquetReadObjects({
+        file: Uint8Array.from(Buffer.concat(parts)).buffer,
+      });
+      expect(result).toHaveLength(1025);
+      expect(result.every((r) => r.networkEgressMb === 1.25 && r.jobCount === 1)).toBe(true);
+      const after = [];
+      for await (const page of repo.streamGroups(scope, { ...req, offset: 1025 })) after.push(page);
+      expect(after).toEqual([{ total: 1025, rows: [] }]);
+    } finally {
+      await db.delete(meteringUsageRaw).where(eq(meteringUsageRaw.orgId, orgId));
+    }
   });
 
   test("insertRaw persists a row and returns the assigned id", async () => {

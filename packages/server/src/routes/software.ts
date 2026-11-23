@@ -54,6 +54,7 @@ import { assertRole } from "../middleware/rbac";
 import { writeAudit } from "../services/audit-log-writer";
 import type { SoftwareAvailabilityService } from "../services/software-availability";
 import type { InstalledRegistry } from "../software-governance/installed-registry";
+import type { SoftwareMirrorWorker } from "../software-governance/mirror-worker";
 import type { PolicyPusher } from "../software-governance/policy-pusher";
 import type { PolicyBundle, PolicyStore, StoredPolicy } from "../software-governance/policy-store";
 
@@ -134,6 +135,7 @@ async function parseJson(c: Context): Promise<unknown> {
 }
 
 export interface SoftwareRoutesDeps {
+  mirrorWorker?: SoftwareMirrorWorker;
   db: PgDb;
   installedRegistry: InstalledRegistry;
   policyStore: PolicyStore;
@@ -240,18 +242,10 @@ export function createSoftwareRoutes(deps: SoftwareRoutesDeps): Hono {
     };
     const stored = await policyStore.upsertForAgent(agentId, bundle);
 
-    // Push to the agent if it's online; if offline, the next reconnect
-    // logic in a future commit will lazy-push the latest stored policy.
     let pushed = false;
     if (dispatcher.isOnline(agentId)) {
-      pushed = policyPusher.pushToAgent(agentId, {
-        version: stored.version,
-        allowList: stored.allowList,
-        denyList: stored.denyList,
-        lockEnabled: stored.lockEnabled,
-        mirrors: stored.mirrors,
-        preinstallList: stored.preinstallList,
-      });
+      const effective = await policyStore.effectiveForAgent(agentId);
+      if (effective) pushed = policyPusher.pushToAgent(agentId, effective);
     }
 
     // Audit log: every policy edit produces one row keyed by canonical actor + agent.
@@ -526,6 +520,32 @@ export function createSoftwareRoutes(deps: SoftwareRoutesDeps): Hono {
           .limit(500);
     return c.json({ success: true, data: rows.map(mirrorCacheView) });
   });
+
+  if (deps.mirrorWorker) {
+    const mirrors = deps.mirrorWorker;
+    r.post("/software/mirror-cache/:assetId/sync", async (c) => {
+      await requirePlatformPermission(c, deps.authz, "manage", "software-mirror-cache");
+      return c.json(
+        {
+          success: true,
+          data: await mirrors.enqueue(z.uuid().parse(c.req.param("assetId")), await parseJson(c)),
+        },
+        202,
+      );
+    });
+    r.delete("/software/mirror-cache/:assetId", async (c) => {
+      await requirePlatformPermission(c, deps.authz, "manage", "software-mirror-cache");
+      await mirrors.release(z.uuid().parse(c.req.param("assetId")));
+      return c.body(null, 204);
+    });
+    r.get("/software/mirror-cache/:assetId/files/*", async (c) => {
+      await requirePlatformPermission(c, deps.authz, "operate", "software-mirror-cache");
+      const id = z.uuid().parse(c.req.param("assetId"));
+      const path = new URL(c.req.url).pathname.split(`/mirror-cache/${id}/files/`)[1];
+      if (!path) throw new AppError(ErrorCode.NOT_FOUND, "Mirror file not found", 404);
+      return mirrors.openFile(id, decodeURIComponent(path));
+    });
+  }
 
   r.post("/software/assets/:assetId/submit", async (c) => {
     const principal = requireBoundPrincipal(c);

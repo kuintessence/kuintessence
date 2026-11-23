@@ -8,8 +8,7 @@
 //   1. NetDriveService appends an `upload` row on every successful commit.
 //   2. NetDriveService appends a `download` row on every successful
 //      `mintDownloadUrl` call.
-//   3. Manual mirror-direction inserts (the future cross-site replicator
-//      will hit the same path) sum correctly via `bytesTransferredSince`.
+//   3. Confirmed mirror bytes are included in `bytesTransferredSince`.
 //   4. The cp-bindings adapter reads `sum(bytes)` filtered by `orgId` and
 //      `occurred_at`, not from `netdrive_files`.
 
@@ -201,7 +200,7 @@ describeIfPg("netdrive_transfer_log", () => {
     await svc.mintDownloadUrl(USER_A, aFile);
     // Org B: one 3-byte upload only.
     await uploadOnce(USER_B, "uploads/b.bin", "BBB");
-    // Manual mirror row (future replicator). Belongs to org A.
+    // This fixture attributes the confirmed copy to org A.
     await db.insert(netdriveTransferLog).values({
       fileId: aFile,
       actorId: USER_A,

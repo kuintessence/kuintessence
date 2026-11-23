@@ -2,17 +2,20 @@ import {
   ecosystemReleaseAssets,
   ecosystemReleases,
   type PgDb,
+  softwareAssetRevisions,
   softwareAssets,
   workflowTemplates,
 } from "@kuintessence/db";
 import {
   AppError,
   ErrorCode,
+  SoftwareAssetPayloadSchema,
   type SoftwareAssetRef,
+  usecase,
   type WorkflowTemplateCreate,
   workflowDsl,
 } from "@kuintessence/shared";
-import { and, count, desc, eq, ilike, sql } from "drizzle-orm";
+import { and, count, desc, eq, ilike, isNull, sql } from "drizzle-orm";
 import { parse } from "yaml";
 import { platformPublicGrants, type SoftwareAssetService } from "./software-asset-service";
 
@@ -225,7 +228,7 @@ export class WorkflowTemplateService {
     tx: Parameters<Parameters<PgDb["transaction"]>[0]>[0],
   ) {
     if (!this.assets) return;
-    const refs = collectWorkflowRefs(workflow);
+    const refs = await collectWorkflowRefs(workflow.spec, tx);
     await this.assets.inTransaction(tx).upsertAsset({
       kind: "workflow-template",
       name: row.name,
@@ -351,20 +354,65 @@ function formatIssues(issues: ReadonlyArray<{ path: PropertyKey[]; message: stri
     .join("; ");
 }
 
-function collectWorkflowRefs(workflow: WorkflowDocument): {
-  usecaseRefs: SoftwareAssetRef[];
-  packageRefs: SoftwareAssetRef[];
-} {
+async function collectWorkflowRefs(
+  spec: workflowDsl.WorkflowSpec,
+  tx: Parameters<Parameters<PgDb["transaction"]>[0]>[0],
+): Promise<{ usecaseRefs: SoftwareAssetRef[]; packageRefs: SoftwareAssetRef[] }> {
   const usecaseRefs: SoftwareAssetRef[] = [];
   const packageRefs: SoftwareAssetRef[] = [];
-  for (const node of workflow.spec.nodeDrafts) {
+  for (const node of spec.nodeDrafts) {
+    const nested =
+      node.type === "Loop"
+        ? node.body
+        : node.type === "SubWorkflow" && node.ref.kind === "Inline"
+          ? node.ref.body
+          : undefined;
+    if (nested) {
+      const refs = await collectWorkflowRefs(nested, tx);
+      usecaseRefs.push(...refs.usecaseRefs);
+      packageRefs.push(...refs.packageRefs);
+    }
     if (node.type !== "SoftwareUsecaseComputing") continue;
     if (node.usecaseVersionId && node.softwareVersionId) {
       usecaseRefs.push({ kind: "usecase", id: node.usecaseVersionId });
-      packageRefs.push({ kind: "spack-package", id: node.softwareVersionId });
+      const [asset] = await tx
+        .select({ kind: softwareAssets.kind })
+        .from(softwareAssetRevisions)
+        .innerJoin(softwareAssets, eq(softwareAssets.id, softwareAssetRevisions.assetId))
+        .where(sql`${softwareAssetRevisions.id}::text = ${node.softwareVersionId}`)
+        .limit(1);
+      packageRefs.push({
+        kind: asset?.kind === "site-runtime" ? "site-runtime" : "spack-package",
+        id: node.softwareVersionId,
+      });
     } else if (node.usecaseRef && node.softwareRef) {
-      usecaseRefs.push({ kind: "usecase", ...node.usecaseRef });
-      packageRefs.push({ kind: "spack-package", ...node.softwareRef });
+      const ref = node.usecaseRef;
+      usecaseRefs.push({ kind: "usecase", ...ref });
+      const [asset] = await tx
+        .select({ payload: softwareAssets.payload })
+        .from(softwareAssets)
+        .where(
+          and(
+            eq(softwareAssets.kind, "usecase"),
+            eq(softwareAssets.lifecycle, "published"),
+            eq(softwareAssets.name, ref.name),
+            eq(softwareAssets.version, ref.version),
+            eq(softwareAssets.source, ref.source),
+            ref.providerOrgId
+              ? eq(softwareAssets.providerOrgId, ref.providerOrgId)
+              : isNull(softwareAssets.providerOrgId),
+          ),
+        )
+        .limit(1);
+      const payload = SoftwareAssetPayloadSchema.safeParse(asset?.payload);
+      const pkg =
+        payload.success && payload.data.kind === "usecase"
+          ? usecase.GovernedUsecasePackageSchema.safeParse(payload.data.spec)
+          : undefined;
+      packageRefs.push({
+        kind: pkg?.success && pkg.data.software.kind !== "Spack" ? "site-runtime" : "spack-package",
+        ...node.softwareRef,
+      });
     }
   }
   return { usecaseRefs: uniqueRefs(usecaseRefs), packageRefs: uniqueRefs(packageRefs) };

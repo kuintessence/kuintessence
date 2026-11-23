@@ -10,6 +10,7 @@ export interface TransferProgressEvent {
 export type TransferProgressListener = (e: TransferProgressEvent) => void;
 
 interface PendingEntry {
+  agentId?: string;
   listener: TransferProgressListener;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -17,10 +18,16 @@ interface PendingEntry {
 export class TransferRegistry {
   private pending = new Map<string, PendingEntry>();
 
-  register(requestId: string, listener: TransferProgressListener, timeoutMs: number): void {
+  register(
+    requestId: string,
+    listener: TransferProgressListener,
+    timeoutMs: number,
+    agentId?: string,
+  ): void {
     const previous = this.pending.get(requestId);
     if (previous) clearTimeout(previous.timer);
     const entry: PendingEntry = {
+      agentId,
       listener,
       timer: setTimeout(() => {
         if (this.pending.get(requestId) !== entry) return;
@@ -35,9 +42,9 @@ export class TransferRegistry {
     this.pending.set(requestId, entry);
   }
 
-  update(requestId: string, event: TransferProgressEvent): boolean {
+  update(requestId: string, event: TransferProgressEvent, agentId?: string): boolean {
     const entry = this.pending.get(requestId);
-    if (!entry) return false;
+    if (!entry || (agentId && entry.agentId && agentId !== entry.agentId)) return false;
     entry.listener(event);
     if (event.state !== "running" && this.pending.get(requestId) === entry) {
       clearTimeout(entry.timer);

@@ -14,29 +14,26 @@ const optionalAbsolutePath = z.preprocess(
   z.string().refine(isAbsolute, "must be absolute").optional(),
 );
 
-const ecosystemTrustedKeysSchema = z
-  .string()
-  .default("{}")
-  .transform((raw, ctx) => {
-    try {
-      const value: unknown = JSON.parse(raw);
-      if (
-        typeof value !== "object" ||
-        value === null ||
-        Array.isArray(value) ||
-        Object.values(value).some((key) => typeof key !== "string" || key.length === 0)
-      ) {
-        throw new Error("must be an object of key id to base64 SPKI");
-      }
-      return value as Record<string, string>;
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `ECOSYSTEM_RELEASE_TRUSTED_KEYS ${error instanceof Error ? error.message : "is invalid"}`,
-      });
-      return z.NEVER;
+const trustedKeysSchema = z.string().transform((raw, ctx) => {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      Object.values(value).some((key) => typeof key !== "string" || key.length === 0)
+    ) {
+      throw new Error("must be an object of key id to base64 SPKI");
     }
-  });
+    return value as Record<string, string>;
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Trusted public keys ${error instanceof Error ? error.message : "is invalid"}`,
+    });
+    return z.NEVER;
+  }
+});
 
 const RegistryConfigSchema = z
   .object({
@@ -46,9 +43,7 @@ const RegistryConfigSchema = z
     DB_IDLE_TIMEOUT_SEC: nonNegativeInt(0),
     REGISTRY_PORT: positiveInt(3100),
     LOG_LEVEL: logLevelSchema,
-    /** Filesystem directory for the artifact blob store. When unset, an
-     *  in-memory store is used (dev/test). */
-    BLOB_STORE_DIR: z.string().optional(),
+    BLOB_STORE_DIR: z.string().min(1).optional(),
     OFFLINE_DELIVERY_SEED: optionalAbsolutePath,
     OFFLINE_DELIVERY_SEED_SUBJECT: z.preprocess(
       (v) => (v === "" ? undefined : v),
@@ -101,7 +96,11 @@ const RegistryConfigSchema = z
     REGISTRY_JWT_AUDIENCE: z.string().optional(),
     REGISTRY_PUBLISHER_ROLES: registryPublisherRolesConfigSchema,
     /** JSON map of key id to base64 DER/SPKI Ed25519 public key. */
-    ECOSYSTEM_RELEASE_TRUSTED_KEYS: ecosystemTrustedKeysSchema,
+    ECOSYSTEM_RELEASE_TRUSTED_KEYS: z.preprocess((value) => value ?? "{}", trustedKeysSchema),
+    OFFLINE_DELIVERY_TRUSTED_KEYS: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      trustedKeysSchema.optional(),
+    ),
     /** Public OCI repository path, for example public/scientific-ecosystem. */
     ECOSYSTEM_RELEASE_OCI_REPOSITORY: z.string().min(1).optional(),
     /** Immutable OCI manifest digest synchronized at startup. */

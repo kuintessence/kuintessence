@@ -23,8 +23,8 @@ export interface SpackCliOptions {
   requireServerMaterials?: boolean;
 }
 
-export const MANAGED_SPACK_EXECUTION_DISABLED =
-  "managed offline Spack execution is not enabled yet";
+export const MANAGED_SPACK_MATERIALS_REQUIRED =
+  "Managed Spack operations require audited materials and a configured site installer";
 
 /**
  * Thin typed wrapper around `Bun.spawn(['spack', ...])`.
@@ -48,7 +48,7 @@ export class SpackCli {
   }
 
   assertNetworkExecutionAllowed(): void {
-    if (this.requireServerMaterials) throw new Error(MANAGED_SPACK_EXECUTION_DISABLED);
+    if (this.requireServerMaterials) throw new Error(MANAGED_SPACK_MATERIALS_REQUIRED);
   }
 
   /** `spack --version` — used as the boot-time probe. */

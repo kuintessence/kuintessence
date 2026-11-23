@@ -180,6 +180,8 @@ services:
       SERVER_PORT: "3000"
       SERVER_GRPC_PORT: "3001"
       SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
+      SOFTWARE_MIRROR_DIR: /var/lib/kuintessence/mirror
+      SOFTWARE_MIRROR_ORIGINS: ${SOFTWARE_MIRROR_ORIGINS:-}
       LOG_LEVEL: info
       NODE_ENV: development
       CLUSTER_FILE_STATIC_ROOTS: /home,/scratch,/work,/projects
@@ -195,6 +197,8 @@ services:
       SSO_BOOTSTRAP_REDIRECT_URI: ${KQ_CASDOOR_BOOTSTRAP_REDIRECT_URI:-http://localhost:5173/platform/api/auth/oidc/callback}
       SSO_BOOTSTRAP_GROUP_MAPPING: ${KQ_CASDOOR_BOOTSTRAP_GROUP_MAPPING:-{"kq-super-admins":"super_admin","kq-platform-admins":"platform_admin","kq-operators":"operator","kq-users":"user"}}
       SSO_BOOTSTRAP_AUTO_CREATE_USERS: "true"
+    volumes:
+      - software-mirror:/var/lib/kuintessence/mirror
     extra_hosts:
       - "casdoor.localhost:host-gateway"
     ports:
@@ -243,6 +247,7 @@ services:
       SPACK_UPSTREAM_MAX_CONCURRENT: ${SPACK_UPSTREAM_MAX_CONCURRENT:-2}
       SPACK_UPSTREAM_MAX_BYTES: ${SPACK_UPSTREAM_MAX_BYTES:-1073741824}
       SPACK_UPSTREAM_CA_BUNDLE: ${SPACK_UPSTREAM_CA_BUNDLE:-}
+      OFFLINE_DELIVERY_TRUSTED_KEYS: ${OFFLINE_DELIVERY_TRUSTED_KEYS:-}
       ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
     volumes:
       - registry-data:/var/lib/kuintessence/registry
@@ -278,6 +283,7 @@ services:
         condition: service_healthy
 
 volumes:
+  software-mirror:
   pg-data:
   casdoor-pg-data:
   rustfs-data:

@@ -197,6 +197,7 @@ try {
             .where(eq(federationDisclosures.grantId, row.grantId)),
         ),
       );
+      assert.ok(row.evidence, "Published disclosure body is missing");
       assert.equal(row.evidence.policy.sourceJws, policies[0]?.[0]?.approvalJws);
       assert.equal(row.evidence.policy.targetJws, policies[1]?.[0]?.approvalJws);
       assert.equal(row.evidence.disclosure.sourceJws, grants[0]?.[0]?.approvalJws);

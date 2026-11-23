@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createSecureServer, createServer } from "node:http2";
 import {
+  agentCerts,
   createPgDb,
   fileTransfers,
   type PgDb,
@@ -21,10 +22,11 @@ import {
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, gt, isNull, ne } from "drizzle-orm";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { cors } from "hono/cors";
+import nodemailer from "nodemailer";
 import { ensureCa } from "./auth/ca";
 import { createCertIssuanceService } from "./auth/cert-service";
 import { createAgentProviderOrgResolver } from "./auth/ownership";
@@ -47,7 +49,7 @@ import {
 } from "./authz/projection";
 import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
-import { EventBus } from "./events/event-bus";
+import { createPgEventBus } from "./events/pg-event-bus";
 import { FederationAccountingCollection } from "./federation/accounting-collection";
 import { FederationAdjustmentService } from "./federation/adjustment";
 import { FederationAgreementExchange } from "./federation/agreement-exchange";
@@ -170,11 +172,14 @@ import { FederationTrustRegistry } from "./federation/trust-registry";
 import { FederationUsageService } from "./federation/usage";
 import { FederationUsageExchange } from "./federation/usage-exchange";
 import { FederationWorkflowExecutor } from "./federation/workflow-executor";
+import { AgentSessions } from "./grpc/agent-sessions";
 import {
   AgentDispatcher,
   JobCancellationOutbox,
   JobWorkRootReleaseOutbox,
 } from "./grpc/dispatcher";
+import { receiveInteraction } from "./grpc/interaction-receiver";
+import { InteractionRelay, relayPath } from "./grpc/interaction-relay";
 import { JobDispatchOutbox } from "./grpc/job-dispatch-outbox";
 import { createGrpcConnectNodeHandler } from "./grpc/server";
 import { attachGrpcTransportErrorHandlers } from "./grpc/transport-errors";
@@ -201,6 +206,7 @@ import { createAdminSshRecordingRoutes } from "./routes/admin-ssh-recordings";
 import { createAdminSshSessionRoutes } from "./routes/admin-ssh-sessions";
 import { createAdminSsoRoutes } from "./routes/admin-sso";
 import { createAgentBinaryRoutes } from "./routes/agent-binaries";
+import { createAgentPkiRoutes } from "./routes/agent-pki";
 import { createAgentRegistrationRoutes } from "./routes/agent-registration";
 import { createAgentSpackMaterialRoutes } from "./routes/agent-spack-materials";
 import { createAgentRoutes } from "./routes/agents";
@@ -222,11 +228,12 @@ import { createFederationOutboundRoutes } from "./routes/federation-outbound";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
 import { createInterconnectRoutes } from "./routes/interconnect";
-import { createJobRoutes } from "./routes/jobs";
+import { assertUsecaseLicenseRequirements, createJobRoutes } from "./routes/jobs";
 import { createMeCapabilityRoutes } from "./routes/me-capabilities";
 import { buildMeteringRouter, DrizzleWebhookRepository } from "./routes/metering";
 import { createMetricsRoutes, recordRequest } from "./routes/metrics";
 import { createNetDriveRoutes } from "./routes/netdrive";
+import { createNotificationRoutes } from "./routes/notifications";
 import { createPlatformUserRoutes } from "./routes/platform-users";
 import { createPreferenceRoutes } from "./routes/preferences";
 import { createQueueRoutes } from "./routes/queues";
@@ -276,6 +283,7 @@ import {
   DataPrerequisitePlanner,
 } from "./services/data-prerequisite";
 import { PgDataPrerequisiteRepository } from "./services/data-prerequisite-repository-drizzle";
+import { DataReplicaCoordinator } from "./services/data-replica";
 import { DataScanCoordinator, PgDataScanCertificateLookup } from "./services/data-scan-coordinator";
 import { createPgDataSelectionValidator } from "./services/data-selection-validation";
 import { FileService } from "./services/file-service";
@@ -287,13 +295,18 @@ import {
   LicenseRuntimeGovernanceService,
   PgGovernanceRepository,
 } from "./services/license-runtime-governance";
+import { MeteringService } from "./services/metering";
+import { MeteringAggregator } from "./services/metering-aggregator";
 import { createMeteringBundle } from "./services/metering-binding";
 import { MeteringCron } from "./services/metering-cron";
+import { runMeteringPeriod } from "./services/metering-cron-period";
+import { DrizzleMeteringRepository } from "./services/metering-repository-drizzle";
 import { WebhookDispatcher } from "./services/metering-webhook";
 import { MeteringWebhookEmitter } from "./services/metering-webhook-emitter";
 import { MeteringWorkflowAttributionService } from "./services/metering-workflow-attribution";
 import { NetDriveService } from "./services/netdrive";
 import { createAuthorizedNetDriveDownloadMint } from "./services/netdrive-download-authorizer";
+import { enqueueNotification, NotificationService } from "./services/notifications";
 import { PgFileTransferStore } from "./services/pg-file-transfer-store";
 import { PlacementOrchestrator } from "./services/placement-orchestrator";
 import { PgPlacementPlanStore, PlacementPlanService } from "./services/placement-plan";
@@ -311,6 +324,7 @@ import { createSiteDiagnosticsService } from "./services/site-diagnostics";
 import { SoftwareAvailabilityService } from "./services/software-availability";
 import { SshGateway } from "./services/ssh-gateway";
 import { makeObjectStoreRecordingSink } from "./services/ssh-recording";
+import { captureDailyStorage } from "./services/storage-metering";
 import { StorageQuotaService } from "./services/storage-quota";
 import { TerminalService } from "./services/terminal-service";
 import { TransferRegistry } from "./services/transfer-registry";
@@ -328,6 +342,7 @@ import {
   PolicyStore,
   SoftwareOperationService,
 } from "./software-governance";
+import { SoftwareMirrorWorker } from "./software-governance/mirror-worker";
 import { resolveEffectiveSpackPolicy } from "./software-governance/operation-service";
 import { SourceAuditProofs } from "./software-governance/source-audit-proofs";
 import {
@@ -347,6 +362,7 @@ import {
   WorkflowExecutionJournalStore,
 } from "./workflow/execution-journal";
 import { createFileStager } from "./workflow/file-stager";
+import { publishGeneratedFiles } from "./workflow/generated-files";
 import { completionFromJob, JobCompletionRegistry } from "./workflow/job-completion-registry";
 import { createJobSubmitter } from "./workflow/job-submitter";
 import {
@@ -409,10 +425,18 @@ async function resolveRecordingActorUserId(actor: string): Promise<string | null
   return byId?.id ?? null;
 }
 
-// in-process event bus for WS fan-out. Single-Server by design;
-// multi-Server coordination requires a shared pub/sub adapter.
-const eventBus = new EventBus();
+// PostgreSQL distributes committed status events to each Server.
+const { bus: eventBus, close: closeEventBus } = await createPgEventBus(db.$client);
 
+const sessionDb = createPgDb(config.DATABASE_URL, {
+  max: config.DB_MAX_CONNECTIONS,
+  idle_timeout: config.DB_IDLE_TIMEOUT_SEC,
+});
+const agentSessions = new AgentSessions(
+  sessionDb,
+  config.AGENT_HEARTBEAT_TIMEOUT_SEC,
+  config.AGENT_RELAY_ORIGIN,
+);
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
 const agentUpdates = new AgentUpdateService(db, dispatcher);
@@ -445,7 +469,11 @@ const dataScanCoordinator = new DataScanCoordinator(
   new PgDataScanCertificateLookup(db),
 );
 await dataScanCoordinator.recoverPending();
-const terminalService = new TerminalService();
+const terminalService = new TerminalService(db, config.JWT_SECRET, config.TERMINAL_RETENTION_DAYS);
+const sweepTerminals = () =>
+  terminalService.cleanup().catch(() => logger.warn("Terminal session expiry sweep failed"));
+await sweepTerminals();
+const terminalExpiryTimer = setInterval(sweepTerminals, 3600000);
 const shellExecRegistry = new ShellExecRegistry();
 const transferRegistry = new TransferRegistry();
 const jobLogsService = new JobLogsService(dispatcher);
@@ -544,16 +572,21 @@ if (backfilledJobProviders > 0) {
 // boundary detection. Started after the rest of bootstrap below so a
 // startup failure during route mounting doesn't leave a dangling timer.
 const webhookRepo = new DrizzleWebhookRepository(db);
-const meteringWebhookEmitter = config.METERING_WEBHOOK_ENABLED
-  ? new MeteringWebhookEmitter({
-      query: meteringService,
-      repo: webhookRepo,
-      dispatcher: new WebhookDispatcher(),
-    })
-  : undefined;
 const meteringCron = new MeteringCron({
-  aggregator: meteringAggregator,
-  webhookEmitter: meteringWebhookEmitter,
+  captureStorage: () => captureDailyStorage(db),
+  summariesEnabled: config.METERING_WEBHOOK_ENABLED,
+  runPeriod: (stage, start, work) =>
+    runMeteringPeriod(db, stage, start, async (tx) => {
+      const repo = new DrizzleMeteringRepository(db, tx);
+      await work({
+        aggregator: new MeteringAggregator({ repo }),
+        webhookEmitter: new MeteringWebhookEmitter({
+          query: new MeteringService({ repo }),
+          repo: new DrizzleWebhookRepository(tx),
+          dispatcher: new WebhookDispatcher(),
+        }),
+      });
+    }),
 });
 
 // software governance + extended metrics ingest.
@@ -623,7 +656,50 @@ const softwareOperations = new SoftwareOperationService(
   },
   sourceAuditProofs,
 );
+if (Boolean(config.NOTIFICATION_SMTP_URL) !== Boolean(config.NOTIFICATION_MAIL_FROM))
+  throw new Error(
+    "Configure both NOTIFICATION_SMTP_URL and NOTIFICATION_MAIL_FROM for notification email",
+  );
+const notificationMail = config.NOTIFICATION_SMTP_URL
+  ? nodemailer.createTransport(config.NOTIFICATION_SMTP_URL, {
+      disableFileAccess: true,
+      disableUrlAccess: true,
+    })
+  : null;
+const notificationService = new NotificationService(
+  db,
+  new WebhookDispatcher({ maxAttempts: 1, maxRedirects: 0 }),
+  notificationMail
+    ? async (to, notice) => {
+        await notificationMail.sendMail({
+          from: config.NOTIFICATION_MAIL_FROM,
+          to: { name: "", address: to },
+          subject: `KQ · ${notice.kind}`,
+          text: notice.message,
+          messageId: `<${notice.id}@notifications.kq>`,
+        });
+      }
+    : undefined,
+);
+let deliveringNotifications = false;
+async function deliverNotifications() {
+  if (deliveringNotifications) return;
+  deliveringNotifications = true;
+  try {
+    await notificationService.deliverDue();
+  } catch (err) {
+    logger.error({ err }, "Notification delivery sweep failed");
+  } finally {
+    deliveringNotifications = false;
+  }
+}
+void deliverNotifications();
+setInterval(deliverNotifications, 30_000).unref();
 const metricsRecorder = new PgAgentMetricsRecorder(db);
+const pruneAgentMetrics = () =>
+  metricsRecorder.prune().catch((err) => logger.error({ err }, "Agent metrics retention failed"));
+void pruneAgentMetrics();
+setInterval(pruneAgentMetrics, 60 * 60_000).unref();
 const queueObservability = new QueueObservabilityService(db, queueInventory);
 const licenseRuntimeGovernance = new LicenseRuntimeGovernanceService(
   new PgGovernanceRepository(db),
@@ -634,6 +710,7 @@ const softwareAvailability = new SoftwareAvailabilityService(
     onlineAgentIds: () => dispatcher.onlineAgentIds(),
     governance: licenseRuntimeGovernance,
     sourceAuditAvailable: (agentId, spec) => sourceAuditProofs.available(agentId, spec),
+    trustedReleaseKeys: config.ECOSYSTEM_RELEASE_TRUSTED_KEYS,
   },
   authzService,
 );
@@ -650,6 +727,7 @@ const dataPrerequisites = new DataPrerequisitePlacementGate(
 // Orchestrator combines the placement pipeline + gRPC dispatcher.
 // Called after every job submit to route the job to an online agent.
 const orchestrator = new PlacementOrchestrator({
+  sessions: agentSessions,
   agentManager,
   jobService,
   preferenceService,
@@ -680,7 +758,9 @@ const placementPlanService = new PlacementPlanService(
   createWorkflowPlacementBuilder(db),
 );
 let netdriveServiceForWorkflowOutputs: NetDriveService | undefined;
+let dataMarketObjectStore: ConstructorParameters<typeof PgDataMarketRepository>[1];
 let dataMarketUploadPort: DataUploadPort = new UnavailableDataMarketUploadPort();
+const transferSessions = new PgTransferSessionStore(db);
 let transferRunner: TransferRunner | undefined;
 const workflowOutputTransferBinding = (input: OutputTransferInput) =>
   and(
@@ -842,6 +922,39 @@ if (sandboxManifestSigner) {
 }
 
 const app = new Hono();
+const relay = config.AGENT_RELAY_SECRET
+  ? new InteractionRelay({
+      sessions: agentSessions,
+      secret: config.AGENT_RELAY_SECRET,
+      origins: config.AGENT_RELAY_PEERS,
+      local: (id) => dispatcher.getChannel(id),
+      receive: (agent, message, send) => receiveInteraction(grpcDeps, agent, message, send),
+    })
+  : undefined;
+if (relay) {
+  dispatcher.interactionRelay = relay;
+  app.get(relayPath, async (c, next) => {
+    const binding = relay.authorize(c.req.header("Authorization"));
+    if (!binding) return c.body(null, 403);
+    let flow: ReturnType<InteractionRelay["accept"]>;
+    return upgradeWebSocket(() => ({
+      onOpen: (_, ws) => {
+        flow = relay.accept(binding, {
+          send: (bytes) => {
+            if (!ws.raw?.send(bytes)) throw new Error("Relay socket closed");
+          },
+          close: () => ws.close(),
+          get bufferedAmount() {
+            return ws.raw?.getBufferedAmount() ?? 0;
+          },
+        });
+      },
+      onMessage: (event) => flow?.command(event.data),
+      onClose: () => flow?.finish(),
+      onError: () => flow?.finish(),
+    }))(c, next);
+  });
+}
 
 app.onError(createErrorHandler(logger));
 app.notFound(createNotFoundHandler());
@@ -876,6 +989,7 @@ app.route("/api", dslRoutes);
 const ssoSecretWrappingKey = config.SSO_SECRET_KEY ?? config.JWT_SECRET;
 await bootstrapSsoConfig(db, {
   enabled: config.SSO_BOOTSTRAP_ENABLED,
+  providerType: config.SSO_BOOTSTRAP_PROVIDER_TYPE,
   force: config.SSO_BOOTSTRAP_FORCE,
   issuerUrl: config.SSO_BOOTSTRAP_ISSUER_URL,
   clientId: config.SSO_BOOTSTRAP_CLIENT_ID,
@@ -974,14 +1088,10 @@ if (config.SCHEDULER_QUEUE_WAIT_AGG_SEC > 0) {
     "Queue-wait P95 aggregation sweep enabled",
   );
 }
-// Production resolves SSH credentials from the encrypted vault table; dev keeps
-// the env-mock (`SSH_CRED_<AGENT_ID>`) via the route default so a local stack
-// needs no DB row. The wrapping key mirrors the cipher's: a dedicated
-// SSO_SECRET_KEY when set, else the JWT signing key.
-const sshResolveCredentials =
-  config.NODE_ENV === "production"
-    ? makeVaultResolver(makePgSshRowLoader(db), config.SSO_SECRET_KEY ?? config.JWT_SECRET)
-    : undefined;
+const sshResolveCredentials = makeVaultResolver(
+  makePgSshRowLoader(db),
+  config.SSO_SECRET_KEY ?? config.JWT_SECRET,
+);
 app.route(
   "/api/ssh",
   createSshRoutes({
@@ -1031,7 +1141,19 @@ protectedApi.use("*", automationScopeMiddleware(db));
 protectedApi.use("/federation/*", federationOrganizationContext);
 protectedApi.route("/", createAutomationCredentialRoutes(db));
 // Server CA + cert issuance + mTLS for the Agent connectRPC stream.
-const ca = await ensureCa(config.SERVER_CA_DIR);
+const ca = {
+  ...(await ensureCa(config.SERVER_CA_DIR)),
+  distributionOrigin: config.AGENT_PKI_PUBLIC_ORIGIN,
+};
+app.route(
+  "/api/agent-pki",
+  createAgentPkiRoutes(ca, () =>
+    db
+      .select({ certPem: agentCerts.certPem, revokedAt: agentCerts.revokedAt })
+      .from(agentCerts)
+      .where(gt(agentCerts.expiresAt, new Date())),
+  ),
+);
 const certStore = createPgCertStore(db);
 const agentCertLookup = createPgAgentCertLookup(db);
 const certService = createCertIssuanceService({ ca, store: certStore });
@@ -1048,10 +1170,10 @@ const jobCompletionRegistry = new JobCompletionRegistry({
     return job ? completionFromJob(job) : null;
   },
 });
-const workflowPackageStore = createDbPackageStore(db);
+const workflowPackageStore = createDbPackageStore(db, config.ECOSYSTEM_RELEASE_TRUSTED_KEYS);
 const workflowDataSelectionValidator = createPgDataSelectionValidator(db);
 const namedReferenceResolver = new WorkflowNamedReferenceResolver(
-  new PgWorkflowNamedReferenceRepository(db),
+  new PgWorkflowNamedReferenceRepository(db, config.ECOSYSTEM_RELEASE_TRUSTED_KEYS),
   {
     assertUse: (assetId, principal) =>
       softwareAvailability.assertAssetCapability(assetId, principal, "use"),
@@ -1231,6 +1353,7 @@ const makeRunner =
     const sandboxExecutor =
       sandboxManifestSigner && activeRunId
         ? new SandboxNodeExecutor({
+            releasePvc: (agentId, jobId) => jobWorkRootReleaseOutbox.enqueuePvc(agentId, jobId),
             db,
             resolver: sandboxExecutionResolver,
             signer: sandboxManifestSigner,
@@ -1287,6 +1410,24 @@ const makeRunner =
       return availability.installableAvailable.length > 0;
     };
     return createWorkflowRunner({
+      runId: activeRunId,
+      notifyMilestone: async (node, invocation) => {
+        if (!executionLease || !activeRunId || !invocation || federationSnapshot)
+          throw new Error("Milestone requires a local, durable workflow invocation");
+        await executionLease.transaction((tx) =>
+          enqueueNotification(
+            tx,
+            {
+              userId: submittedBy,
+              orgId: activeOrgId ?? null,
+              eventKey: `workflow:${activeRunId}:${invocation.path}`,
+              kind: "workflow.milestone",
+              message: node.customMessage,
+            },
+            { requiredWebhook: node.url },
+          ),
+        );
+      },
       executeFederation: async (node, invocation, parameters, files) => {
         if (!executionLease || !activeOrgId || !invocation || federationSnapshot)
           throw new WorkflowExecutionInterrupted(
@@ -1303,6 +1444,33 @@ const makeRunner =
           parameters,
           files,
         );
+      },
+      publishGeneratedFiles: async (items, invocation, output) => {
+        if (federationSnapshot || !executionLease || !netdriveServiceForWorkflowOutputs)
+          throw new Error("Generated files require local durable workflow storage");
+        return publishGeneratedFiles(
+          netdriveServiceForWorkflowOutputs,
+          executionLease,
+          authzService,
+          submittedBy,
+          activeOrgId ?? null,
+          invocation.path,
+          items,
+          output,
+        );
+      },
+      readGenerateFile: async (value) => {
+        if (federationSnapshot || !netdriveServiceForWorkflowOutputs)
+          throw new Error("Workflow input storage is unavailable in this execution scope");
+        const ref = await resolveFileInput(value);
+        if (
+          !ref ||
+          typeof ref !== "object" ||
+          !("fileMetadataId" in ref) ||
+          typeof ref.fileMetadataId !== "string"
+        )
+          throw new Error("Generate requires a single published file reference");
+        return netdriveServiceForWorkflowOutputs.readGenerateFile(submittedBy, ref.fileMetadataId);
       },
       resolveFileInput,
       journal: executionLease,
@@ -1366,6 +1534,14 @@ const makeRunner =
               "Workflow execution requires a governed usecase package with a software selector",
             );
           }
+          if (spec.softwareRequirements?.some((req) => req.siteRuntimeRevisionId))
+            await assertUsecaseLicenseRequirements(
+              db,
+              pkg,
+              false,
+              { userId: submittedBy, orgId: activeOrgId ?? null },
+              licenseRuntimeGovernance,
+            );
           const dataSelections = await workflowDataSelectionValidator.validateUsecase({
             pkg,
             dataInputs: spec.dataInputs ?? {},
@@ -1421,6 +1597,7 @@ const makeRunner =
           softwareRequirements,
           schedulingStrategy,
           spackExecution,
+          forEachGroup,
         ) => {
           const job = await jobService.getById(jobId);
           if (!job) {
@@ -1436,6 +1613,7 @@ const makeRunner =
               jobId,
               executionLease,
               spackExecution,
+              forEachGroup: federationSnapshot ? undefined : forEachGroup,
               federationTargets: federationSnapshot
                 ? (federationSnapshot.executionTargets ?? [])
                 : undefined,
@@ -1449,6 +1627,7 @@ const makeRunner =
                   memoryMb: job.memoryMb,
                   gpus: job.gpus ?? 0,
                   wallTimeSec: Number(job.wallTimeSec ?? 0),
+                  schedulerLimits: job.schedulerLimits ?? undefined,
                 },
                 workingDir: job.workingDir ?? undefined,
                 envVars: job.envVars ?? undefined,
@@ -2177,6 +2356,7 @@ protectedApi.route(
 protectedApi.route(
   "/",
   createJobRoutes(jobService, db, orchestrator, {
+    trustedReleaseKeys: config.ECOSYSTEM_RELEASE_TRUSTED_KEYS,
     federationClusters,
     federationJobs: federationOutbound ? federationJobs : undefined,
     outputPublication: { get: (jobId) => workflowOutputPublisher.inspect(jobId) },
@@ -2187,6 +2367,7 @@ protectedApi.route(
     governance: licenseRuntimeGovernance,
   }),
 );
+protectedApi.route("/", createNotificationRoutes(notificationService));
 protectedApi.route("/", createPreferenceRoutes(preferenceService, db, { authz: authzService }));
 protectedApi.route(
   "/",
@@ -2285,10 +2466,6 @@ protectedApi.route(
     },
   }),
 );
-// NetDrive (PRD F18). Only mounted when NETDRIVE_ENABLED=true and
-// the MinIO env is fully set; otherwise the legacy in-memory FileService
-// continues to power the /api/files mock surface. Health-check failure aborts
-// startup loudly so a misconfigured deployment fails fast.
 if (config.SSH_SESSION_RECORDING && !config.NETDRIVE_ENABLED) {
   logger.warn(
     "SSH_SESSION_RECORDING=true but NETDRIVE_ENABLED=false — recording needs the MinIO backend and stays OFF",
@@ -2417,9 +2594,19 @@ if (config.NETDRIVE_ENABLED) {
     commitSecret: config.JWT_SECRET,
     multipartTtlSec: config.NETDRIVE_MULTIPART_TTL_SEC,
     multipartPartSize: config.NETDRIVE_MULTIPART_PART_SIZE_MB * 1024 * 1024,
-    quotaGuard: (ownerId, path, size) =>
-      storageQuotaService.assertCloudWriteAllowed(ownerId, path, size),
   });
+  const cleanDeletedVersions = () =>
+    netdriveService
+      .cleanDeletedVersions()
+      .catch((err) => logger.error({ err }, "NetDrive version cleanup failed"));
+  void cleanDeletedVersions();
+  setInterval(cleanDeletedVersions, 60_000).unref();
+  const expireUploadReservations = () =>
+    netdriveService
+      .pruneExpiredReservations()
+      .catch((err) => logger.error({ err }, "NetDrive reservation expiry failed"));
+  void expireUploadReservations();
+  setInterval(expireUploadReservations, 60 * 60_000).unref();
   const mintAuthorizedNetDriveDownload = createAuthorizedNetDriveDownloadMint({
     service: netdriveService,
     authz: authzService,
@@ -2437,6 +2624,10 @@ if (config.NETDRIVE_ENABLED) {
         : null;
     },
   });
+  dataMarketObjectStore = {
+    backend: minioBackend,
+    retentionDays: config.DATA_MARKET_IMMUTABLE_RETENTION_DAYS,
+  };
   dataMarketUploadPort = new DataMarketObjectUploadService(
     new PgDataMarketObjectUploadRepository(db, minioBackend.dataMarketImmutableBucket),
     minioBackend,
@@ -2510,7 +2701,7 @@ if (config.NETDRIVE_ENABLED) {
   );
   transferRunner = new TransferRunner({
     db,
-    sessionStore: new PgTransferSessionStore(db),
+    sessionStore: transferSessions,
     dispatcher,
     netdriveService,
     transferRegistry,
@@ -2530,9 +2721,29 @@ setInterval(() => {
     logger.error({ err }, "Workflow output recovery failed"),
   );
 }, 30_000).unref();
+const replicaCoordinator = new DataReplicaCoordinator(
+  db,
+  dataMarketObjectStore?.backend,
+  dispatcher,
+);
+{
+  let running = false;
+  setInterval(async () => {
+    if (running) return;
+    running = true;
+    try {
+      await replicaCoordinator.tick();
+    } catch (err) {
+      logger.error({ err }, "Replica dispatch failed");
+    } finally {
+      running = false;
+    }
+  }, 5_000).unref();
+}
 const dataMarketService = new DataMarketService({
-  repository: new PgDataMarketRepository(db),
+  repository: new PgDataMarketRepository(db, dataMarketObjectStore),
   uploadPort: dataMarketUploadPort,
+  replicaCoordinator,
   dataScanCoordinator,
   deliveryRevoker: {
     revoke: (input) =>
@@ -2607,11 +2818,37 @@ if (federationMediaInventory)
   );
 protectedApi.route("/", createDataMarketRoutes({ service: dataMarketService }));
 protectedApi.route("/", createAdminDataMarketRoutes(dataMarketService));
+const mirrorWorker = config.SOFTWARE_MIRROR_DIR
+  ? new SoftwareMirrorWorker(
+      db,
+      config.SOFTWARE_MIRROR_DIR,
+      config.SOFTWARE_MIRROR_ORIGINS.split(",")
+        .map((o) => o.trim())
+        .filter(Boolean),
+    )
+  : undefined;
+if (mirrorWorker) {
+  let busy = false;
+  const sync = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      await mirrorWorker.tick();
+    } catch (err) {
+      logger.error({ err }, "Software mirror synchronization failed");
+    } finally {
+      busy = false;
+    }
+  };
+  void sync();
+  setInterval(sync, 5000).unref();
+}
 // software governance REST surface (PRD F19). org_admin or above.
 protectedApi.route(
   "/",
   createSoftwareRoutes({
     db,
+    mirrorWorker,
     installedRegistry,
     policyStore,
     policyPusher,
@@ -2648,6 +2885,7 @@ protectedApi.route(
   "/cp",
   buildCpRouter({
     consoleService: cpConsoleService,
+    preferences: preferenceService,
     availability: softwareAvailability,
     softwareOperations,
     sourceAuditProofs,
@@ -2766,6 +3004,7 @@ app.route("/api", protectedApi);
 
 // connectRPC server for Agent bidirectional streaming.
 const grpcDeps = {
+  sessions: agentSessions,
   agentUpdates,
   agentManager,
   jobService,
@@ -2789,7 +3028,9 @@ const grpcDeps = {
   federationMediaExports: federationMediaExportTransport,
   federationMediaImports: federationMediaImportTransport,
   partUrlMinter: transferRunner,
+  transferCheckpoints: transferSessions,
   sandboxArtifactRelease: sandboxArtifactReleaseService,
+  replicaCoordinator,
   dataScanCoordinator,
   dataDeliveryRevocations: dataDeliveryRevocationOutbox,
   jobCancellations: jobCancellationOutbox,
@@ -2810,6 +3051,7 @@ if (!mtlsEnabled && config.NODE_ENV !== "development" && config.NODE_ENV !== "te
 if (mtlsMode === "trusted-proxy" && config.MTLS_TRUSTED_PROXY_CIDRS.trim().length === 0) {
   throw new Error("MTLS_TRUSTED_PROXY_CIDRS is required when MTLS_MODE=trusted-proxy");
 }
+await relay?.start();
 const grpcHandler = createGrpcConnectNodeHandler(grpcDeps, {
   enabled: mtlsEnabled,
   fingerprintHeader: config.MTLS_HEADER_FINGERPRINT,
@@ -2998,7 +3240,13 @@ export default {
       trustedProxyCidrs: httpTrustedProxyCidrs,
     });
     if (clientIp) headers.set(RESOLVED_CLIENT_IP_HEADER, clientIp);
-    return app.fetch(new Request(request, { headers }));
+    // Bun associates the upgrade with the original request object.
+    return app.fetch(new Request(request, { headers }), {
+      server: {
+        upgrade: (_sanitized: Request, options: Parameters<typeof server.upgrade>[1]) =>
+          server.upgrade(request, options),
+      },
+    });
   },
   websocket,
 };
@@ -3012,11 +3260,14 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   logger.info({ signal }, "Server shutting down");
   try {
+    clearInterval(terminalExpiryTimer);
+    relay?.stop();
     grpcServer.close();
     await federationJobs.stop();
     await federationCancellationMonitor.stop();
     await federationExecutionMonitor.stop();
     await workflowAsyncRunner.stop();
+    await closeEventBus();
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
     await federationOutboundWorker?.stop();
@@ -3030,7 +3281,6 @@ async function shutdown(signal: string): Promise<void> {
     await federationCommercialWorker?.stop();
     await jobDispatchOutbox.stop();
     await jobCancellationOutbox.stop();
-    fileService.shutdown();
     // Stop the metering rollup cron so an in-flight tick can drain
     // before exit; the cron internally catches and logs errors so this
     // call always resolves.

@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildCloudToClusterArgv,
   buildHostCloudToClusterArgv,
+  containerTransferSourceArgv,
   hasPathTraversal,
   normalizeClusterToCloudSourceError,
 } from "./file-transfer";
@@ -84,7 +85,7 @@ describe("buildCloudToClusterArgv", () => {
     const cIdx = argv.indexOf("-c");
     const script = argv[cIdx + 1] ?? "";
 
-    expect(script).toContain('--connect-to "$5"');
+    expect(script).toContain('--connect-to "$connect"');
     expect(script).not.toContain(connectTo);
     expect(argv.at(-1)).toBe(connectTo);
   });
@@ -94,9 +95,9 @@ describe("buildCloudToClusterArgv", () => {
     const cIdx = argv.indexOf("-c");
     const script = argv[cIdx + 1] ?? "";
     expect(script).toContain("-C -");
-    expect(script).toContain("while :");
-    expect(script).toContain('[ "$n" -ge "$3" ]');
-    expect(script).toContain('sleep "$4"');
+    expect(script).toContain("while ! curl");
+    expect(script).toContain('[ "$n" -lt "$attempts" ]');
+    expect(script).toContain('sleep "$delay"');
     // maxRetries + backoffSec are referenced positionally ($3/$4), so the loop
     // body carries no decimal literal of the supplied values.
     expect(script).not.toContain("ge 5");
@@ -108,7 +109,7 @@ describe("buildCloudToClusterArgv", () => {
     const cIdx = argv.indexOf("-c");
     const script = argv[cIdx + 1] ?? "";
 
-    expect(script).toContain('mkdir -p "$dir"');
+    expect(script).toContain('mkdir -m 700 -- "$component"');
     expect(script).not.toContain("chmod 1777");
     expect(script).not.toContain("parent=");
   });
@@ -164,4 +165,50 @@ describe("buildHostCloudToClusterArgv", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+test("container downloads require matching bytes and a publish acknowledgement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kq-transfer-confirm-"));
+  try {
+    const input = join(root, "input"),
+      target = join(root, "output");
+    await writeFile(input, "payload");
+    await writeFile(target, "keep");
+    const digest = new Bun.CryptoHasher("sha256").update("payload").digest("hex");
+    for (const [hash, approval, ok] of [
+      [digest, "", false],
+      ["0".repeat(64), "publish\n", false],
+      [digest, "publish\n", true],
+    ] as const) {
+      const argv = buildCloudToClusterArgv(
+        "node",
+        `file://${input}`,
+        target,
+        1,
+        0,
+        "",
+        { sha256: hash, size: 7 },
+        true,
+      );
+      const proc = Bun.spawn(argv.slice(argv.indexOf("sh")), {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (approval) proc.stdin.write(approval);
+      await proc.stdin.end();
+      expect((await proc.exited) === 0).toBe(ok);
+      expect(await readFile(target, "utf8")).toBe(ok ? "payload" : "keep");
+    }
+    const reserved = join(root, ".kq-replicas");
+    await mkdir(reserved);
+    await writeFile(join(reserved, "private"), "private");
+    await symlink(reserved, join(root, "alias"));
+    const argv = containerTransferSourceArgv("node", join(root, "alias/private"));
+    const reader = Bun.spawn(argv.slice(argv.indexOf("sh")), { stdout: "pipe", stderr: "pipe" });
+    expect(await reader.exited).not.toBe(0);
+    expect(await new Response(reader.stdout).text()).toBe("");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -114,6 +114,24 @@ describe("material catalog persistent scan", () => {
     });
   });
 
+  test("an unreadable release after a full page does not produce a continuation", async () => {
+    const f = await published();
+    await f.seed("public/another");
+    const other = await f.store.publish({ ...f.input, repository: "public/another" }, SUPER);
+    const first = f.binding.repositoryId < other.repositoryId ? f.binding : other;
+    const reader = new SpackMaterialCatalogReader(f.root, {
+      getManifest: f.store.getManifest.bind(f.store),
+      authorizeManifest: async (manifest, actor, checkpoint, binding) => {
+        if (binding?.repositoryId !== first.repositoryId)
+          throw new RecipeStoreError(404, "Missing recipe");
+        await f.store.authorizeManifest(manifest, actor, checkpoint, binding);
+      },
+    });
+    const page = await reader.list({ limit: 1 }, USER);
+    expect(page.releases.map((release) => release.repositoryId)).toEqual([first.repositoryId]);
+    expect(page.nextCursor).toBeUndefined();
+  });
+
   test("rechecks recipe access for each request and hides missing recipe references", async () => {
     const f = await materialFixture();
     await f.seed();
@@ -321,7 +339,7 @@ describe("catalog resource budgets", () => {
     expect((await reader.list({ repository: "public/materials" }, USER)).releases).toHaveLength(1);
   });
 
-  test("the production 200-item response bound rejects the 201st authorized manifest", async () => {
+  test("201 authorized manifests require pagination and resume without rereading earlier metadata", async () => {
     const f = await published();
     const { manifest } = await f.store.getManifest(
       f.binding.repositoryId,
@@ -342,6 +360,21 @@ describe("catalog resource budgets", () => {
     f.recipes.get.mockClear();
     await expect(f.store.list({}, USER)).rejects.toMatchObject({ status: 503 });
     expect(f.recipes.get).toHaveBeenCalledTimes(201);
+    const first = await f.store.list({ limit: 200 }, USER);
+    expect(first.releases).toHaveLength(200);
+    if (!first.nextCursor) throw new Error("Missing catalog continuation");
+    f.recipes.get.mockClear();
+    const second = await new SpackMaterialStore(f.root, f.recipes).list(
+      { limit: 200, after: first.nextCursor },
+      USER,
+    );
+    expect(f.recipes.get).toHaveBeenCalledTimes(1);
+    expect(second.releases).toHaveLength(1);
+    expect(second.nextCursor).toBeUndefined();
+    const digests = [...first.releases, ...second.releases].map(
+      (release) => release.manifestDigest,
+    );
+    expect(digests).toEqual([...new Set(digests)].sort());
     expect(
       await f.store.getManifest(f.binding.repositoryId, f.binding.manifestDigest),
     ).toMatchObject({

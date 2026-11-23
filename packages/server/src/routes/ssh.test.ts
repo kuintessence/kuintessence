@@ -87,6 +87,7 @@ function buildApp(opts: {
   credentials?: SshCredentials | null;
   resolveError?: Error;
   providerOrgId?: string | null;
+  jumpProvider?: string;
   userOrgIds?: string[];
   providerAdminOrgIds?: string[];
   membershipOrgIds?: string[];
@@ -115,9 +116,11 @@ function buildApp(opts: {
       db,
       jwtSecret: JWT_SECRET,
       gateway,
-      resolveAgentProviderOrg: async () => opts.providerOrgId ?? null,
+      resolveAgentProviderOrg: async (id) =>
+        id === "jump" ? (opts.jumpProvider ?? null) : (opts.providerOrgId ?? null),
       resolveUserProviderAdminOrgIds: async () => opts.providerAdminOrgIds ?? [],
-      resolveCredentials: () => {
+      resolveCredentials: async (_id, authorizeHop) => {
+        if (opts.jumpProvider) await authorizeHop?.("jump");
         if (opts.resolveError) throw opts.resolveError;
         return opts.credentials ?? null;
       },
@@ -336,6 +339,27 @@ describe("SSH routes — auth + RBAC", () => {
       headers: { Upgrade: "websocket" },
     });
     expect([200, 101, 426, 500]).toContain(res.status);
+  });
+
+  test("opening a saved route rechecks the jump provider after reassignment", async () => {
+    const id = crypto.randomUUID();
+    const token = await signToken(
+      { sub: id, email: "admin@example.invalid", role: "platform_admin" },
+      JWT_SECRET,
+      300,
+    );
+    const { app, rows } = buildApp({
+      agentOnline: true,
+      credentials: validCreds,
+      providerOrgId: "org-a",
+      jumpProvider: "org-b",
+      boundActor: { userId: id, role: "platform_admin" },
+    });
+    const response = await app.request("/api/ssh/sessions/agent-1?token=" + token, {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(response.status).toBe(403);
+    expect(rows).toHaveLength(0);
   });
 
   test("org_admin cannot open SSH for another provider org's agent", async () => {

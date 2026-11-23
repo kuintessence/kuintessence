@@ -41,6 +41,20 @@ server {
     proxy_set_header Connection $connection_upgrade;
   }
 
+  location ~ ^/software/api/spack/material-repositories(?:/|$) {
+    client_max_body_size 16g;
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    rewrite ^/software(/.*)$ $1 break;
+    proxy_pass http://${REGISTRY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
   location ^~ /software/api/offline-deliveries/ {
     client_max_body_size 2m;
     proxy_read_timeout 1800s;
@@ -94,6 +108,19 @@ server {
 
   ssl_certificate /etc/nginx/tls/server.crt;
   ssl_certificate_key /etc/nginx/tls/server.key;
+
+  location ~ ^/api/spack/material-repositories(?:/|$) {
+    client_max_body_size 16g;
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
+    proxy_buffering off;
+    proxy_pass http://${REGISTRY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+  }
 
   location ^~ /api/offline-deliveries/ {
     client_max_body_size 2m;

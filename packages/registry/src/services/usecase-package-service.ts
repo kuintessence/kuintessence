@@ -41,7 +41,7 @@ export interface UsecasePackagePage {
 }
 
 export type PublishedUsecasePackage = typeof usecasePackages.$inferSelect & {
-  /** Immutable published Spack asset revision required by the workflow DSL. */
+  /** Immutable published software asset revision required by the workflow DSL. */
   publishedSoftwareRevisionId?: string;
 };
 
@@ -193,7 +193,17 @@ export class UsecasePackageService {
       const parsed = usecase.UsecasePackageSchema.safeParse(pkg.spec);
       if (!parsed.success) return [];
       const spec = parsed.data;
-      return "softwareRef" in spec ? [{ packageId: pkg.id, selector: spec.softwareRef }] : [];
+      return "softwareRef" in spec
+        ? [
+            {
+              packageId: pkg.id,
+              selector: {
+                ...spec.softwareRef,
+                kind: spec.software.kind === "Spack" ? "spack-package" : "site-runtime",
+              },
+            },
+          ]
+        : [];
     });
     if (selectors.length === 0) return packages;
 
@@ -203,17 +213,27 @@ export class UsecasePackageService {
         name: softwareAssets.name,
         version: softwareAssets.version,
         providerOrgId: softwareAssets.providerOrgId,
+        kind: softwareAssets.kind,
         revisionId: softwareAssetRevisions.id,
       })
       .from(softwareAssets)
       .innerJoin(softwareAssetRevisions, eq(softwareAssetRevisions.assetId, softwareAssets.id))
       .where(
         and(
-          eq(softwareAssets.kind, "spack-package"),
           eq(softwareAssets.lifecycle, "published"),
+          sql`((${softwareAssets.kind} = 'spack-package'
+            AND coalesce(${softwareAssets.payload} -> 'spack' ->> 'packageName', ${softwareAssets.name}) = ${softwareAssets.name}
+            AND coalesce(${softwareAssetRevisions.payload} -> 'spack' ->> 'packageName', ${softwareAssets.name}) = ${softwareAssets.name}) OR EXISTS (
+            SELECT 1 FROM ${ecosystemReleaseAssets} JOIN ${ecosystemReleases}
+              ON ${ecosystemReleaseAssets.releaseId} = ${ecosystemReleases.id}
+            WHERE ${ecosystemReleases.status} = 'active'
+              AND ${ecosystemReleaseAssets.assetId} = ${softwareAssets.id}
+              AND ${ecosystemReleaseAssets.assetRevisionId} = ${softwareAssetRevisions.id}
+          ))`,
           or(
             ...selectors.map(({ selector }) =>
               and(
+                eq(softwareAssets.kind, selector.kind),
                 eq(softwareAssets.source, selector.source),
                 eq(softwareAssets.name, selector.name),
                 eq(softwareAssets.version, selector.version),
@@ -434,6 +454,14 @@ function canonicalJson(value: unknown): string {
 }
 
 function packageRefsFromUsecase(spec: usecase.UsecasePackage) {
+  if ("softwareRef" in spec)
+    return [
+      {
+        kind:
+          spec.software.kind === "Spack" ? ("spack-package" as const) : ("site-runtime" as const),
+        ...spec.softwareRef,
+      },
+    ];
   if (spec.software.kind !== "Spack") return [];
   return [
     {
@@ -564,10 +592,11 @@ function canonicalUserId(subject: string | undefined): string | null {
 }
 
 function softwareSelectorKey(input: {
+  kind: string;
   source: string;
   name: string;
   version: string;
   providerOrgId?: string | null;
 }): string {
-  return `${input.source}\u0000${input.name}\u0000${input.version}\u0000${input.providerOrgId ?? ""}`;
+  return `${input.kind}\u0000${input.source}\u0000${input.name}\u0000${input.version}\u0000${input.providerOrgId ?? ""}`;
 }

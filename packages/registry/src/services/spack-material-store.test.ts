@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   cleanupMaterials,
@@ -19,12 +19,56 @@ import {
   SUPER,
   USER,
 } from "../routes/spack-repositories.test-helpers";
+import { withMaterialStorageLock } from "./spack-material-collection";
+import { managementFixture } from "./spack-material-management.test-helpers";
 import { materialDigest } from "./spack-material-storage";
 import { SpackMaterialStore } from "./spack-material-store";
 
 afterEach(cleanupMaterials);
 
 describe("Spack material persistence and publication", () => {
+  test("collection serializes with writers and retains every manifest and pending receipt", async () => {
+    const f = await materialFixture();
+    await f.seed();
+    await f.store.publish(f.input, OWNER);
+    await f.store.releaseReceipt(f.input.repository, SOURCE_BLOB.digest);
+    expect(await f.store.collect()).toEqual({ removed: 0 });
+    const extra = new TextEncoder().encode("shared pending material");
+    const digest = materialDigest(extra);
+    for (const repo of ["public/one", "public/two"])
+      await f.store.upload(repo, digest, byteStream(extra));
+    await f.store.releaseReceipt("public/one", digest);
+    expect(await f.store.collect()).toEqual({ removed: 0 });
+    await f.store.releaseReceipt("public/two", digest);
+    await withMaterialStorageLock(f.root, false, async () => {
+      await expect(f.store.collect()).rejects.toMatchObject({ status: 503 });
+    });
+    expect(await f.store.collect()).toEqual({ removed: 1 });
+    expect(await f.store.collect()).toEqual({ removed: 0 });
+  });
+
+  test("withdrawn manifests still pin recipes; a reference scan failure prevents collection", async () => {
+    const f = await managementFixture();
+    const binding = f.bindings[0];
+    if (!binding) throw new Error("missing material fixture");
+    f.control.withdrawn.add(binding.manifestDigest);
+    await expect(
+      f.store.getManifest(binding.repositoryId, binding.manifestDigest),
+    ).rejects.toThrow();
+    const collect = mock(async () => {});
+    await expect(
+      f.store.withUnreferencedRecipe(f.recipe.id, COMMIT, collect),
+    ).rejects.toMatchObject({ status: 409 });
+    await writeFile(
+      join(f.root, "manifests", binding.repositoryId, `${binding.manifestDigest.slice(7)}.json`),
+      "{}",
+    );
+    await expect(
+      f.store.withUnreferencedRecipe(f.recipe.id, "b".repeat(40), collect),
+    ).rejects.toMatchObject({ status: 500 });
+    expect(collect).not.toHaveBeenCalled();
+  });
+
   test("preflight reports static lock facts without generating archives or publishing", async () => {
     const f = await materialFixture();
     await f.seed();
@@ -369,4 +413,31 @@ describe("material streaming bounds and cleanup", () => {
       await f.store.upload(f.input.repository, SOURCE_BLOB.digest, byteStream(SOURCE)),
     ).toEqual(SOURCE_BLOB);
   });
+});
+
+test.each([
+  "root",
+  "staging",
+  "blobs",
+])("rejects redirected %s directories and resumes after storage is restored", async (layer) => {
+  const f = await materialFixture();
+  const external = await materialFixture();
+  const path = layer === "root" ? f.root : join(f.root, layer);
+  if (layer !== "root") await mkdir(path, { recursive: true });
+  const saved = path + ".saved";
+  await rename(path, saved);
+  try {
+    await symlink(external.root, path);
+    await expect(
+      f.store.upload(f.input.repository, SOURCE_BLOB.digest, byteStream(SOURCE)),
+    ).rejects.toThrow();
+    expect(await readdir(external.root)).toEqual([]);
+  } finally {
+    const { unlink } = await import("node:fs/promises");
+    await unlink(path);
+    await rename(saved, path);
+  }
+  expect(
+    await f.store.upload(f.input.repository, SOURCE_BLOB.digest, byteStream(SOURCE)),
+  ).toMatchObject(SOURCE_BLOB);
 });

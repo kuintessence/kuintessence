@@ -211,7 +211,7 @@ describe("SpackCli managed execution gate", () => {
       () => cli.mirrorAdd("mirror", "https://upstream.example"),
     ]) {
       await expect(operation()).rejects.toThrow(
-        "managed offline Spack execution is not enabled yet",
+        "Managed Spack operations require audited materials and a configured site installer",
       );
     }
     expect(calls).toEqual([]);

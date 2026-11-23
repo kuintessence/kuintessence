@@ -251,6 +251,11 @@ export class DataScanCoordinator {
   }
 
   private async dispatch(request: DataScanWireRequest): Promise<boolean> {
+    const stored = await this.dataImports.getCpLocalScan(request.requestId);
+    if (stored?.status !== "pending") {
+      this.removePending(request.requestId);
+      return false;
+    }
     const dispatched = this.dispatcher.pushDataScanRequest(request.agentId, request);
     await this.dataImports.markCpLocalScanAttempt(request.requestId, dispatched);
     return dispatched;

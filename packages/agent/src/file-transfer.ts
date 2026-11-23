@@ -1,43 +1,82 @@
 import { readSiteTransport, siteCurlArgs } from "@kuintessence/shared/site-transport";
 
-/**
- * Builders for the `docker exec` argv used by the Agent's file-transfer paths.
- *
- * SECURITY: the presigned `url` and the job/workflow-controlled `targetPath`
- * MUST NOT be interpolated into the `sh -c` script string — `targetPath`
- * derives from a workflow's `stagePath` (user-authored, unvalidated) and the
- * command runs as root inside the cluster container, so interpolation is a
- * remote-command-execution vector. Both are passed as positional args
- * (`sh -c '<script>' _ <url> <targetPath>` → `$1`, `$2`) so the shell treats
- * them as data, never as code. Mirrors the positional-arg pattern in
- * `container-io.ts`. `maxRetries` ($3) and `backoffSec` ($4) are config ints,
- * but are likewise passed positionally so the script string stays fully
- * interpolation-free (no value from outside the fixed constants is spliced in).
- */
+// The shell keeps the destination directory as its cwd and the private staging
+// directory open across download, verification and rename. Paths and URLs are argv data.
+const DOWNLOAD_SCRIPT = `set -eu
+url="$1"; target="$2"; attempts="$3"; delay="$4"; connect="$5"; shift 5
+handshake=""
+if [ "$#" -ge 1 ] && [ "$1" = --confirm ]; then handshake=yes; shift; fi
+digest=""; size=""
+if [ "$#" -ge 1 ] && [ "$1" = --digest ]; then digest="$2"; size="$3"; shift 3; fi
+case "/$target/" in */.kq-replicas/*) exit 2;; esac
+dir=$(realpath -m -- "$(dirname -- "$target")")
+case "$dir/" in */.kq-replicas/*) exit 2;; esac
+cd /
+remaining=\${dir#/}
+while [ -n "$remaining" ]; do
+  component=\${remaining%%/*}
+  case "$remaining" in */*) remaining=\${remaining#*/};; *) remaining="";; esac
+  [ -d "$component" ] || mkdir -m 700 -- "$component" || [ -d "$component" ]
+  cd -P -- "$component"
+  case "$(pwd -P)/" in */.kq-replicas/*) exit 2;; esac
+done
+name=$(basename -- "$target")
+case "$name" in ""|"."|".."|".kq-replicas") exit 2;; esac
+cwd=$(pwd -P)
+tmp=$(mktemp -d .kq-transfer.XXXXXXXX)
+exec 4<"$tmp"
+[ "$(stat -Lc '%u:%a' /proc/self/fd/4)" = "$(id -u):700" ]
+[ "$(readlink -f /proc/self/fd/4)" = "\${cwd%/}/$tmp" ]
+case "$(readlink -f /proc/self/fd/4)/" in */.kq-replicas/*) exit 2;; esac
+data=/proc/self/fd/4/payload
+cleanup() {
+  if [ -n "$monitor" ]; then kill "$monitor" 2>/dev/null || :; wait "$monitor" 2>/dev/null || :; fi
+  rm -f -- "$data"; rmdir -- "$tmp"
+}
+monitor=""
+trap cleanup EXIT
+trap 'exit 1' HUP TERM INT
+(set -C; : > "$data")
+while sleep 1; do stat -c %s -- "$data" 2>/dev/null || break; done &
+monitor=$!
+if [ -n "$connect" ]; then set -- "$@" --connect-to "$connect"; fi
+if [ -n "$size" ] && [ "$size" != 0 ]; then set -- "$@" --max-filesize "$size"; fi
+n=0
+while ! curl -fsSL -C - "$@" -o "$data" -- "$url"; do
+  n=$((n+1)); [ "$n" -lt "$attempts" ] || exit 1; sleep "$delay"
+done
+bytes=$(stat -c %s -- "$data")
+if [ -n "$digest" ]; then
+  actual=$(sha256sum < "$data")
+  if [ "$bytes" != "$size" ] || [ "\${actual%% *}" != "$digest" ]; then echo "Download content mismatch" >&2; exit 1; fi
+fi
+kill "$monitor" 2>/dev/null || :
+wait "$monitor" 2>/dev/null || :
+monitor=""
+if [ -n "$handshake" ]; then
+  printf 'ready %s\\n' "$bytes"
+  IFS= read -r decision && [ "$decision" = publish ] || exit 1
+fi
+chmod 644 "$data"
+mv -fT -- "$data" "$name"
+printf '%s\\n' "$bytes"`;
 
-/**
- * Bounded retry-resume download. `curl -C -` resumes from the partial file's
- * current size (verified against real MinIO: correct on both a fresh/nonexistent
- * file and a partial one), so a single-branch loop is correct — no first-attempt
- * special case. After `$3` consecutive failures it exits non-zero so the Server
- * re-dispatches. A rare end-of-stream 416 (the file is already byte-complete when
- * a retry fires) is NOT handled in-script: curl exits non-zero, the loop gives up,
- * and the transfer falls back to a full re-dispatch — accepted as a rare case.
- */
-const CLOUD_TO_CLUSTER_SCRIPT =
-  'dir=$(dirname "$2"); mkdir -p "$dir"; n=0; ' +
-  'while :; do if [ -n "$5" ]; then curl -fsSL -C - --connect-to "$5" "$1" -o "$2"; ' +
-  'else curl -fsSL -C - "$1" -o "$2"; fi && break; ' +
-  'n=$((n+1)); [ "$n" -ge "$3" ] && exit 1; sleep "$4"; done; chmod 644 "$2"';
+export function containerTransferSourceArgv(containerId: string, path: string): string[] {
+  return [
+    "docker",
+    "exec",
+    "-u",
+    "root",
+    containerId,
+    "sh",
+    "-c",
+    'set -eu; exec 3<"$1"; test -f /proc/self/fd/3; p=$(readlink -f /proc/self/fd/3); case "/$1/:$p/" in */.kq-replicas/*) exit 2;; esac; exec cat <&3',
+    "_",
+    path,
+  ];
+}
 
-/**
- * True if a transfer path contains a `..` segment. Transfer paths are
- * Server-anchored at a per-job run directory (`<base>/<stagePath>`) where
- * `stagePath` is user-authored and unvalidated; a `..` segment lets it escape
- * the run dir — writing arbitrary files on download, or reading arbitrary files
- * to exfiltrate on upload, both as root in the container. The Agent rejects such
- * paths defensively (the durable fix is to validate stagePath upstream — tbd #12).
- */
+/** Agent-side path check for both upload and download requests. */
 export function hasPathTraversal(path: string): boolean {
   return path.split("/").some((seg) => seg === "..");
 }
@@ -68,24 +107,29 @@ export function buildCloudToClusterArgv(
   maxRetries: number,
   backoffSec: number,
   connectTo = "",
+  content?: { sha256: string; size: number },
+  confirm = false,
 ): string[] {
   if (readSiteTransport())
     throw new Error("Site transport requires host staging before container execution");
   return [
     "docker",
     "exec",
+    ...(confirm ? ["-i"] : []),
     "-u",
     "root",
     containerId,
     "sh",
     "-c",
-    CLOUD_TO_CLUSTER_SCRIPT,
+    DOWNLOAD_SCRIPT,
     "_",
     url,
     targetPath,
     String(maxRetries),
     String(backoffSec),
     connectTo,
+    ...(confirm ? ["--confirm"] : []),
+    ...(content ? ["--digest", content.sha256, String(content.size)] : []),
   ];
 }
 
@@ -95,30 +139,20 @@ export function buildHostCloudToClusterArgv(
   maxRetries: number,
   backoffSec: number,
   connectTo = "",
+  confirm = false,
 ): string[] {
   const site = readSiteTransport();
-  if (site) {
-    return [
-      "sh",
-      "-c",
-      'url=$1; target=$2; retries=$3; delay=$4; shift 4; mkdir -p "$(dirname "$target")" || exit; n=0; while ! curl -fsS -C - "$@" "$url" -o "$target"; do n=$((n+1)); [ "$n" -ge "$retries" ] && exit 1; sleep "$delay"; done',
-      "_",
-      url,
-      targetPath,
-      String(maxRetries),
-      String(backoffSec),
-      ...siteCurlArgs(url, site),
-    ];
-  }
   return [
     "sh",
     "-c",
-    CLOUD_TO_CLUSTER_SCRIPT,
+    DOWNLOAD_SCRIPT,
     "_",
     url,
     targetPath,
     String(maxRetries),
     String(backoffSec),
-    connectTo,
+    site ? "" : connectTo,
+    ...(confirm ? ["--confirm"] : []),
+    ...(site ? siteCurlArgs(url, site) : []),
   ];
 }

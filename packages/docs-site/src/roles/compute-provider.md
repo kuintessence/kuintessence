@@ -56,7 +56,7 @@ Agent 会上报预装 Spack/module 软件。算力中心可以声明映射到 of
 - 平台可对高风险映射进行审核、锁定或驳回。
 - 同名 module/spec 冲突时，应优先选择 official upstream 或 platform fork。
 
-当前 UI 只展示 mapping 摘要，详细的映射审核操作尚未实现。
+在算力中心的软件策略页面打开 Agent 详情，可审核预装软件映射。
 
 ## 可用性预览
 
@@ -88,8 +88,8 @@ hdf5+mpi %gcc@13.2.0
 import 只接受以下三种 source：
 
 - `cp-local`：必须提供 `agentId`、`managedRootId`、相对 `relativePath`，由 mTLS Agent 控制通道发起 scan/attestation。
-- `netdrive`：必须提供 `netdriveFileId`。当前复制执行器尚未配置，返回 `503 DATA_IMPORT_UNAVAILABLE`，不会创建可用版本。
-- `platform-object`：先通过 upload session、浏览器 PUT 与 SHA-256 commit 持久化对象，再提交 `uploadSessionId`；后续 import worker 未配置时返回 UNAVAILABLE。
+- `netdrive`：必须提供 `netdriveFileId`。选择本人已上传且有固定对象版本的文件，校验摘要后发布独立的不可变副本。
+- `platform-object`：先通过 upload session、浏览器 PUT 与 SHA-256 commit 持久化对象，再提交 `uploadSessionId`；导入目标须与会话的所有者、资产、版本一致；完成后可查询导入回执。
 
 为已完成版本创建 replica 时，记录 `agentId/siteId/clusterId` 和 location。多个 `available` replica 可提高不同中心的调度候选并形成 data affinity，但不能绕过数据权限或跨中心复制策略。访问申请可在该页查看详情并 approve/reject；审批会产生可审计的授权投影。
 

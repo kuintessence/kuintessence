@@ -65,11 +65,12 @@ export const MODERN_SSH_ALGORITHMS = {
  * `closed` on remote-side close (or error). The handler turns those into
  * SshOutput / SshClosed protobuf messages on the agent → Server stream.
  *
- * Jumphost chaining, X11 forwarding, and SFTP are out of scope. Adding them
- * later only needs new methods + new proto fields.
+ * SFTP sessions use the raw SSH subsystem channel and only forward stdout.
  */
 
 export interface SshOpenParams {
+  jumps?: Omit<SshOpenParams, "jumps" | "sftp">[];
+  sftp?: boolean;
   host: string;
   port: number;
   username: string;
@@ -96,7 +97,15 @@ export interface Ssh2ClientLike {
   on(event: "error", cb: (err: Error) => void): this;
   on(event: "close", cb: () => void): this;
   on(event: "end", cb: () => void): this;
+  subsys?(name: "sftp", cb: (err: Error | undefined, stream: Ssh2ClientChannel) => void): this;
   shell(cb: (err: Error | undefined, stream: Ssh2ClientChannel) => void): boolean;
+  forwardOut?(
+    source: string,
+    sourcePort: number,
+    host: string,
+    port: number,
+    done: (error: Error | undefined, socket: Ssh2ClientChannel) => void,
+  ): this;
   connect(cfg: ConnectConfig): this;
   end(): this;
 }
@@ -111,6 +120,7 @@ export type Ssh2Factory = () => Ssh2ClientLike;
 const defaultFactory: Ssh2Factory = () => new DefaultSsh2Client() as unknown as Ssh2ClientLike;
 
 interface ActiveSession {
+  jumpClients: Ssh2ClientLike[];
   client: Ssh2ClientLike;
   channel: Ssh2ClientChannel | null;
   /** Pending stdin bytes received before the shell channel is open. */
@@ -172,6 +182,7 @@ export class SshClient {
     const client = this.factory();
     const session: ActiveSession = {
       client,
+      jumpClients: [],
       channel: null,
       pendingWrites: [],
       closed: false,
@@ -179,27 +190,34 @@ export class SshClient {
     this.sessions.set(sessionId, session);
 
     client.on("ready", () => {
-      const ok = client.shell((err, channel) => {
+      if (session.closed) return;
+      const onChannel = (err: Error | undefined, channel: Ssh2ClientChannel) => {
+        if (session.closed) {
+          channel?.destroy();
+          return;
+        }
         if (err) {
-          this.emitClosed(sessionId, `shell open failed: ${err.message}`);
-          this.cleanup(sessionId);
+          this.finish(
+            session,
+            sessionId,
+            `${params.sftp ? "sftp" : "shell"} open failed: ${err.message}`,
+          );
           return;
         }
         session.channel = channel;
         channel.on("data", (chunk: Buffer) => {
-          this.emitOutput(sessionId, ensureBuffer(chunk));
+          if (!session.closed) this.emitOutput(sessionId, ensureBuffer(chunk));
         });
         // ssh2 emits stderr on the dedicated `extended data` event with type=1.
-        channel.stderr?.on?.("data", (chunk: Buffer) => {
-          this.emitOutput(sessionId, ensureBuffer(chunk));
-        });
+        if (!params.sftp)
+          channel.stderr?.on?.("data", (chunk: Buffer) => {
+            if (!session.closed) this.emitOutput(sessionId, ensureBuffer(chunk));
+          });
         channel.on("close", () => {
-          this.emitClosed(sessionId, "channel closed");
-          this.cleanup(sessionId);
+          this.finish(session, sessionId, "channel closed");
         });
         channel.on("error", (chErr: Error) => {
-          this.emitClosed(sessionId, `channel error: ${chErr.message}`);
-          this.cleanup(sessionId);
+          this.finish(session, sessionId, `channel error: ${chErr.message}`);
         });
         // Flush anything that arrived before the channel was open.
         for (const buf of session.pendingWrites) {
@@ -211,11 +229,17 @@ export class SshClient {
           channel.setWindow(session.pendingResize.rows, session.pendingResize.cols, 0, 0);
           session.pendingResize = undefined;
         }
-      });
-      if (!ok) {
+      };
+      if (params.sftp) {
+        if (client.subsys) client.subsys("sftp", onChannel);
+        else {
+          this.finish(session, sessionId, "SFTP subsystem unavailable");
+        }
+        return;
+      }
+      if (!client.shell(onChannel)) {
         // ssh2 returned synchronous "no more channels" backpressure refusal.
-        this.emitClosed(sessionId, "shell open refused (out of channel slots)");
-        this.cleanup(sessionId);
+        this.finish(session, sessionId, "shell open refused (out of channel slots)");
       }
     });
 
@@ -223,35 +247,102 @@ export class SshClient {
       const reason = session.hostKeyRejected
         ? "host key verification failed (possible MITM — pinned key did not match)"
         : `client error: ${err.message}`;
-      this.emitClosed(sessionId, reason);
-      this.cleanup(sessionId);
+      this.finish(session, sessionId, reason);
     });
 
     client.on("end", () => {
       // Remote end closed the transport before/after our explicit close.
       // Ensure we surface a `closed` event exactly once.
-      this.emitClosed(sessionId, "client end");
-      this.cleanup(sessionId);
+      this.finish(session, sessionId, "client end");
     });
 
     client.on("close", () => {
-      this.emitClosed(sessionId, "client close");
-      this.cleanup(sessionId);
+      this.finish(session, sessionId, "client close");
     });
 
-    const cfg: ConnectConfig = {
-      host: params.host,
-      port: params.port,
-      username: params.username,
+    const hops = params.jumps;
+    if (
+      hops &&
+      (hops.length < 1 ||
+        hops.length > 4 ||
+        [...hops, params].some(
+          (hop) =>
+            !hop.host ||
+            !hop.port ||
+            !hop.username ||
+            !hop.expectedHostKeySha256 ||
+            (!hop.privateKey && !hop.password),
+        ))
+    ) {
+      this.finish(session, sessionId, "Invalid pinned SSH route");
+      return;
+    }
+    const chain = [...(hops ?? []), params];
+    const fail = () => {
+      if (this.sessions.get(sessionId) !== session) return;
+      this.finish(
+        session,
+        sessionId,
+        session.hostKeyRejected
+          ? "SSH jump host key verification failed"
+          : "SSH route connection failed",
+      );
     };
-    if (params.password) cfg.password = params.password;
-    if (params.privateKey) cfg.privateKey = params.privateKey;
-    if (params.passphrase) cfg.passphrase = params.passphrase;
+    const connect = (index: number, sock?: Ssh2ClientChannel) => {
+      if (session.closed) {
+        sock?.destroy();
+        return;
+      }
+      const hop = chain[index];
+      if (!hop) return fail();
+      const next = chain[index + 1];
+      const transport = next ? this.factory() : client;
+      if (next) {
+        session.jumpClients.push(transport);
+        transport.on("error", fail).on("end", fail).on("close", fail);
+        transport.on("ready", () => {
+          if (session.closed || !transport.forwardOut) return fail();
+          try {
+            transport.forwardOut("127.0.0.1", 0, next.host, next.port, (error, channel) => {
+              if (error || !channel) return fail();
+              connect(index + 1, channel);
+            });
+          } catch {
+            fail();
+          }
+        });
+      }
+      const cfg = this.connectionConfig(hop, session);
+      if (sock) cfg.sock = sock;
+      try {
+        transport.connect(cfg);
+      } catch (error) {
+        if (!hops) {
+          this.finish(
+            session,
+            sessionId,
+            `connect threw: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } else fail();
+      }
+    };
+    connect(0);
+  }
+
+  private connectionConfig(hop: SshOpenParams, session: ActiveSession): ConnectConfig {
+    const cfg: ConnectConfig = {
+      host: hop.host,
+      port: hop.port,
+      username: hop.username,
+    };
+    if (hop.password) cfg.password = hop.password;
+    if (hop.privateKey) cfg.privateKey = hop.privateKey;
+    if (hop.passphrase) cfg.passphrase = hop.passphrase;
     // Host-key pinning: reject the handshake when the presented key doesn't
     // match the expected fingerprint. Without a pin, ssh2 performs no host-key
     // verification (the prior behaviour), so this is the MITM defense.
-    if (params.expectedHostKeySha256) {
-      const expected = params.expectedHostKeySha256;
+    if (hop.expectedHostKeySha256) {
+      const expected = hop.expectedHostKeySha256;
       cfg.hostVerifier = (key: Buffer) => {
         const ok = hostKeySha256(key) === expected;
         if (!ok) session.hostKeyRejected = true;
@@ -265,15 +356,7 @@ export class SshClient {
       cfg.keepaliveInterval = this.keepaliveIntervalMs;
       cfg.keepaliveCountMax = 3;
     }
-    try {
-      client.connect(cfg);
-    } catch (err) {
-      this.emitClosed(
-        sessionId,
-        `connect threw: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      this.cleanup(sessionId);
-    }
+    return cfg;
   }
 
   /** Forward stdin bytes to the SSH channel. Buffered until ready. */
@@ -317,13 +400,7 @@ export class SshClient {
     } catch {
       // ignore — we're tearing down anyway
     }
-    try {
-      session.client.end();
-    } catch {
-      // ignore
-    }
-    this.emitClosed(sessionId, reason);
-    this.cleanup(sessionId);
+    this.finish(session, sessionId, reason);
   }
 
   /** Tear down every active session. Used at agent shutdown. */
@@ -353,25 +430,26 @@ export class SshClient {
     }
   }
 
-  private emitClosed(sessionId: string, reason: string, exitCode?: number): void {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.closed) return;
+  private finish(session: ActiveSession, sessionId: string, reason: string): void {
+    if (session.closed || this.sessions.get(sessionId) !== session) return;
     session.closed = true;
+    this.sessions.delete(sessionId);
     for (const cb of this.closedListeners) {
       try {
-        cb(sessionId, reason, exitCode);
+        cb(sessionId, reason);
       } catch (err) {
         this.logger.error({ err, sessionId }, "closed listener threw");
       }
     }
-  }
-
-  private cleanup(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
     session.channel = null;
     session.pendingWrites.length = 0;
-    this.sessions.delete(sessionId);
+    for (const transport of [session.client, ...session.jumpClients.reverse()]) {
+      try {
+        transport.end();
+      } catch {
+        /* already disconnected */
+      }
+    }
   }
 }
 

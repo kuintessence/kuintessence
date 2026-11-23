@@ -21,7 +21,12 @@
  * scope for this OIDC client.
  */
 
-import { type RoleName, resolveRoleFromGroups, type SsoGroupMapping } from "@kuintessence/shared";
+import {
+  type RoleName,
+  resolveRoleFromGroups,
+  type SsoGroupMapping,
+  type SsoProviderType,
+} from "@kuintessence/shared";
 import {
   allowInsecureRequests,
   authorizationCodeGrant,
@@ -243,6 +248,7 @@ export async function discoverOidc(opts: DiscoverOptions): Promise<DiscoverResul
 }
 
 export interface BuildAuthUrlOptions {
+  providerType?: SsoProviderType;
   redirectUri: string;
   scope?: string;
 }
@@ -262,15 +268,21 @@ export async function buildOidcAuthUrl(
   const state = randomState();
   const url = impl.buildAuthUrl(config, {
     redirectUri: opts.redirectUri,
-    scope: opts.scope ?? "openid profile email groups",
+    scope: [
+      opts.scope ?? "openid profile email groups",
+      ...(opts.providerType && opts.providerType !== "oidc" ? ["federated:id"] : []),
+    ].join(" "),
     state,
     codeChallenge,
     codeChallengeMethod: "S256",
   });
+  if (opts.providerType && opts.providerType !== "oidc")
+    url.searchParams.set("connector_id", opts.providerType);
   return { url: url.toString(), state, codeVerifier };
 }
 
 export interface CompleteCallbackOptions {
+  providerType?: SsoProviderType;
   config: Configuration;
   callbackUrl: URL;
   expectedState: string;
@@ -299,6 +311,16 @@ export async function completeOidcCallback(
   );
   if (!exchanged.sub) {
     throw new Error("OIDC token exchange returned no subject claim");
+  }
+  if (opts.providerType && opts.providerType !== "oidc") {
+    const upstream = exchanged.claims?.federated_claims;
+    if (
+      !upstream ||
+      typeof upstream !== "object" ||
+      !("connector_id" in upstream) ||
+      upstream.connector_id !== opts.providerType
+    )
+      throw new Error("SSO identity token does not confirm the configured upstream connector");
   }
   const userinfo = await impl.fetchUserInfo(opts.config, exchanged.accessToken, exchanged.sub);
   const userinfoGroups = extractGroups(userinfo.rawGroups);

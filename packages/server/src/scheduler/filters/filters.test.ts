@@ -6,7 +6,7 @@ import { InstallRightsFilter } from "./install-rights";
 import { LoadFilter } from "./load";
 import { ManualFilter } from "./manual";
 import { PermissionFilter } from "./permission";
-import { SoftwareFilter } from "./software";
+import { SoftwareFilter, softwareAvailabilityKey } from "./software";
 import { UrgencyFilter } from "./urgency";
 
 function makeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
@@ -113,6 +113,26 @@ describe("SoftwareFilter", () => {
     expect(f.evaluate(makeAgent(), ctx).kind).toBe("pass");
   });
 
+  test("a pinned site runtime needs its own authorized availability decision", () => {
+    const spack = { name: "solver", version: "1", installable: false };
+    const runtime = {
+      ...spack,
+      assetId: crypto.randomUUID(),
+      siteRuntimeRevisionId: crypto.randomUUID(),
+    };
+    const permissions = new Map([
+      [softwareAvailabilityKey(spack), new Map([["a-1", [] as string[]]])],
+    ]);
+    const filter = new SoftwareFilter({
+      agentSoftware: new Map([["a-1", new Set(["solver@1"])]]),
+      availability: permissions,
+    });
+    const ctx = makeCtx({ job: { ...makeCtx().job, softwareRequirements: [runtime] } });
+    expect(filter.evaluate(makeAgent(), ctx).kind).toBe("reject");
+    permissions.set(softwareAvailabilityKey(runtime), new Map([["a-1", []]]));
+    expect(filter.evaluate(makeAgent(), ctx).kind).toBe("pass");
+  });
+
   test("passes when required software present (name-only, any version)", () => {
     const f = new SoftwareFilter({ agentSoftware: new Map([["a-1", new Set(["wrf@4.4"])]]) });
     const ctx = makeCtx({
@@ -139,7 +159,10 @@ describe("SoftwareFilter", () => {
     const f = new SoftwareFilter({
       agentSoftware: new Map(),
       availability: new Map([
-        ["vasp", new Map([["a-1", ["provider policy only allows preinstalled software"]]])],
+        [
+          softwareAvailabilityKey({ name: "vasp", installable: true }),
+          new Map([["a-1", ["provider policy only allows preinstalled software"]]]),
+        ],
       ]),
     });
     const ctx = makeCtx({

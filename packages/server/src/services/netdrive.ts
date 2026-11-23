@@ -1,9 +1,20 @@
+import { createHash } from "node:crypto";
 import {
+  dataAssetFiles,
+  dataAssetImports,
+  federationOutbound,
+  federationWorkflowInputExports,
+  fileTransfers,
+  jobs,
   netdriveFiles,
   netdriveReplicas,
   netdriveTransferLog,
+  netdriveUploadReservations,
   type PgDb,
   userOrgMemberships,
+  workflowArtifactFiles,
+  workflowArtifacts,
+  workflowExecutionJournal,
 } from "@kuintessence/db";
 import {
   AppError,
@@ -20,7 +31,7 @@ import {
   type NetDrivePartUrlsResponse,
   type NetDriveUploadUrlRequest,
 } from "@kuintessence/shared";
-import { and, asc, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, like, lte, sql } from "drizzle-orm";
 import * as jose from "jose";
 import type { Logger } from "pino";
 import type { MinioBackend } from "../storage/minio-client";
@@ -86,10 +97,6 @@ export interface NetDriveServiceOptions {
   quotaGuard?: (ownerId: string, path: string, size: number) => Promise<void>;
 }
 
-/**
- * Internal shape of a single transfer-log entry. `mirror` direction is
- * reserved; there is no call site that produces one.
- */
 type TransferDirection = "upload" | "download" | "mirror";
 export type NetDriveReplicaStatus = "pending" | "syncing" | "available" | "failed";
 
@@ -122,7 +129,10 @@ export interface RecordReplicaInput {
   context?: NetDriveTransferContext;
 }
 
-export type NetDriveCommitDb = Pick<PgDb, "select" | "insert" | "update" | "execute">;
+export type NetDriveCommitDb = Pick<
+  PgDb,
+  "select" | "insert" | "update" | "delete" | "execute" | "transaction"
+>;
 
 interface CommitTokenPayload extends jose.JWTPayload {
   path?: string;
@@ -164,6 +174,82 @@ export class NetDriveService {
     this.quotaGuard = opts.quotaGuard;
   }
 
+  private async reserveUpload(
+    ownerId: string,
+    path: string,
+    size: number,
+    storageKey: string,
+    expiresAt: string,
+    generated = false,
+  ) {
+    await this.db.transaction(async (tx) => {
+      await lockCloudWrites(tx, ownerId);
+      await new StorageQuotaService(tx, () => new Date(this.now())).assertCloudWriteAllowed(
+        ownerId,
+        path,
+        size,
+      );
+      const rows = await tx
+        .insert(netdriveUploadReservations)
+        .values({ ownerId, path, size, storageKey, generated, expiresAt: new Date(expiresAt) })
+        .onConflictDoUpdate({
+          target: netdriveUploadReservations.storageKey,
+          set: { expiresAt: new Date(expiresAt) },
+          setWhere: and(
+            eq(netdriveUploadReservations.ownerId, ownerId),
+            eq(netdriveUploadReservations.path, path),
+            eq(netdriveUploadReservations.size, size),
+          ),
+        })
+        .returning({ key: netdriveUploadReservations.storageKey });
+      if (!rows.length)
+        throw new AppError(ErrorCode.FORBIDDEN, "Upload reservation binding changed", 403);
+    });
+  }
+
+  async pruneExpiredReservations(): Promise<void> {
+    const holds = netdriveUploadReservations;
+    const expired = lte(holds.expiresAt, new Date(this.now()));
+    await this.db.delete(holds).where(and(expired, eq(holds.generated, false)));
+    const candidates = await this.db
+      .select()
+      .from(holds)
+      .where(and(expired, eq(holds.generated, true)))
+      .orderBy(asc(holds.expiresAt))
+      .limit(25);
+    for (const candidate of candidates) {
+      try {
+        await this.db.transaction(async (tx) => {
+          await lockCloudWrites(tx, candidate.ownerId);
+          const where = and(
+            eq(holds.storageKey, candidate.storageKey),
+            expired,
+            eq(holds.generated, true),
+          );
+          const [hold] = await tx.select().from(holds).where(where).for("update");
+          if (!hold) return;
+          const [receipt] = await tx
+            .select({ id: netdriveFiles.id })
+            .from(netdriveFiles)
+            .where(eq(netdriveFiles.storageKey, hold.storageKey))
+            .limit(1);
+          if (!receipt) {
+            const stat = await this.minio.head(hold.storageKey);
+            if (stat?.versionId && stat.versionId !== "null")
+              await this.minio.delete(hold.storageKey, stat.versionId);
+            else if (stat) throw new Error("Generated object has no storage version");
+          }
+          await tx.delete(holds).where(where);
+        });
+      } catch (err) {
+        this.logger.warn(
+          { err, storageKey: candidate.storageKey },
+          "Generated upload cleanup will retry",
+        );
+      }
+    }
+  }
+
   /** Mint a presigned PUT URL + commit token. */
   async mintUploadUrl(
     ownerId: string,
@@ -181,7 +267,9 @@ export class NetDriveService {
     const uploadUrl = await this.minio.presignUpload(storageKey, this.uploadTtlSec, contentType);
     const expiresAt = new Date(this.now() + this.uploadTtlSec * 1000).toISOString();
 
+    await this.reserveUpload(ownerId, req.path, req.size, storageKey, expiresAt);
     const tokenPayload: CommitTokenPayload = {
+      path: req.path,
       ownerId,
       storageKey,
       intendedSize: req.size,
@@ -212,8 +300,18 @@ export class NetDriveService {
     }
     const storageKey = `${STORAGE_PREFIX}/objects/${crypto.randomUUID()}`;
     const contentType = req.contentType ?? "application/octet-stream";
-    const { uploadId } = await this.minio.createMultipartUpload(storageKey, contentType);
     const expiresAt = new Date(this.now() + this.multipartTtlSec * 1000).toISOString();
+
+    await this.reserveUpload(ownerId, req.path, req.size, storageKey, expiresAt);
+    let uploadId: string;
+    try {
+      ({ uploadId } = await this.minio.createMultipartUpload(storageKey, contentType));
+    } catch (error) {
+      await this.db
+        .delete(netdriveUploadReservations)
+        .where(eq(netdriveUploadReservations.storageKey, storageKey));
+      throw error;
+    }
 
     const tokenPayload: CommitTokenPayload = {
       kind: "multipart",
@@ -243,14 +341,34 @@ export class NetDriveService {
       size: number;
       target: string;
     },
+    renewReservation = true,
   ) {
     if (
-      !session.storageKey.startsWith(`${STORAGE_PREFIX}/${ownerId}/`) ||
+      !/^netdrive\/objects\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(
+        session.storageKey,
+      ) ||
       !session.uploadId ||
       !Number.isSafeInteger(session.partSize) ||
       session.partSize < MIN_S3_PART_SIZE
     )
       throw new Error("Invalid persisted multipart session");
+    if (renewReservation) {
+      const [committed] = await this.db
+        .select({ id: netdriveFiles.id })
+        .from(netdriveFiles)
+        .where(
+          and(eq(netdriveFiles.storageKey, session.storageKey), eq(netdriveFiles.ownerId, ownerId)),
+        )
+        .limit(1);
+      if (!committed)
+        await this.reserveUpload(
+          ownerId,
+          session.target,
+          session.size,
+          session.storageKey,
+          new Date(this.now() + this.multipartTtlSec * 1000).toISOString(),
+        );
+    }
     const commitToken = await new jose.SignJWT({
       kind: "multipart",
       path: session.target,
@@ -285,6 +403,7 @@ export class NetDriveService {
     ownerId: string,
     req: NetDriveCommitRequest,
     context?: NetDriveTransferContext,
+    onCommit?: (result: NetDriveCommitResult, db: NetDriveCommitDb) => Promise<void>,
   ): Promise<NetDriveCommitResult> {
     await this.quotaGuard?.(ownerId, req.path, req.size);
     let payload: CommitTokenPayload;
@@ -301,7 +420,7 @@ export class NetDriveService {
     if (payload.storageKey !== req.storageKey) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Commit token storage key mismatch", 400);
     }
-    if (payload.intendedSize !== req.size) {
+    if (payload.kind || payload.path !== req.path || payload.intendedSize !== req.size) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Commit token size mismatch", 400);
     }
     if (payload.sha256 && payload.sha256.toLowerCase() !== req.sha256.toLowerCase()) {
@@ -326,6 +445,10 @@ export class NetDriveService {
       );
     }
 
+    const digest = await this.minio.sha256(req.storageKey, stat.versionId);
+    if (!digest || digest.toLowerCase() !== req.sha256.toLowerCase()) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Uploaded object sha256 mismatch", 400);
+    }
     const contentType = req.contentType ?? "application/octet-stream";
     return this.persistCommittedFile(
       ownerId,
@@ -339,12 +462,15 @@ export class NetDriveService {
         storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
       },
       context,
+      this.db,
+      true,
+      onCommit,
     );
   }
 
   /**
    * Shared commit tail: tombstone any live (owner, path) row, insert the new
-   * netdrive_files row, and best-effort record the upload bytes. Used by both
+   * netdrive_files row, and record the upload bytes in the same transaction. Used by both
    * single-shot `commitFile` and `completeMultipart`.
    */
   private async persistCommittedFile(
@@ -361,9 +487,37 @@ export class NetDriveService {
     context?: NetDriveTransferContext,
     db: NetDriveCommitDb = this.db,
     recordUpload = true,
+    onCommit?: (result: NetDriveCommitResult, db: NetDriveCommitDb) => Promise<void>,
   ): Promise<NetDriveCommitResult> {
     const persist = async (tx: NetDriveCommitDb) => {
       await lockCloudWrites(tx, ownerId);
+      const [receipt] = await tx
+        .select()
+        .from(netdriveFiles)
+        .where(eq(netdriveFiles.storageKey, args.storageKey))
+        .limit(1);
+      if (receipt) {
+        if (
+          receipt.deletedAt ||
+          receipt.ownerId !== ownerId ||
+          receipt.path !== args.path ||
+          receipt.size !== args.size ||
+          receipt.sha256 !== args.sha256.toLowerCase() ||
+          receipt.storageVersionId !== (args.storageVersionId ?? null) ||
+          receipt.contentType !== args.contentType
+        ) {
+          throw new AppError(ErrorCode.VALIDATION_ERROR, "Committed upload binding changed", 409);
+        }
+        return { file: rowToFile(receipt), replacedFiles: [] };
+      }
+      await tx
+        .delete(netdriveUploadReservations)
+        .where(
+          and(
+            eq(netdriveUploadReservations.storageKey, args.storageKey),
+            eq(netdriveUploadReservations.ownerId, ownerId),
+          ),
+        );
       await new StorageQuotaService(tx, () => new Date(this.now())).assertCloudWriteAllowed(
         ownerId,
         args.path,
@@ -372,26 +526,18 @@ export class NetDriveService {
       // Soft-delete-aware uniqueness: we allow the same `(owner_id, path)`
       // to be re-uploaded as long as the prior row is tombstoned. To keep
       // active uniqueness we tombstone any existing live row first.
+      const publicationTime = sql`date_trunc('milliseconds', clock_timestamp() at time zone 'UTC')`;
       const replacedRows = await tx
-        .select()
-        .from(netdriveFiles)
-        .where(
-          and(
-            eq(netdriveFiles.ownerId, ownerId),
-            eq(netdriveFiles.path, args.path),
-            isNull(netdriveFiles.deletedAt),
-          ),
-        );
-      await tx
         .update(netdriveFiles)
-        .set({ deletedAt: new Date(this.now()) })
+        .set({ deletedAt: publicationTime, cleanupAfter: new Date(this.now()) })
         .where(
           and(
             eq(netdriveFiles.ownerId, ownerId),
             eq(netdriveFiles.path, args.path),
             isNull(netdriveFiles.deletedAt),
           ),
-        );
+        )
+        .returning();
 
       const [row] = await tx
         .insert(netdriveFiles)
@@ -404,6 +550,7 @@ export class NetDriveService {
           etag: args.etag,
           storageKey: args.storageKey,
           storageVersionId: args.storageVersionId,
+          createdAt: replacedRows[0]?.deletedAt ?? publicationTime,
           mtime: new Date(this.now()),
         })
         .returning();
@@ -412,31 +559,134 @@ export class NetDriveService {
         throw new AppError(ErrorCode.INTERNAL_ERROR, "Failed to insert netdrive_files row", 500);
       }
 
-      return { row, replacedRows };
+      if (recordUpload) {
+        await this.insertTransfer(tx, {
+          fileId: row.id,
+          actorId: ownerId,
+          direction: "upload",
+          bytes: row.size,
+          context,
+        });
+      }
+      const result = { file: rowToFile(row), replacedFiles: replacedRows.map(rowToFile) };
+      await onCommit?.(result, tx);
+      return result;
     };
-    const { row, replacedRows } =
-      db === this.db ? await this.db.transaction(persist) : await persist(db);
-
-    // record real upload bytes against the transfer log so the
-    // CP Console reads from a per-event ledger rather than approximating
-    // bytes-transferred via `sum(netdrive_files.size)`. Best-effort: a
-    // failed insert here must not poison the user-facing commit.
-    if (recordUpload)
-      await this.recordTransfer({
-        fileId: row.id,
-        actorId: ownerId,
-        direction: "upload",
-        bytes: row.size,
-        context: {
-          ...context,
-          netdriveFileIds: context?.netdriveFileIds ?? [row.id],
-        },
-      });
-
-    return { file: rowToFile(row), replacedFiles: replacedRows.map(rowToFile) };
+    return db === this.db ? this.db.transaction(persist) : persist(db);
   }
 
-  /** Owner-scoped file lookup (returns null when missing or tombstoned). */
+  async stageGeneratedFile(
+    ownerId: string,
+    runId: string,
+    id: string,
+    bytes: Buffer,
+    sha256: string,
+    named?: { relativePath: string; contentType: string },
+  ) {
+    const path = `workflows/${runId}/generated/${named?.relativePath ?? id + ".json"}`;
+    const storageKey = `netdrive/objects/${id}`;
+    const contentType = named?.contentType ?? "application/json";
+    const [existing] = await this.db
+      .select()
+      .from(netdriveFiles)
+      .where(eq(netdriveFiles.storageKey, storageKey))
+      .limit(1);
+    if (existing) {
+      if (
+        existing.ownerId !== ownerId ||
+        existing.path !== path ||
+        existing.sha256 !== sha256 ||
+        existing.deletedAt ||
+        !existing.storageVersionId
+      )
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "Generated file binding changed", 409);
+      return {
+        path,
+        storageKey,
+        contentType,
+        etag: existing.etag,
+        storageVersionId: existing.storageVersionId,
+        size: existing.size,
+        sha256,
+      };
+    }
+    await this.reserveUpload(
+      ownerId,
+      path,
+      bytes.length,
+      storageKey,
+      new Date(this.now() + this.uploadTtlSec * 1000).toISOString(),
+      true,
+    );
+    // The reservation survives a crash during PUT. Its row lock excludes the expiry worker.
+    return this.db.transaction(async (tx) => {
+      const [hold] = await tx
+        .select()
+        .from(netdriveUploadReservations)
+        .where(eq(netdriveUploadReservations.storageKey, storageKey))
+        .for("update");
+      if (!hold?.generated || hold.ownerId !== ownerId)
+        throw new Error("Generated upload reservation expired");
+      let stat = await this.minio.head(storageKey);
+      if (!stat) {
+        await this.minio.putBlob(storageKey, bytes, contentType);
+        stat = await this.minio.head(storageKey);
+      }
+      if (
+        !stat?.versionId ||
+        stat.versionId === "null" ||
+        stat.size !== bytes.length ||
+        (await this.minio.sha256(storageKey, stat.versionId)) !== sha256
+      )
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "Generated object verification failed", 409);
+      return {
+        path,
+        storageKey,
+        contentType,
+        etag: stat.etag,
+        storageVersionId: stat.versionId,
+        size: bytes.length,
+        sha256,
+      };
+    });
+  }
+
+  async publishGeneratedFile(
+    ownerId: string,
+    blob: Awaited<ReturnType<NetDriveService["stageGeneratedFile"]>>,
+    tx: NetDriveCommitDb,
+    onCommit: (result: NetDriveCommitResult, db: NetDriveCommitDb) => Promise<void>,
+  ) {
+    await lockCloudWrites(tx, ownerId);
+    if (!(await this.minio.head(blob.storageKey, blob.storageVersionId)))
+      throw new AppError(ErrorCode.NOT_FOUND, "Generated object version expired", 409);
+    return this.persistCommittedFile(ownerId, blob, undefined, tx, false, onCommit);
+  }
+
+  async readGenerateFile(ownerId: string, fileId: string): Promise<string> {
+    const { bytes } = await this.readWorkflowFile(ownerId, fileId);
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  }
+
+  async readWorkflowFile(ownerId: string, fileId: string) {
+    const file = await this.getFile(ownerId, fileId);
+    if (!file) throw new AppError(ErrorCode.NOT_FOUND, "Workflow input file not found", 404);
+    const maxBytes = 8 * 1024 * 1024;
+    if (!file.storageVersionId || file.storageVersionId === "null" || file.size > maxBytes)
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Generate requires a versioned file of at most 8 MiB",
+        400,
+      );
+    const bytes = await this.minio.getBlob(file.storageKey, file.storageVersionId, maxBytes);
+    if (
+      bytes.length !== file.size ||
+      createHash("sha256").update(bytes).digest("hex") !== file.sha256
+    )
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Generate input digest mismatch", 409);
+    return { bytes, contentType: file.contentType };
+  }
+
   async getFile(ownerId: string, fileId: string): Promise<NetDriveFile | null> {
     const [row] = await this.db
       .select()
@@ -582,67 +832,134 @@ export class NetDriveService {
     if (!siteId) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Replica siteId is required", 400);
     }
-    const file = await this.requireOwnedFile(input.ownerId, input.fileId);
-    const status = input.status ?? "available";
-    const now = new Date(this.now());
-
-    await this.db
-      .insert(netdriveReplicas)
-      .values({
-        fileId: file.id,
-        siteId,
-        status,
+    await this.db.transaction(async (tx) => {
+      // Lock the file even on the first report when there is no replica row to lock yet.
+      const [file] = await tx
+        .select()
+        .from(netdriveFiles)
+        .where(
+          and(
+            eq(netdriveFiles.id, input.fileId),
+            eq(netdriveFiles.ownerId, input.ownerId),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        )
+        .for("update");
+      if (!file) throw new AppError(ErrorCode.NOT_FOUND, "NetDrive file not found", 404);
+      const [previous] = await tx
+        .select()
+        .from(netdriveReplicas)
+        .where(and(eq(netdriveReplicas.fileId, file.id), eq(netdriveReplicas.siteId, siteId)));
+      const now = new Date(this.now());
+      const state = {
+        status: input.status ?? "available",
         size: file.size,
         sha256: file.sha256,
         errorMessage: input.errorMessage ?? null,
         lastSeenAt: now,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [netdriveReplicas.fileId, netdriveReplicas.siteId],
-        set: {
-          status,
-          size: file.size,
-          sha256: file.sha256,
-          errorMessage: input.errorMessage ?? null,
-          lastSeenAt: now,
-          updatedAt: now,
-        },
-      });
-
-    if (status !== "available") return;
-    await this.recordTransfer({
-      fileId: file.id,
-      actorId: input.ownerId,
-      direction: "mirror",
-      bytes: file.size,
-      siteId,
-      context: {
-        ...input.context,
-        netdriveFileIds: input.context?.netdriveFileIds ?? [file.id],
-      },
+      };
+      await tx
+        .insert(netdriveReplicas)
+        .values({ fileId: file.id, siteId, ...state })
+        .onConflictDoUpdate({
+          target: [netdriveReplicas.fileId, netdriveReplicas.siteId],
+          set: state,
+        });
+      if (
+        state.status === "available" &&
+        (previous?.status !== "available" ||
+          previous.sha256 !== file.sha256 ||
+          previous.size !== file.size)
+      ) {
+        await this.insertTransfer(tx, {
+          fileId: file.id,
+          actorId: input.ownerId,
+          direction: "mirror",
+          bytes: file.size,
+          siteId,
+          context: input.context,
+        });
+      }
     });
   }
 
-  /**
-   * Hard-tombstone the metadata row and best-effort delete the blob.
-   *
-   * Returns the tombstoned `NetDriveFile` so the caller can audit-log it.
-   * Idempotent — calling twice returns the original tombstoned row.
-   */
   async deleteFile(ownerId: string, fileId: string): Promise<NetDriveFile> {
-    const file = await this.requireOwnedFile(ownerId, fileId);
-    const deletedAt = new Date(this.now());
-    await this.db.update(netdriveFiles).set({ deletedAt }).where(eq(netdriveFiles.id, fileId));
-    // Best-effort blob delete. We swallow errors here because the row is
-    // already tombstoned; a future reaper job can clean up MinIO if this
-    // fails. TODO: emit a structured event so the reaper has work to do.
-    try {
-      await this.minio.delete(file.storageKey);
-    } catch {
-      // intentional no-op
+    const [row] = await this.db
+      .update(netdriveFiles)
+      .set({
+        deletedAt: sql`clock_timestamp() at time zone 'UTC'`,
+        cleanupAfter: new Date(this.now()),
+      })
+      .where(
+        and(
+          eq(netdriveFiles.id, fileId),
+          eq(netdriveFiles.ownerId, ownerId),
+          isNull(netdriveFiles.deletedAt),
+        ),
+      )
+      .returning();
+    if (!row) throw new AppError(ErrorCode.NOT_FOUND, "NetDrive file not found", 404);
+    return rowToFile(row);
+  }
+
+  async cleanDeletedVersions(): Promise<void> {
+    const now = new Date(this.now());
+    // Lock one receipt at a time. A slow or interrupted delete leaves the retry durable.
+    for (let n = 0; n < 25; n++) {
+      const processed = await this.db.transaction(async (tx) => {
+        const [file] = await tx
+          .select()
+          .from(netdriveFiles)
+          .where(
+            and(lte(netdriveFiles.cleanupAfter, now), sql`${netdriveFiles.deletedAt} is not null`),
+          )
+          .orderBy(asc(netdriveFiles.cleanupAfter))
+          .limit(1)
+          .for("update", { skipLocked: true });
+        if (!file) return false;
+        let next: Date | null = null;
+        // Other namespaces have their own publication / retention rules. Never delete a key without a trusted version.
+        if (
+          file.storageKey.startsWith("netdrive/objects/") &&
+          file.storageVersionId &&
+          file.storageVersionId !== "null"
+        ) {
+          const [refs] = await tx
+            .select({
+              held: sql<boolean>`
+            exists(select 1 from ${federationWorkflowInputExports} where ${federationWorkflowInputExports.bindings} @> ${JSON.stringify([{ storageKey: file.storageKey, versionId: file.storageVersionId }])}::jsonb)
+            or exists(select 1 from ${federationOutbound} where ${federationOutbound.localInputSnapshot}->'selection' @> ${JSON.stringify([{ files: [{ fileId: file.id }] }])}::jsonb and coalesce(${federationOutbound.request}->>'executionExpiresAt', ${federationOutbound.request}->>'expiresAt')::timestamptz > ${now.toISOString()}::timestamptz)
+            or exists(select 1 from ${netdriveFiles} where ${netdriveFiles.storageKey} = ${file.storageKey} and ${netdriveFiles.storageVersionId} = ${file.storageVersionId} and ${netdriveFiles.deletedAt} is null)
+            or exists(select 1 from ${workflowArtifacts} where ${workflowArtifacts.netdriveFileId} = ${file.id})
+            or exists(select 1 from ${workflowExecutionJournal} where ${workflowExecutionJournal.entry} @> ${JSON.stringify({ kind: "generated-files", files: [{ id: file.storageKey.slice("netdrive/objects/".length) }] })}::jsonb)
+            or exists(select 1 from ${workflowArtifactFiles} where ${workflowArtifactFiles.netdriveFileId} = ${file.id})
+            or exists(select 1 from ${dataAssetFiles} where ${dataAssetFiles.netdriveFileId} = ${file.id})
+            or exists(select 1 from ${dataAssetImports} where ${dataAssetImports.sourceNetdriveFileId} = ${file.id})
+            or exists(select 1 from ${fileTransfers} where ${fileTransfers.sourceFileId} = ${file.id} and ${fileTransfers.state} in ('queued','running','failed'))
+            or exists(select 1 from ${jobs} where ${jobs.inputStaging} @> ${JSON.stringify([{ fileMetadataId: file.id }])}::jsonb and ${jobs.status} not in ('completed','failed','cancelled'))
+          `,
+            })
+            .from(netdriveFiles)
+            .where(eq(netdriveFiles.id, file.id));
+          if (refs?.held) next = new Date(now.getTime() + 86_400_000);
+          else {
+            try {
+              await this.minio.delete(file.storageKey, file.storageVersionId);
+            } catch (err) {
+              next = new Date(now.getTime() + 60_000);
+              this.logger.warn({ err, fileId: file.id }, "NetDrive version deletion will retry");
+            }
+          }
+        }
+        await tx
+          .update(netdriveFiles)
+          .set({ cleanupAfter: next })
+          .where(eq(netdriveFiles.id, file.id));
+        return true;
+      });
+      if (!processed) break;
     }
-    return { ...file, mtime: deletedAt.toISOString() };
   }
 
   /**
@@ -735,8 +1052,7 @@ export class NetDriveService {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Invalid multipart sha256", 400);
     }
     const contentType = req.contentType ?? "application/octet-stream";
-    let inserted = false;
-    const committed = await this.db.transaction(async (tx) => {
+    return this.db.transaction(async (tx) => {
       // Serializes retries across Server processes; rolled-back commits leave no receipt or grants.
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${req.storageKey}, 0))`);
       const [existing] = await tx
@@ -781,10 +1097,13 @@ export class NetDriveService {
           400,
         );
       }
-      if ((await this.minio.sha256(req.storageKey))?.toLowerCase() !== req.sha256.toLowerCase()) {
+      if (
+        (await this.minio.sha256(req.storageKey, stat.versionId))?.toLowerCase() !==
+        req.sha256.toLowerCase()
+      ) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, "Assembled object sha256 mismatch", 400);
       }
-      const result = await this.persistCommittedFile(
+      return this.persistCommittedFile(
         ownerId,
         {
           path: req.path,
@@ -797,27 +1116,24 @@ export class NetDriveService {
         },
         context,
         tx,
-        false,
+        true,
+        onCommit,
       );
-      await onCommit?.(result, tx);
-      inserted = true;
-      return result;
     });
-    if (inserted)
-      await this.recordTransfer({
-        fileId: committed.file.id,
-        actorId: ownerId,
-        direction: "upload",
-        bytes: committed.file.size,
-        context,
-      });
-    return committed;
   }
 
   /** Cancel an in-flight multipart upload (client gave up / restart). */
   async abortMultipart(ownerId: string, req: NetDriveMultipartAbortRequest): Promise<void> {
     await this.verifyMultipartToken(ownerId, req.commitToken, req.storageKey, req.uploadId);
     await this.minio.abortMultipartUpload(req.storageKey, req.uploadId);
+    await this.db
+      .delete(netdriveUploadReservations)
+      .where(
+        and(
+          eq(netdriveUploadReservations.storageKey, req.storageKey),
+          eq(netdriveUploadReservations.ownerId, ownerId),
+        ),
+      );
   }
 
   private async requireOwnedFile(ownerId: string, fileId: string): Promise<NetDriveFile> {
@@ -828,42 +1144,35 @@ export class NetDriveService {
     return file;
   }
 
-  /**
-   * Append one row to `netdrive_transfer_log`. Org-id is resolved from the
-   * actor's primary membership so the CP Console can scope by org without forcing every
-   * caller (route layer, future replicator) to know it.
-   *
-   * Best-effort: this method NEVER throws. A failed insert is logged and
-   * swallowed so that a transient DB blip cannot mask a successful upload
-   * or download from the user. The trade-off is byte-accounting under
-   * recovery is "at-most-once" — acceptable for a dashboard ledger; a
-   * future billing layer that needs at-least-once should subscribe to a
-   * dedicated event stream instead.
-   */
+  private async insertTransfer(db: Pick<PgDb, "select" | "insert">, input: RecordTransferInput) {
+    let orgId: string | null = null;
+    if (input.actorId) {
+      const [actor] = await db
+        .select({ orgId: userOrgMemberships.orgId })
+        .from(userOrgMemberships)
+        .where(eq(userOrgMemberships.userId, input.actorId))
+        .orderBy(asc(userOrgMemberships.createdAt))
+        .limit(1);
+      orgId = actor?.orgId ?? null;
+    }
+    await db.insert(netdriveTransferLog).values({
+      fileId: input.fileId,
+      actorId: input.actorId,
+      orgId,
+      direction: input.direction,
+      bytes: input.bytes,
+      siteId: input.siteId ?? null,
+      jobId: input.context?.jobId ?? null,
+      workflowRunId: input.context?.workflowRunId ?? null,
+      netdriveFileIds: input.context?.netdriveFileIds ?? (input.fileId ? [input.fileId] : []),
+      occurredAt: new Date(this.now()),
+    });
+  }
+
+  // Presigned downloads count bytes at authorization time.
   private async recordTransfer(input: RecordTransferInput): Promise<void> {
     try {
-      let orgId: string | null = null;
-      if (input.actorId) {
-        const [actor] = await this.db
-          .select({ orgId: userOrgMemberships.orgId })
-          .from(userOrgMemberships)
-          .where(eq(userOrgMemberships.userId, input.actorId))
-          .orderBy(asc(userOrgMemberships.createdAt))
-          .limit(1);
-        orgId = actor?.orgId ?? null;
-      }
-      await this.db.insert(netdriveTransferLog).values({
-        fileId: input.fileId,
-        actorId: input.actorId,
-        orgId,
-        direction: input.direction,
-        bytes: input.bytes,
-        siteId: input.siteId ?? null,
-        jobId: input.context?.jobId ?? null,
-        workflowRunId: input.context?.workflowRunId ?? null,
-        netdriveFileIds: input.context?.netdriveFileIds ?? (input.fileId ? [input.fileId] : []),
-        occurredAt: new Date(this.now()),
-      });
+      await this.insertTransfer(this.db, input);
     } catch (err) {
       this.logger.warn(
         {

@@ -49,8 +49,8 @@ const completed = await waitFor(
   },
   (operation) => ["succeeded", "failed", "rejected"].includes(operation.status),
 );
-assert.equal(completed.status, "rejected", "Delivery must reach the disabled managed-install gate");
-assert.match(completed.error ?? "", /managed offline Spack execution is not enabled yet/);
+assert.equal(completed.status, "rejected", "Delivery must reach the site installer configuration check");
+assert.match(completed.error ?? "", /Managed Spack operations require audited materials and a configured site installer/);
 const cache = new SpackMaterialCache(cacheDirectory);
 const signal = AbortSignal.timeout(120_000);
 const bytes = await cache.readMetadata(

@@ -1,29 +1,62 @@
-import { netdriveTransferLog, type PgDb } from "@kuintessence/db";
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import {
+  dataLocations,
+  dataReplicas,
+  netdriveFiles,
+  netdriveReplicas,
+  type PgDb,
+} from "@kuintessence/db";
+import { and, eq, gt, inArray, isNull, lte } from "drizzle-orm";
+import { z } from "zod";
+import {
+  eligibleReplicaIds,
+  importedNetdriveReplicas,
+  REPLICA_VERIFICATION_TTL_MS,
+} from "../services/data-replica";
 
-/**
- * Derive the set of site IDs that already hold the given NetDrive files, from
- * `netdrive_transfer_log` mirror records (`direction='mirror'`, `site_id` =
- * destination). Returns distinct site IDs.
- *
- * Cross-site replication is allowed to be partial: when no mirror rows exist,
- * the scorer simply receives no derived locality hint and placement continues.
- */
-export async function deriveDataSites(db: PgDb, fileIds: string[]): Promise<string[]> {
-  if (fileIds.length === 0) return [];
-  const rows = await db
-    .selectDistinct({ siteId: netdriveTransferLog.siteId })
-    .from(netdriveTransferLog)
+const fileIdSchema = z.guid();
+
+export async function deriveDataSites(
+  db: PgDb,
+  fileIds: string[],
+  ownerId: string,
+  orgId: string | null,
+  now = new Date(),
+): Promise<string[]> {
+  const ids = [...new Set(fileIds)].filter((id) => fileIdSchema.safeParse(id).success);
+  if (ids.length === 0) return [];
+  const owned = [
+    inArray(netdriveFiles.id, ids),
+    eq(netdriveFiles.ownerId, ownerId),
+    isNull(netdriveFiles.deletedAt),
+  ];
+  const confirmed = await db
+    .selectDistinct({ siteId: netdriveReplicas.siteId })
+    .from(netdriveReplicas)
+    .innerJoin(netdriveFiles, eq(netdriveFiles.id, netdriveReplicas.fileId))
     .where(
       and(
-        inArray(netdriveTransferLog.fileId, fileIds),
-        eq(netdriveTransferLog.direction, "mirror"),
-        isNotNull(netdriveTransferLog.siteId),
+        ...owned,
+        eq(netdriveReplicas.status, "available"),
+        eq(netdriveReplicas.sha256, netdriveFiles.sha256),
+        eq(netdriveReplicas.size, netdriveFiles.size),
+        gt(netdriveReplicas.lastSeenAt, new Date(now.getTime() - REPLICA_VERIFICATION_TTL_MS)),
+        lte(netdriveReplicas.lastSeenAt, now),
       ),
     );
-  const sites: string[] = [];
-  for (const r of rows) {
-    if (r.siteId) sites.push(r.siteId);
+  const sites = new Set(confirmed.map((row) => row.siteId));
+  if (orgId) {
+    const candidates = await importedNetdriveReplicas(
+      db,
+      ...owned,
+      eq(dataLocations.providerOrgId, orgId),
+      eq(dataReplicas.status, "available"),
+    );
+    const eligible = await eligibleReplicaIds(
+      db,
+      candidates.map((row) => row.replicaId),
+      now,
+    );
+    for (const row of candidates) if (eligible.has(row.replicaId)) sites.add(row.siteId);
   }
-  return sites;
+  return [...sites];
 }

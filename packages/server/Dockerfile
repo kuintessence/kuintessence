@@ -18,7 +18,7 @@ COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/proto/tsconfig.json ./packages/proto/
 COPY packages/db/tsconfig.json ./packages/db/
 COPY packages/server/tsconfig.json ./packages/server/
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc bun install --frozen-lockfile --ignore-scripts
 
 FROM deps AS build
 COPY packages/shared ./packages/shared

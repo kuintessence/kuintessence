@@ -110,6 +110,7 @@ const StoredBill = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialBillSchema,
+  indexedPayments: z.literal(true).optional(),
 });
 const StoredSettlement = z.union([
   z.strictObject({
@@ -1086,7 +1087,11 @@ export class CommercialLedger {
         return fail("OPERATION_CONFLICT");
     }
     const receipt = { recordId, digest: signed.digest };
-    await stub.putPrivateData(domain.collection, key, encode({ receipt, envelope, terms }));
+    await stub.putPrivateData(
+      domain.collection,
+      key,
+      encode({ receipt, envelope, terms, indexedPayments: true }),
+    );
     await stub.putPrivateData(
       domain.collection,
       headKey,
@@ -2125,6 +2130,35 @@ export class CommercialLedger {
       previous: previous ? { terms: previous.terms, digest: previous.receipt.digest } : undefined,
     });
     const receipt = { recordId, digest: signed.digest };
+    // Private per-bill totals follow corrections to the latest receipt of each payment.
+    const totalKey = stub.createCompositeKey("bill-payments", [domain.domainId, terms.billId]);
+    const contribution = stub.createCompositeKey("bill-payment-member", [
+      domain.domainId,
+      terms.billId,
+      terms.paymentId,
+    ]);
+    const totalBytes = await this.privateValue(stub, domain.collection, totalKey);
+    const counted = await this.privateValue(stub, domain.collection, contribution);
+    const amountOf = (bytes: Uint8Array) =>
+      bytes.length
+        ? BigInt(
+            z
+              .object({ amount: z.string().regex(/^[0-9]+$/) })
+              .parse(JSON.parse(Buffer.from(bytes).toString())).amount,
+          )
+        : 0n;
+    const total = amountOf(totalBytes) - amountOf(counted) + BigInt(terms.amount);
+    if (total < 0n) return fail("OPERATION_CONFLICT");
+    await stub.putPrivateData(
+      domain.collection,
+      totalKey,
+      encode({ amount: total.toString(), salt: terms.salt }),
+    );
+    await stub.putPrivateData(
+      domain.collection,
+      contribution,
+      encode({ amount: terms.amount, salt: terms.salt }),
+    );
     await stub.putPrivateData(domain.collection, key, encode({ receipt, envelope, terms }));
     await stub.putPrivateData(domain.collection, headKey, encode(receipt));
     return encode(receipt);
@@ -2587,6 +2621,68 @@ export class CommercialLedger {
     if (fcn === "UpdateTrust") return this.updateTrust(stub, identity, params);
     if (!Buffer.from(await stub.getState(ConfigKey)).equals(this.configBytes))
       return fail("POLICY_DENIED");
+    if (fcn === "GetClaimDischarge") {
+      const actor = this.organization(identity, "market");
+      const [domainId, claimId, demandId] = z.tuple([z.uuid(), z.uuid(), z.uuid()]).parse(params);
+      const domain = this.trust.domains.find(
+        (d) => d.domainId === domainId && d.siteIds.includes(actor.siteId),
+      );
+      if (!domain) return fail("POLICY_DENIED");
+      const read = (kind: string, id: string) =>
+        this.privateValue(stub, domain.collection, stub.createCompositeKey(kind, [domainId, id]));
+      const bytes = await read("reservation", claimId);
+      const gate = await read("execution-gate", claimId);
+      if (!bytes.length && !gate.length) return encode({ state: "unreserved" });
+      if (!bytes.length || !gate.length) return fail("DATA_WAITING");
+      const stored = StoredReservation.parse(JSON.parse(Buffer.from(bytes).toString()));
+      const current = MarketExecutionGateSchema.parse(JSON.parse(Buffer.from(gate).toString()));
+      if (
+        current.demandId !== demandId ||
+        current.reservationId !== claimId ||
+        current.reservationDigest !== stored.receipt.digest ||
+        stored.reservation.demandId !== demandId
+      )
+        return fail("OPERATION_CONFLICT");
+      await this.assertTaskNotDisputed(stub, domain, stored.reservation.request);
+      if (stored.state === "released" && stored.release && current.state === "REVOKED")
+        return encode({ state: "released" });
+      if (
+        stored.state !== "settled" ||
+        !stored.settlement ||
+        !stored.terminal ||
+        current.state !== "TERMINAL"
+      )
+        return fail("DATA_WAITING");
+      const terms = stored.settlement.terms;
+      const agreement = StoredAgreement.parse(
+        JSON.parse(Buffer.from(await read("agreement", terms.agreementRevisionId)).toString()),
+      );
+      if (agreement.terms.consideration === "paid") {
+        const bill = StoredBill.parse(
+          JSON.parse(Buffer.from(await read("bill", terms.billId)).toString()),
+        );
+        if (!bill.indexedPayments || bill.receipt.digest !== terms.billDigest)
+          return fail("DATA_WAITING");
+        let charge = terms.chargedAmount;
+        const head = await read("adjustment-head", terms.settlementId);
+        if (head.length) {
+          const { adjustmentId } = z
+            .object({ adjustmentId: z.uuid() })
+            .parse(JSON.parse(Buffer.from(head).toString()));
+          charge = StoredAdjustment.parse(
+            JSON.parse(Buffer.from(await read("adjustment", adjustmentId)).toString()),
+          ).terms.chargedAmount;
+        }
+        const total = await read("bill-payments", terms.billId);
+        const paid = total.length
+          ? z
+              .object({ amount: z.string().regex(/^[0-9]+$/) })
+              .parse(JSON.parse(Buffer.from(total).toString())).amount
+          : "0";
+        if (BigInt(paid) !== BigInt(charge)) return fail("DATA_WAITING");
+      }
+      return encode({ state: "settled" });
+    }
     if (fcn === "GetExecutionGateHash" || fcn === "GetExecutionGatePresence") {
       const role = identity.getAttributeValue("kq.federation.role");
       if (role !== "market" && role !== "commercial") return fail("UNTRUSTED_IDENTITY");

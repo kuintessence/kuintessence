@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { link, mkdir, open, readFile, rm } from "node:fs/promises";
+import { link, mkdir, open, realpath, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createLogger, type SpackLockReport, type SpackMaterialBlob } from "@kuintessence/shared";
 
@@ -139,7 +139,7 @@ export async function readMaterialJson(input: ReadableStream<Uint8Array>): Promi
   }
 }
 
-async function syncDirectory(path: string): Promise<void> {
+export async function syncDirectory(path: string): Promise<void> {
   const directory = await open(path, "r");
   try {
     await directory.sync();
@@ -148,16 +148,25 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-async function ensureDirectory(path: string): Promise<void> {
-  const firstCreated = await mkdir(path, { recursive: true, mode: 0o700 });
-  if (firstCreated) {
-    let current = path;
-    for (;;) {
-      await syncDirectory(current);
-      if (current === dirname(firstCreated)) break;
-      current = dirname(current);
-    }
+async function assertCanonicalDirectory(path: string) {
+  if ((await realpath(path)) !== path)
+    throw new SpackMaterialError(500, "Invalid material directory binding");
+}
+
+export async function ensureMaterialDirectory(path: string): Promise<void> {
+  try {
+    await assertCanonicalDirectory(path);
+    return;
+  } catch (error) {
+    if (!isMissing(error)) throw error;
   }
+  const parent = dirname(path);
+  await ensureMaterialDirectory(parent);
+  await mkdir(path, { mode: 0o700 }).catch((error: unknown) => {
+    if (!hasCode(error, "EEXIST")) throw error;
+  });
+  await assertCanonicalDirectory(path);
+  await syncDirectory(parent);
 }
 
 async function installImmutable(
@@ -165,7 +174,7 @@ async function installImmutable(
   destination: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  await ensureDirectory(dirname(destination));
+  await ensureMaterialDirectory(dirname(destination));
   // This check is the last cancellation boundary before the atomic link commit.
   signal?.throwIfAborted();
   let installed = true;
@@ -189,7 +198,7 @@ export async function writeMaterialMetadata(
   if (bytes.byteLength > MATERIAL_METADATA_BYTES) {
     throw new SpackMaterialError(413, "Material metadata exceeds 2 MiB");
   }
-  await ensureDirectory(dirname(path));
+  await ensureMaterialDirectory(dirname(path));
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporary, "wx", 0o600);
@@ -200,7 +209,7 @@ export async function writeMaterialMetadata(
       await file.close();
     }
     await installImmutable(temporary, path, signal);
-    if (!(await readFile(path)).equals(Buffer.from(bytes))) {
+    if (!(await readMaterialMetadata(path)).equals(Buffer.from(bytes))) {
       throw new SpackMaterialError(500, "Conflicting immutable material metadata");
     }
   } finally {
@@ -220,6 +229,7 @@ export async function readMaterialMetadata(
 ): Promise<Buffer> {
   options.checkpoint?.();
   await options.validatePath?.();
+  await assertCanonicalDirectory(dirname(path));
   const file = await open(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -298,7 +308,7 @@ export class SpackMaterialBlobStore {
     expectedDigest?: string,
     expectedSize?: number,
   ): Promise<SpackMaterialBlob> {
-    await ensureDirectory(join(this.root, "staging"));
+    await ensureMaterialDirectory(join(this.root, "staging"));
     const temporary = join(this.root, "staging", `${randomUUID()}.tmp`);
     try {
       const file = await open(temporary, "wx", 0o600);
@@ -327,6 +337,36 @@ export class SpackMaterialBlobStore {
       return { digest, size };
     } finally {
       await rm(temporary, { force: true });
+    }
+  }
+
+  async installPartial(
+    path: string,
+    expected: SpackMaterialBlob,
+    timeoutMs: number,
+  ): Promise<void> {
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = await file.stat();
+      if (!info.isFile() || info.size !== expected.size)
+        throw new SpackMaterialError(422, "Material blob size mismatch");
+      const hash = createHash("sha256");
+      const deadline = Date.now() + timeoutMs;
+      const stream = file.createReadStream({ autoClose: false, end: expected.size - 1 });
+      for await (const bytes of stream) {
+        if (Date.now() > deadline)
+          throw new SpackMaterialError(408, "Material verification timed out");
+        hash.update(bytes);
+      }
+      if ((await file.stat()).size !== expected.size)
+        throw new SpackMaterialError(422, "Material blob size mismatch");
+      if (`sha256:${hash.digest("hex")}` !== expected.digest)
+        throw new SpackMaterialError(422, "Material blob checksum mismatch");
+      if (!(await installImmutable(path, this.path(expected.digest)))) {
+        await this.verify(expected.digest, expected.size);
+      }
+    } finally {
+      await file.close();
     }
   }
 
@@ -375,6 +415,7 @@ export class SpackMaterialBlobStore {
     this.activeReads += 1;
     let close: (() => Promise<void>) | undefined;
     try {
+      await assertCanonicalDirectory(dirname(path));
       const file = await open(
         path,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,

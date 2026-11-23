@@ -13,6 +13,8 @@ import {
 import { isAbsolute, join } from "node:path";
 import {
   RecipeCommitSchema,
+  type RecipeGrant,
+  RecipeGrantSchema,
   type RecipeRepository,
   RecipeRepositoryIdSchema,
   RecipeRepositoryNameSchema,
@@ -33,6 +35,7 @@ import {
 } from "./recipe-git";
 import { preflightRecipeBundle } from "./recipe-pack-preflight";
 import { readMaterialMetadata } from "./spack-material-storage";
+import type { SpackMaterialStore } from "./spack-material-store";
 
 const IdentitySchema = z.strictObject({
   id: RecipeRepositoryIdSchema,
@@ -83,18 +86,165 @@ export class RecipeGitStore {
     const snapshots: RecipeSnapshot[] = [];
     for (const entry of entries.sort()) {
       if (!/^[a-f0-9]{40}\.json$/.test(entry)) continue;
-      const snapshot = RecipeSnapshotSchema.parse(
-        JSON.parse(await readFile(join(this.root, "manifests", id, entry), "utf8")),
+      const bytes = await readFile(join(this.root, "manifests", id, entry), "utf8").catch(
+        (error: unknown) => {
+          if (isMissing(error)) return undefined; // Concurrent snapshot collection.
+          throw error;
+        },
       );
+      if (bytes === undefined) continue;
+      const snapshot = RecipeSnapshotSchema.parse(JSON.parse(bytes));
       if (`${snapshot.commit}.json` !== entry)
         throw new RecipeStoreError(500, "Corrupt snapshot identity");
       snapshots.push(snapshot);
     }
     return {
       ...identity,
+      ...((await this.movedTo(id)) ? { migrated: true as const } : {}),
       activeCommit: await this.readRef(directory, ACTIVE_REF),
       snapshots: snapshots.sort((a, b) => b.importedAt.localeCompare(a.importedAt)),
     };
+  }
+
+  async grants(id: string): Promise<RecipeGrant[]> {
+    const bytes = await optionalText(join(this.repositoryPath(id), "kq-grants.json"));
+    return bytes === undefined ? [] : RecipeGrantSchema.array().parse(JSON.parse(bytes));
+  }
+
+  async setGrant(id: string, subject: string, access: RecipeGrant["access"] | null) {
+    return this.serializeWrite(async () => {
+      await this.readIdentity(id);
+      const grants = (await this.grants(id)).filter((grant) => grant.subject !== subject);
+      if (access) grants.push(RecipeGrantSchema.parse({ subject, access }));
+      await this.writeJsonAtomically(join(this.repositoryPath(id), "kq-grants.json"), grants);
+      return grants;
+    });
+  }
+
+  private async movedTo(id: string) {
+    const bytes = await optionalText(join(this.repositoryPath(id), "kq-moved.json"));
+    return bytes === undefined ? null : RecipeRepositoryIdSchema.parse(JSON.parse(bytes));
+  }
+
+  private async checkWrite(id: string, actor: string, delegated: boolean) {
+    if (await this.movedTo(id))
+      throw new RecipeStoreError(409, "Recipe repository has moved", "RECIPE_MIGRATION_CONFLICT");
+    if (
+      delegated &&
+      !(await this.grants(id)).some((g) => g.subject === actor && g.access === "write")
+    )
+      throw new RecipeStoreError(403, "Recipe write grant is no longer available");
+  }
+
+  async migrate(id: string, repository: string, actor: string) {
+    const target = RecipeGitStore.repositoryId(repository);
+    return this.serializeWrite(async () => {
+      const source = await this.get(id);
+      const moved = await this.movedTo(id);
+      if (moved === target) return this.get(target);
+      if (moved || id === target)
+        throw new RecipeStoreError(409, "Invalid migration target", "RECIPE_MIGRATION_CONFLICT");
+      for (const path of [this.repositoryPath(target), join(this.root, "manifests", target)]) {
+        if (await stat(path).catch(missingAsUndefined))
+          throw new RecipeStoreError(
+            409,
+            "Recipe migration destination already exists",
+            "RECIPE_MIGRATION_CONFLICT",
+          );
+      }
+      await this.prepare();
+      const temp = await mkdtemp(join(this.root, "staging", "move-"));
+      try {
+        const bare = join(temp, "repository");
+        await this.initializeRepository(bare, target, repository);
+        await this.git(bare, [
+          "fetch",
+          "--no-tags",
+          "--no-recurse-submodules",
+          this.repositoryPath(id),
+          "+refs/kq/*:refs/kq/*",
+        ]);
+        const manifests = join(temp, "manifests");
+        await mkdir(manifests, { mode: 0o700 });
+        for (const snapshot of source.snapshots) {
+          if (
+            (await this.readRef(bare, `refs/kq/snapshots/${snapshot.commit}`)) !== snapshot.commit
+          )
+            throw new RecipeStoreError(500, "Missing recipe snapshot reference");
+          await writeFile(join(manifests, `${snapshot.commit}.json`), JSON.stringify(snapshot), {
+            mode: 0o600,
+          });
+        }
+        await writeFile(join(temp, "intent.json"), JSON.stringify({ source: id, target, actor }), {
+          mode: 0o600,
+        });
+        await rename(temp, join(this.root, "migration"));
+        await this.finishMigration();
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+      return this.get(target);
+    });
+  }
+
+  // The exclusive recipe writer finishes a published intent before accepting another mutation.
+  private async finishMigration() {
+    const journal = join(this.root, "migration");
+    const bytes = await optionalText(join(journal, "intent.json"));
+    if (bytes === undefined) return;
+    const { source, target, actor } = z
+      .strictObject({
+        source: RecipeRepositoryIdSchema,
+        target: RecipeRepositoryIdSchema,
+        actor: z.string(),
+      })
+      .parse(JSON.parse(bytes));
+    for (const [name, path] of [
+      ["manifests", join(this.root, "manifests", target)],
+      ["repository", this.repositoryPath(target)],
+    ] as const) {
+      if (await stat(join(journal, name)).catch(missingAsUndefined))
+        await rename(join(journal, name), path);
+      else await stat(path);
+    }
+    const active = await this.readRef(this.repositoryPath(source), ACTIVE_REF);
+    if (active) await this.clearActive(source, active, actor);
+    await this.writeJsonAtomically(join(this.repositoryPath(source), "kq-moved.json"), target);
+    // Rename the completed intent out of the recovery path before removing its contents.
+    const retired = join(this.root, "staging", `done-${randomUUID()}`);
+    await rename(journal, retired);
+    await rm(retired, { recursive: true, force: true });
+  }
+
+  async collectSnapshot(
+    id: string,
+    commit: string,
+    materials: Pick<SpackMaterialStore, "withUnreferencedRecipe">,
+  ) {
+    this.validateCommit(commit);
+    return this.serializeWrite(() =>
+      materials.withUnreferencedRecipe(id, commit, async () => {
+        await this.readIdentity(id);
+        const path = this.repositoryPath(id);
+        if ((await this.readRef(path, ACTIVE_REF)) === commit)
+          throw new RecipeStoreError(
+            409,
+            "Active recipe snapshot is still in use",
+            "RECIPE_SNAPSHOT_IN_USE",
+          );
+        // Remove visibility first. A retry completes ref removal and pruning after interruption.
+        await rm(join(this.root, "manifests", id, `${commit}.json`), { force: true });
+        await this.git(path, ["update-ref", "-d", `refs/kq/snapshots/${commit}`]);
+        await this.git(path, [
+          "reflog",
+          "expire",
+          "--expire=never",
+          "--expire-unreachable=now",
+          "--all",
+        ]);
+        await this.git(path, ["gc", "--prune=now"]);
+      }),
+    );
   }
 
   /** Immutable identity and one committed snapshot only; no history scan or Git process. */
@@ -138,6 +288,7 @@ export class RecipeGitStore {
     input: Uint8Array | ReadableStream<Uint8Array>,
     actor: string,
     signal?: AbortSignal,
+    delegated = false,
   ): Promise<RecipeRepository> {
     signal?.throwIfAborted();
     const parsed = RecipeRepositoryNameSchema.safeParse(repository);
@@ -157,6 +308,8 @@ export class RecipeGitStore {
       const importDirectory = staging;
       const importSnapshot = async () => {
         signal?.throwIfAborted();
+        const id = RecipeGitStore.repositoryId(repository);
+        await this.checkWrite(id, actor, delegated);
         await preflightRecipeBundle(bundlePath, this.limits);
         signal?.throwIfAborted();
         const git = (directory: string, args: string[]) =>
@@ -196,7 +349,6 @@ export class RecipeGitStore {
         signal?.throwIfAborted();
         // From here, finish snapshot/ref publication together even if the caller cancels.
         // Interrupting this region could strand a ref without its manifest.
-        const id = RecipeGitStore.repositoryId(repository);
         const destination = this.repositoryPath(id);
         await this.ensureRepository(id, repository, importDirectory);
         const snapshotRef = `refs/kq/snapshots/${commit}`;
@@ -238,7 +390,7 @@ export class RecipeGitStore {
         }
         return this.get(id);
       };
-      const imported = this.serialize(importSnapshot, signal, () => {
+      const imported = this.serializeWrite(importSnapshot, signal, () => {
         this.pendingImports -= 1;
       });
       queued = true;
@@ -254,10 +406,12 @@ export class RecipeGitStore {
     commit: string,
     expectedActiveCommit: string | null,
     actor: string,
+    delegated = false,
   ): Promise<RecipeRepository> {
     this.validateCommit(commit);
     if (expectedActiveCommit !== null) this.validateCommit(expectedActiveCommit);
-    return this.serialize(async () => {
+    return this.serializeWrite(async () => {
+      await this.checkWrite(id, actor, delegated);
       const repository = await this.get(id);
       const snapshot = repository.snapshots.find((item) => item.commit === commit);
       if (!snapshot) throw new RecipeStoreError(404, "Recipe snapshot not found");
@@ -295,39 +449,40 @@ export class RecipeGitStore {
     id: string,
     expectedActiveCommit: string,
     actor: string,
+    delegated = false,
   ): Promise<RecipeRepository> {
     this.validateCommit(expectedActiveCommit);
-    return this.serialize(async () => {
+    return this.serializeWrite(async () => {
+      await this.checkWrite(id, actor, delegated);
       const repository = await this.get(id);
       if (repository.activeCommit !== expectedActiveCommit) {
         throw new RecipeStoreError(409, "Active recipe changed; reload before retrying");
       }
-      const audit = await this.createAuditEvent(
-        id,
-        "deactivate",
-        expectedActiveCommit,
-        null,
-        actor,
-      );
-      const result = await this.git(
-        this.repositoryPath(id),
-        ["update-ref", "--stdin", "--create-reflog", "-m", this.auditMessage("deactivate", actor)],
-        true,
-        [
-          `delete ${ACTIVE_REF} ${expectedActiveCommit}`,
-          `update ${AUDIT_REF} ${audit.commit} ${audit.previous ?? ZERO_COMMIT}`,
-          "",
-        ].join("\n"),
-      );
-      if (result.code !== 0)
-        throw new RecipeStoreError(409, "Active recipe changed; reload before retrying");
+      await this.clearActive(id, expectedActiveCommit, actor);
       return this.get(id);
     });
+  }
+
+  private async clearActive(id: string, expectedActiveCommit: string, actor: string) {
+    const audit = await this.createAuditEvent(id, "deactivate", expectedActiveCommit, null, actor);
+    const result = await this.git(
+      this.repositoryPath(id),
+      ["update-ref", "--stdin", "--create-reflog", "-m", this.auditMessage("deactivate", actor)],
+      true,
+      [
+        `delete ${ACTIVE_REF} ${expectedActiveCommit}`,
+        `update ${AUDIT_REF} ${audit.commit} ${audit.previous ?? ZERO_COMMIT}`,
+        "",
+      ].join("\n"),
+    );
+    if (result.code !== 0)
+      throw new RecipeStoreError(409, "Active recipe changed; reload before retrying");
   }
 
   async archive(
     id: string,
     commit: string,
+    delegatedSubject?: string,
   ): Promise<{ stream: ReadableStream<Uint8Array>; size: number }> {
     this.validateCommit(commit);
     if (this.pendingExports >= 4) throw new RecipeStoreError(429, "Too many recipe exports");
@@ -340,20 +495,24 @@ export class RecipeGitStore {
     };
     let directory: string | undefined;
     try {
-      const repository = await this.get(id);
-      if (!repository.snapshots.some((item) => item.commit === commit)) {
-        throw new RecipeStoreError(404, "Recipe snapshot not found");
-      }
       await this.prepare();
       directory = await mkdtemp(join(this.root, "staging", "export-"));
       const exportDirectory = directory;
       const path = join(directory, "recipes.tar");
-      await this.git(this.repositoryPath(id), [
-        "archive",
-        "--format=tar",
-        `--output=${path}`,
-        commit,
-      ]);
+      await this.serialize(async () => {
+        if (
+          delegatedSubject !== undefined &&
+          !(await this.grants(id)).some((g) => g.subject === delegatedSubject)
+        )
+          throw new RecipeStoreError(404, "Recipe repository not found");
+        await this.getSnapshot(id, commit);
+        await this.git(this.repositoryPath(id), [
+          "archive",
+          "--format=tar",
+          `--output=${path}`,
+          commit,
+        ]);
+      });
       const size = (await stat(path)).size;
       const file = await open(path, "r");
       let closed = false;
@@ -452,7 +611,12 @@ export class RecipeGitStore {
       if (!(error instanceof RecipeStoreError) || error.status !== 404) throw error;
     }
     const temporary = join(staging, "destination.git");
-    await this.git(staging, ["init", "--bare", "--template=", temporary]);
+    await this.initializeRepository(temporary, id, repository);
+    await rename(temporary, this.repositoryPath(id));
+  }
+
+  private async initializeRepository(temporary: string, id: string, repository: string) {
+    await this.git(this.root, ["init", "--bare", "--template=", temporary]);
     await mkdir(join(temporary, "info"), { recursive: true });
     // Preserve exact tree bytes even when imported .gitattributes requests export filtering.
     await writeFile(join(temporary, "info", "attributes"), "* -export-ignore -export-subst\n", {
@@ -461,7 +625,6 @@ export class RecipeGitStore {
     await writeFile(join(temporary, "kq-repository.json"), JSON.stringify({ id, repository }), {
       mode: 0o600,
     });
-    await rename(temporary, this.repositoryPath(id));
   }
 
   private async readRef(directory: string, ref: string): Promise<string | null> {
@@ -535,6 +698,18 @@ export class RecipeGitStore {
     return runRecipeGit(directory, args, this.limits, allowFailure, input);
   }
 
+  private serializeWrite<T>(action: () => Promise<T>, signal?: AbortSignal, retired?: () => void) {
+    return this.serialize(
+      async () => {
+        await this.finishMigration();
+        signal?.throwIfAborted();
+        return action();
+      },
+      signal,
+      retired,
+    );
+  }
+
   private serialize<T>(
     action: () => Promise<T>,
     signal?: AbortSignal,
@@ -574,4 +749,13 @@ export class RecipeGitStore {
 
 function isMissing(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function missingAsUndefined(error: unknown): undefined {
+  if (isMissing(error)) return undefined;
+  throw error;
+}
+
+function optionalText(path: string) {
+  return readFile(path, "utf8").catch(missingAsUndefined);
 }

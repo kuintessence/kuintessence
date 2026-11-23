@@ -6,6 +6,7 @@ import type {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { listSoftwareOperations } from "../../lib/cp-client";
 import i18n from "../../lib/i18n";
 import * as client from "../../lib/recipe-repositories-client";
 import { SoftwareError } from "../../lib/software-client";
@@ -27,6 +28,8 @@ vi.mock("react-i18next", () => ({
   initReactI18next: { type: "3rdParty", init: () => undefined },
   useTranslation: () => ({ t: i18n.t.bind(i18n) }),
 }));
+
+vi.mock("../../lib/cp-client", () => ({ listSoftwareOperations: vi.fn(async () => []) }));
 
 vi.mock("../../lib/recipe-repositories-client", () => ({
   listRecipeRepositories: vi.fn(),
@@ -214,10 +217,51 @@ test("renders full history, static diagnostics and boundaries without claiming A
   expect(screen.getByText("builtin")).toBeTruthy();
   expect(screen.getByText("v2.0")).toBeTruthy();
   expect(screen.getByText("Concretization: not run")).toBeTruthy();
-  expect(screen.getByText("Agent delivery: not implemented")).toBeTruthy();
+
   expect(screen.queryByText(/Each file has its own destination/)).toBeNull();
   expect(screen.queryByLabelText("Git bundles")).toBeNull();
   expect(screen.queryByRole("button", { name: /Activate|Roll back|Deactivate/ })).toBeNull();
+});
+
+test("a direct grant enables a personal recipe while migration leaves history read-only", async () => {
+  const row = {
+    ...repository(null),
+    repository: "user/owner/private",
+    delegatedWrite: true as const,
+  };
+  vi.mocked(client.listRecipeRepositories).mockResolvedValue([row]);
+  vi.mocked(client.getRecipeRepository).mockResolvedValue(row);
+  mount();
+  const refresh = screen.getByRole("button", { name: "Refresh recipes" });
+  fireEvent.click(await screen.findByRole("button", { name: "Inspect user/owner/private" }));
+  expect(await screen.findByRole("button", { name: `Activate ${newCommit}` })).toBeTruthy();
+  expect(listSoftwareOperations).not.toHaveBeenCalled();
+  selectFiles("updated.bundle");
+  fireEvent.change(nativeControl(screen.getByLabelText("Repository for updated.bundle")), {
+    target: { value: row.repository },
+  });
+  expect(screen.getByRole("button", { name: "Import bundles" })).toHaveProperty("disabled", false);
+  const moved = { ...row, migrated: true as const };
+  vi.mocked(client.listRecipeRepositories).mockResolvedValue([moved]);
+  vi.mocked(client.getRecipeRepository).mockResolvedValue(moved);
+  fireEvent.click(refresh);
+  await screen.findByText("Moved · history available");
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: `Activate ${newCommit}` })).toBeNull(),
+  );
+  expect(screen.getByRole("button", { name: "Import bundles" })).toHaveProperty("disabled", true);
+});
+
+test("shows the install records for the inspected repository commit", async () => {
+  vi.mocked(client.listRecipeRepositories).mockResolvedValue([repository()]);
+  mount(true);
+  await openRepository();
+  await screen.findByText("No matching installations in this scope.");
+  expect(listSoftwareOperations).toHaveBeenCalledWith({
+    recipe: { repositoryId: repository().id, commit: expect.stringMatching(/^[ab]{40}$/) },
+    action: "install",
+    limit: 10,
+  });
 });
 
 test("requires fresh executable trust confirmation before activating and rolling back", async () => {
@@ -517,7 +561,7 @@ test("shows concise scope statuses instead of boundary and upload instructions",
   mount();
   await screen.findByText("No recipe repositories");
   expect(screen.getByText("Concretization: not run")).toBeTruthy();
-  expect(screen.getByText("Agent delivery: not implemented")).toBeTruthy();
+
   expect(screen.queryByText(/Each file has its own destination/)).toBeNull();
   expect(screen.queryByText(/Static validation only\. Concretization/)).toBeNull();
 });

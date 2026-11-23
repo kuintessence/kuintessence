@@ -67,7 +67,7 @@ export interface SubmitJobResult {
  * Server-free: backed by the embedded {@link ExecutorPool}.
  */
 export interface LocalJobLauncher {
-  submitJob(spec: JobSubmission): Promise<SubmitJobResult>;
+  submitJob(spec: JobSubmission, forEachGroup?: string): Promise<SubmitJobResult>;
   /**
    * Run a fully-formed {@link JobSpec} (command + resources) and await its
    * terminal status. The `submitJob` path uses this after materializing a
@@ -138,14 +138,24 @@ export class PoolJobLauncher implements LocalJobLauncher {
    * NetDrive) BEFORE submit, so they exist when the job runs; in local mode each
    * `fileMetadataId` is a source path on this host (see {@link LocalFileStager}).
    */
-  async submitJob(spec: JobSubmission): Promise<SubmitJobResult> {
+  async submitJob(spec: JobSubmission, forEachGroup?: string): Promise<SubmitJobResult> {
     const jobId = randomUUID();
     await this.stager.stage(spec.inputStaging, this.workingDir);
-    const outcome = await this.submitAndWait(toJobSpec(jobId, spec, this.workingDir), {
+    const job = toJobSpec(jobId, spec, this.workingDir);
+    if (
+      this.adapter.type === "slurm" &&
+      forEachGroup &&
+      !spec.inputStaging.length &&
+      !spec.expectedOutputs.length
+    ) {
+      job.forEachGroup = forEachGroup;
+      job.schedulerName = `kqa-${forEachGroup}`;
+    }
+    const outcome = await this.submitAndWait(job, {
       expectedOutputs: spec.expectedOutputs,
     });
     const collected = { ...(outcome.collected ?? {}) };
-    await this.captureStdout(collected, outcome.schedulerJobId);
+    await this.captureStdout(collected, outcome.schedulerJobId, jobId);
     return {
       jobId,
       status: outcome.status,
@@ -165,6 +175,7 @@ export class PoolJobLauncher implements LocalJobLauncher {
   private async captureStdout(
     collected: Record<string, string>,
     schedulerJobId: string | undefined,
+    jobId: string,
   ): Promise<void> {
     if (!this.adapter.getJobLogs || !schedulerJobId || STDOUT_DESCRIPTOR in collected) {
       return;
@@ -173,6 +184,7 @@ export class PoolJobLauncher implements LocalJobLauncher {
       collected[STDOUT_DESCRIPTOR] = await this.adapter.getJobLogs(
         schedulerJobId,
         STDOUT_CAPTURE_LINES,
+        jobId,
       );
     } catch (err) {
       logger.warn({ schedulerJobId, err }, "Failed to capture job stdout for value extraction");
@@ -215,9 +227,10 @@ function toJobSpec(jobId: string, spec: JobSubmission, workingDir: string): JobS
     name: spec.name,
     command: spec.command,
     cpus: spec.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
-    memoryMb: DEFAULT_RESOURCES.memoryMb,
-    gpus: DEFAULT_RESOURCES.gpus,
+    memoryMb: spec.resources?.memoryMb ?? DEFAULT_RESOURCES.memoryMb,
+    gpus: spec.resources?.gpus ?? DEFAULT_RESOURCES.gpus,
     wallTimeSec: spec.resources?.wallTimeSec ?? DEFAULT_RESOURCES.wallTimeSec,
+    schedulerLimits: spec.resources?.schedulerLimits,
     workingDir,
     envVars: spec.envVars,
     ...(spec.stdinText !== undefined ? { stdinText: spec.stdinText } : {}),
@@ -251,7 +264,7 @@ export class LocalWorkflowRunner {
     const executor = createUsecaseExecutor({
       resolvePackage: (usecaseVersionId, softwareVersionId) =>
         this.deps.packageStore.resolvePackage(usecaseVersionId, softwareVersionId),
-      submitJob: (spec) => this.deps.launcher.submitJob(spec),
+      submitJob: (spec, group) => this.deps.launcher.submitJob(spec, group),
     });
     const result = await runWorkflow(wf, executor);
     logger.info({ name: wf.name, submittedBy }, "Local workflow run finished");

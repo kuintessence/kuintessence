@@ -116,7 +116,7 @@ DOCS_BASE="/kuintessence/" bun run docs:build
 - Postgres、RustFS、Redis 的持久化卷和备份。
 - Helm 每个 revision 的数据库 migration Job 成功，Server/Registry initContainer 未绕过该门禁；升级前已完成数据库快照，且理解 schema 为 forward-only。
 - `REGISTRY_AUTH_MODE=jwt` 及 issuer/audience；OCI blob 使用持久卷，禁止生产回退到 `InMemoryBlobStore`。
-- Server 与 Registry 保持单副本；共享 event bus、Agent session ownership、cron leader election 和共享 upload session 尚未实现，不得启用 HPA。
+- Server 与 Registry 的 Helm 部署保持单副本。事件总线使用 PostgreSQL 转发，OCI 上传进度由数据库记录，上传接续需共享同一持久卷。计量定时任务共享 PostgreSQL 周期记录；Agent 会话跨实例路由及滚动部署验收仍待完成。
 - OIDC/SSO 与 cookie/CSRF 策略。
 - Agent-Server mTLS 或 trusted-proxy 边界。
 - NetDrive、SSH recording、Metering webhook 的 feature flags。

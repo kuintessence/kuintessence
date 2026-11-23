@@ -1,4 +1,14 @@
 {
+  "notifications": {
+    "title": "通知",
+    "email": "邮件通知",
+    "webhook": "Webhook 地址",
+    "secret": "Webhook 签名密钥",
+    "failed": "读取或保存通知失败。",
+    "saved": "已保存投递设置。",
+    "empty": "没有通知。",
+    "read": "标为已读"
+  },
   "common": {
     "retry": "重试",
     "loading": "加载中…",
@@ -425,7 +435,6 @@
     },
     "logs": {
       "connecting": "连接日志流中…",
-      "notImplemented": "日志端点不可用。",
       "unavailable": "日志尚未生成或已被清理。",
       "loadFailed": "加载日志失败"
     },
@@ -1066,6 +1075,7 @@
       "grantsCompleted": "已补齐 {{count}} 个下游授权",
       "actionFailed": "操作失败",
       "kind": {
+        "site-runtime": "站点预装运行时",
         "spack-package": "Spack package",
         "usecase": "软件用例",
         "workflow-template": "工作流模板"
@@ -1229,6 +1239,8 @@
       "catalogPackageDescription": "自定义 package 描述",
       "catalogPackageTags": "自定义标签，逗号分隔",
       "packageFilePlaceholder": "粘贴官方 package.py 内容，解析后会提取版本、variants、依赖、provides、维护者和 license",
+      "recipeFields": "编辑声明字段",
+      "noRecipeFields": "包类中没有可编辑的字符串声明。可直接编辑 Python 源码。",
       "parsePackageFile": "解析 package.py",
       "packageMetadata": "package.py 解析结果",
       "versions": "版本",
@@ -1803,7 +1815,7 @@
       "meteringSettings": "存储配额与成本设置"
     },
     "sso": {
-      "title": "单点登录（OIDC）",
+      "title": "单点登录",
       "loginDisplayTitle": "登录页展示",
       "loginDisplayDescription": "配置用户看到的认证名称和平台欢迎信息；留空时使用系统默认文案。",
       "providerDisplayName": "身份认证名称",
@@ -1816,6 +1828,7 @@
       "saved": "登录配置已保存",
       "saveFailed": "保存登录配置失败",
       "enabled": "启用统一登录",
+      "connectorHelp": "填写 Dex 的签发者 URL。Dex 中的连接器 ID 必须为 {{id}}。",
       "providerType": "身份源类型",
       "issuerUrl": "签发者地址",
       "clientId": "客户端 ID",
@@ -2006,6 +2019,7 @@
       "passphrase": "私钥口令（可选）",
       "secretHelp": "留空保留已有凭据；已保存的密钥不会回显。",
       "hostKey": "主机密钥指纹（Base64 SHA-256）",
+      "jumps": "按连接顺序填写跳板凭据的 Agent ID，以逗号分隔",
       "hostKeyHelp": "设置后拒绝不匹配的主机密钥；留空时不验证主机指纹。",
       "save": "保存凭据"
     },
@@ -2378,7 +2392,15 @@
         "title": "没有集群通过选址流水线",
         "body": "展开下方阶段以查看每个候选被剔除的原因。"
       },
-      "score": "得分"
+      "score": "得分",
+      "scoreDetails": "评分明细",
+      "rawScore": "原始分",
+      "weightedScore": "加权分",
+      "ranking": {
+        "composite": "按综合分排序",
+        "workflow-plan": "工作流优先顺序",
+        "preferred-queue": "队列偏好顺序"
+      }
     }
   },
   "providers": {

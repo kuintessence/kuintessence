@@ -13,7 +13,7 @@
 - 成员读取／写入限制均开启，成员为 `OR(A.member,B.member,R.member)`。
 - 写入背书为 `AND(A.peer,B.peer,R.peer)`；Adapter 仅向这三家发送含 transient 的提案，不向其他联盟成员发送。
 - `requiredPeerCount=2`、`maxPeerCount=2`；三家需要具备相应的 Peer 可达性。
-- `blockToLive=0`，不按区块自动清除未结案件。保留／legal hold／显式 purge 尚待实现，不能宣称已有自动归档或磁盘回收。
+- `blockToLive=0`，不按区块自动清除未结案件。证据投影的归档、保留与清除由三方保管员共同控制。
 
 生成器和 Adapter 只支持三方共同背书，不支持二取三策略；手动修改集合会使配置与生成器、Adapter 不一致。公开信任映射、集合成员和交易时序仍可能透露合作关系，不承诺机构关系匿名。
 
@@ -26,6 +26,16 @@
 任一 A/B 可签署 `case-publication-revocation`，绑定原存证编号／摘要和撤回编号。允许在材料首次入链前保存撤回；相同材料后续提交及重放均被拒绝。R 和联盟管理员不能冒充当事方签署撤回。撤回原件与标记仅写案件集合，与存证读取同一标记形成 MVCC 依赖；相同业务编号换文拒绝，重放保留原字节。这里的“撤回”阻止后续存证，不删除已有明文，不解冻资金，也不撤销已经发生的历史事实。
 
 `GetCaseReceipt` 仅向案件成员返回原随机编号和带盐摘要；不存在返回 `receipt:null`。它是历史存证回执，不是新的材料读取许可，也不能证明科研结果正确、金额事实真实或已经取得仲裁权。私有字节缺失／哈希不一致返回 `DATA_WAITING`，不能当作从未写入。业务密钥撤销继续使用各自组织的原生状态背书。
+
+## 证据投影的归档与清除
+
+A、B、R 各自使用具有 `kq.federation.role=case-custodian` 的本站 MSP 身份。向 `kq-cases` 的 `InspectCaseRetention(domainId, publicationId)` 查询版本、三方保留期、hold 及归档摘要。查询会重新计算 PDC 中原始记录的 SHA-256，并核对存证回执。保管员只收到摘要及状态。
+
+使用 Fabric Gateway 或 peer CLI 提交 `ChangeCaseRetention(domainId, publicationId)`。transient 的 `retention` 是 JSON，包含查询得到的 `revision`、`digest` 和操作 `action`。背书目标为该集合 A/B/R 三家。每家分别提交 `archive` 并指定 UTC `retainUntil`。后续可延长本站保留期。任一方可用 `hold` 冻结清除，用 `release-hold` 释放本站的冻结。清除前更新查询并核对最新版本。
+
+已撤回的投影在三家保留期均结束且所有 hold 解除后，保管员可显式提交 `purge`。链码调用 Fabric 的 `purgePrivateData`，保留带盐回执、摘要和审批状态供复核。Peer 必须支持私有数据 purge；实际清除按各 Peer 的提交及历史清理配置生效。此操作的对象为该 publication 的投影，本站数据库、接收方备份、另行签署的裁决和撤回记录各自维护。
+接收机构另通过 `POST /api/federation/evidence-cases/:caseId/retention` 管理本地收到的披露正文。操作人须持有该机构的 `case.retain`。从案件列表读取 `retentionRevision`，作为请求的 `revision`。结案后使用 `archive` 和 UTC `retainUntil` 指定或延长保留期，`hold` 与 `release-hold` 控制本机构冻结。期限届满且冻结解除后，显式 `purge` 在同一事务内清空已收到的正文并记录审计。披露编号、原摘要和案件清单仍可核对。备份保留期由数据库运维配置决定。
+
 
 ## 进程与配置
 
@@ -47,7 +57,7 @@ Unix 接口为 `/v1/case/proposal`、`/v1/case/advance`、`/v1/case/query`。普
 
 `bun test scripts/fabric-case-check.test.ts` 用于检查集合模板、六签／精确范围、独立存证权、密钥用途及撤销、有效期、A/B 各自撤回、撤回先于存证、不可变重放、第三机构之外的身份拒绝和私有数据缺失。真实 Gateway SDK 提案被解码核对：公开参数不含材料，transient 仅投递 A/B/R，检查点加密且不能由另一恢复密钥使用；本地 HTTP 验证固定 case 路由和错误脱敏。该入口已纳入 `test`、`test:unit`、`test:fabric` 和 Fabric 脚本类型检查。
 
-确定性账本用于检查协议分支；实际 Peer 的背书、私有数据隔离、MVCC 和进程恢复由下文四机构网络诊断入口检查。平台审批、签名交换、持久投递、私有收据及跨机构撤回通知的配置见下文。二取三背书、自动保留和删除策略不在当前实现范围内。
+确定性账本用于检查协议分支；实际 Peer 的背书、私有数据隔离、MVCC 和进程恢复由下文四机构网络诊断入口检查。平台审批、签名交换、持久投递、私有收据及跨机构撤回通知的配置见下文。
 
 ## 平台独立存证审批
 

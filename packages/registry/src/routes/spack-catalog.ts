@@ -137,10 +137,25 @@ export function createSpackCatalogRoutes(
     },
   );
 
+  r.get("/spack/catalog/packages/:id/source", requirePrincipal, async (c) => {
+    const id = parseUuidParam(c.req.param("id"), "spack catalog package id");
+    c.header("Cache-Control", "private, no-store");
+    return c.json(await service.getSource(id, c.get("principal")));
+  });
+
   r.put(
     "/spack/catalog/packages/:id",
     requirePrincipal,
-    zValidator("json", SpackCatalogPackageSchema),
+    zValidator(
+      "json",
+      SpackCatalogPackageSchema.extend({
+        expectedSourceDigest: z
+          .string()
+          .regex(/^[0-9a-f]{64}$/)
+          .nullable()
+          .optional(),
+      }),
+    ),
     async (c) => {
       const id = parseUuidParam(c.req.param("id"), "spack catalog package id");
       return c.json(

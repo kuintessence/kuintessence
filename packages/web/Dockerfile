@@ -19,7 +19,7 @@ COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/web/tsconfig.json ./packages/web/
 
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc bun install --frozen-lockfile --ignore-scripts
 
 FROM deps AS build
 ARG VITE_PREVIEW_LOGIN=false

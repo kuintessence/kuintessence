@@ -2220,6 +2220,7 @@ describe("CP software operation routes", () => {
         agentId: "agent-a",
         siteId: "site-a",
         clusterId: "cluster-a",
+        managedRootId: "00000000-0000-4000-8000-000000000001",
         locationKind: "cp-local",
       }),
     });
@@ -2237,7 +2238,7 @@ describe("CP software operation routes", () => {
     ]);
   });
 
-  test("scoped replica creation surfaces the unavailable coordinator without persisting a row", async () => {
+  test("scoped replica creation returns the queued task", async () => {
     let replicaCalls = 0;
     const providerOrgId = "00000000-0000-4000-8000-0000000000a1";
     const app = makeApp(
@@ -2255,13 +2256,19 @@ describe("CP software operation routes", () => {
       undefined,
       undefined,
       {
-        createReplica: async () => {
+        createReplica: async (_actor, input) => {
           replicaCalls += 1;
-          throw new AppError(
-            ErrorCode.INTERNAL_ERROR,
-            "DATA_REPLICA_UNAVAILABLE: replica coordinator is not configured",
-            501,
-          );
+          return {
+            id: "replica-a",
+            versionId: input.versionId,
+            agentId: input.agentId,
+            providerOrgId,
+            siteId: "site-a",
+            clusterId: "cluster-a",
+            locationKind: "cp-local",
+            status: "pending",
+            verifiedAt: null,
+          };
         },
       },
     );
@@ -2272,11 +2279,12 @@ describe("CP software operation routes", () => {
         agentId: "agent-a",
         siteId: "site-a",
         clusterId: "cluster-a",
+        managedRootId: "00000000-0000-4000-8000-000000000001",
         locationKind: "cp-local",
       }),
     });
 
-    expect(response.status).toBe(501);
+    expect(response.status).toBe(201);
     expect(replicaCalls).toBe(1);
   });
 

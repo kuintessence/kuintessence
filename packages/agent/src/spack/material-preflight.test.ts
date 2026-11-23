@@ -107,7 +107,7 @@ describe("Agent managed material preflight", () => {
     });
     expect(await manager.runSoftwareOperation("install", f.input.spec, f.input)).toEqual({
       outcome: "rejected",
-      reason: "managed offline Spack execution is not enabled yet",
+      reason: "Managed Spack operations require audited materials and a configured site installer",
     });
     expect(commands).toEqual([["spack", "--version"]]);
   });
@@ -164,7 +164,8 @@ describe("Agent managed material preflight", () => {
     if (mode === "passed") {
       expect(result).toEqual({
         outcome: "rejected",
-        reason: "managed offline Spack execution is not enabled yet",
+        reason:
+          "Managed Spack operations require audited materials and a configured site installer",
         stdout: JSON.stringify(auditReport),
       });
     } else if (mode === "failed") {

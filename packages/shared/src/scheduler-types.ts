@@ -42,6 +42,13 @@ export const PlacementAgentSummarySchema = z.object({
   schedulerVersion: z.string().optional(),
   /** Final auto-stage score; only present on the survivor list. */
   score: z.number().optional(),
+  scoreBreakdown: z
+    .object({
+      composite: z.number(),
+      ranking: z.enum(["composite", "workflow-plan", "preferred-queue"]),
+      contributions: z.array(z.object({ name: z.string(), raw: z.number(), weighted: z.number() })),
+    })
+    .optional(),
 });
 export type PlacementAgentSummary = z.infer<typeof PlacementAgentSummarySchema>;
 

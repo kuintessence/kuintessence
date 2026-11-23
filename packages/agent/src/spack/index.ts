@@ -7,7 +7,7 @@ import {
 } from "@kuintessence/shared";
 import type { Spawner } from "../adapters/base";
 import { Buildcache, type ExportOutcome, type ImportResult } from "./buildcache";
-import { MANAGED_SPACK_EXECUTION_DISABLED, SpackCli } from "./cli";
+import { MANAGED_SPACK_MATERIALS_REQUIRED, SpackCli } from "./cli";
 import { SpackInstallationPending } from "./execution-identity";
 import type { SpackManagedInstallation } from "./install-contract";
 import { type InstallOutcome, type SoftwareOperationOutcome, SpackInstaller } from "./installer";
@@ -59,23 +59,6 @@ export interface SpackManagerBootstrapOptions {
   managedInstallation?: SpackManagedInstallation;
 }
 
-/**
- * Top-level orchestrator that composes CLI / installer / mirror manager /
- * buildcache. The Agent bootstrap path will eventually do:
- *
- *   const spack = await SpackManager.bootstrap(config);
- *   if (spack.available) {
- *     const installed = await spack.installedList();
- *     await streamClient.reportInstalledSoftware(installed);
- *   }
- *
- * but that wiring is deferred to a follow-up commit (depends on a new proto
- * field for the heartbeat). See TODO in `packages/agent/src/index.ts`.
- *
- * `available` reflects whether `spack --version` succeeded at boot time.
- * On `available=false`, the submodules are deliberately undefined so a
- * caller cannot accidentally invoke a missing CLI.
- */
 /**
  * Server-pushed policy bundle. Mirrors the proto `SoftwarePolicyUpdate` shape;
  * the agent stores the latest applied version so a re-pushed identical
@@ -200,7 +183,7 @@ export class SpackManager {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
     if (this.requireServerMaterials) {
-      return { outcome: "rejected", reason: MANAGED_SPACK_EXECUTION_DISABLED };
+      return { outcome: "rejected", reason: MANAGED_SPACK_MATERIALS_REQUIRED };
     }
     return this.installer.requestInstall(spec, policy);
   }
@@ -360,7 +343,7 @@ export class SpackManager {
         }
         return {
           outcome: "rejected",
-          reason: MANAGED_SPACK_EXECUTION_DISABLED,
+          reason: MANAGED_SPACK_MATERIALS_REQUIRED,
           stdout: report.proof
             ? SPACK_SOURCE_PROOF_PREFIX + JSON.stringify(report.proof)
             : JSON.stringify(report),
@@ -375,7 +358,7 @@ export class SpackManager {
         };
       }
     }
-    return { outcome: "rejected", reason: MANAGED_SPACK_EXECUTION_DISABLED };
+    return { outcome: "rejected", reason: MANAGED_SPACK_MATERIALS_REQUIRED };
   }
 
   private async withLegacyInventory(
@@ -441,7 +424,8 @@ export class SpackManager {
 
   /** Convenience: import a CP-distributed buildcache batch. */
   async importBuildcache(specs: string[]): Promise<ImportResult> {
-    if (this.requireServerMaterials) throw new Error(MANAGED_SPACK_EXECUTION_DISABLED);
+    if (this.requireServerMaterials)
+      throw new Error("Direct buildcache transfers are disabled in managed Spack mode");
     if (!this.buildcache) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
@@ -450,7 +434,8 @@ export class SpackManager {
 
   /** Convenience: push a locally-built spec to a mirror. */
   async exportBuildcache(spec: string, mirror: string): Promise<ExportOutcome> {
-    if (this.requireServerMaterials) throw new Error(MANAGED_SPACK_EXECUTION_DISABLED);
+    if (this.requireServerMaterials)
+      throw new Error("Direct buildcache transfers are disabled in managed Spack mode");
     if (!this.buildcache) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }

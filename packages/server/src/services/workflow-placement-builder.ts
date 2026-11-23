@@ -15,6 +15,7 @@ import {
   type Workflow,
   type WorkflowPlacementConfig,
   WorkflowPlacementConfigSchema,
+  workflowDsl,
 } from "@kuintessence/shared";
 import { eq, inArray } from "drizzle-orm";
 import { loadFederationWorkflowBinding } from "../federation/execution-binding";
@@ -192,9 +193,9 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
         ),
     );
     // Server control flow and remote federation calls do not consume local scheduler slots.
-    const localNodes = workflow.spec.nodeDrafts.filter(
-      (node) => node.type === "Script" || node.type === "SoftwareUsecaseComputing",
-    );
+    const localNodes = workflow.spec.nodeDrafts
+      .map((node) => workflowDsl.commandExecutionNode(node) ?? node)
+      .filter((node) => node.type === "Script" || node.type === "SoftwareUsecaseComputing");
     const scriptNodes = localNodes.filter(isResolvedScriptNode);
     const profileIds = [
       ...new Set(

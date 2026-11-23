@@ -220,6 +220,59 @@ class CatalogrouteTestMetadata(Package):
     expect(body.metadata?.variants).toContainEqual(expect.objectContaining({ name: "cuda" }));
   });
 
+  test("source editing retains exact bytes and fences concurrent vendor edits", async () => {
+    const path = "/api/spack/catalog/packages";
+    const data = {
+      source: "vendor",
+      name: "catalogroute-test-source",
+      tags: [`vendor-org:${ORG_OTHER}`],
+    };
+    const content =
+      "# source-only comment\r\nclass Demo(Package):\r\n" +
+      Array.from({ length: 100 }, (_, i) => `    version("2026.${i}")\r\n`).join("");
+    const created = await app.request(`${path}?orgId=${ORG_VENDOR}`, {
+      method: "POST",
+      headers: VENDOR_HEADERS,
+      body: JSON.stringify({ ...data, packageFile: content }),
+    });
+    expect(created.status).toBe(201);
+    const { id } = (await created.json()) as { id: string };
+    const item = `${path}/${id}`;
+    const read = () => app.request(`${item}/source`, { headers: VENDOR_HEADERS });
+    for (const headers of [OTHER_VENDOR_HEADERS, USER_HEADERS])
+      expect((await app.request(`${item}/source`, { headers })).status).toBe(403);
+    expect((await app.request(`${item}/source`)).status).toBe(401);
+    const source = (await (await read()).json()) as { content: string; digest: string };
+    expect(source.content).toBe(content);
+    const list = await app.request(`/api/spack/catalog?source=vendor&q=${data.name}`, {
+      headers: VENDOR_HEADERS,
+    });
+    expect(await list.text()).not.toContain("source-only comment");
+    const update = (changes: Record<string, unknown>) =>
+      app.request(item, {
+        method: "PUT",
+        headers: VENDOR_HEADERS,
+        body: JSON.stringify({ ...data, ...changes }),
+      });
+    expect((await update({ description: "renamed" })).status).toBe(200);
+    const attempts = await Promise.all(
+      ["one", "two"].map((suffix) =>
+        update({ packageFile: `${content}# ${suffix}`, expectedSourceDigest: source.digest }),
+      ),
+    );
+    expect(attempts.map((response) => response.status).sort()).toEqual([200, 409]);
+    const saved = (await (await read()).json()) as { content: string; digest: string };
+    expect(saved.content).toBe(`${content}# ${attempts[0]?.status === 200 ? "one" : "two"}`);
+    expect((await update({ packageFile: "", expectedSourceDigest: saved.digest })).status).toBe(
+      200,
+    );
+    expect(await (await read()).json()).toMatchObject({ content: "" });
+    expect((await app.request(item, { method: "DELETE", headers: VENDOR_HEADERS })).status).toBe(
+      200,
+    );
+    expect((await read()).status).toBe(404);
+  });
+
   test("GET /api/spack/catalog keeps vendor packages scoped to the owning org", async () => {
     const official = await app.request("/api/spack/catalog?source=official&q=platform-cfd");
     expect(official.status).toBe(200);

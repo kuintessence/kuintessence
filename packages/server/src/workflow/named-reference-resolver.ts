@@ -1,11 +1,21 @@
-import { type PgDb, softwareAssetRevisions, softwareAssets } from "@kuintessence/db";
-import { SoftwareAssetPayloadSchema, usecase, type workflowDsl } from "@kuintessence/shared";
-import { and, desc, eq } from "drizzle-orm";
+import {
+  ecosystemReleaseAssets,
+  type PgDb,
+  softwareAssetRevisions,
+  softwareAssets,
+} from "@kuintessence/db";
+import { SoftwareAssetPayloadSchema, usecase, workflowDsl } from "@kuintessence/shared";
+import { and, desc, eq, notExists } from "drizzle-orm";
 import type { BoundPrincipal } from "../middleware/principal-binder";
+import {
+  activeSoftwareReleaseRevision,
+  type ReleaseBoundSoftwareKind,
+  releaseBoundSoftwareKind,
+} from "../services/site-runtime";
 
 export interface NamedReferenceAsset {
   id: string;
-  kind: "usecase" | "spack-package" | "sandbox-script";
+  kind: "usecase" | "site-runtime" | "spack-package" | "sandbox-script";
   source: string;
   name: string;
   version: string;
@@ -27,7 +37,11 @@ export interface WorkflowNamedReferenceRepository {
     kind: NamedReferenceAsset["kind"],
     selector: workflowDsl.AssetSelector,
   ): Promise<NamedReferenceAsset[]>;
-  findLatestRevision(assetId: string): Promise<NamedReferenceRevision | null>;
+  findLatestRevision(
+    asset: Pick<NamedReferenceAsset, "id" | "name" | "version">,
+    signedKind?: ReleaseBoundSoftwareKind,
+    allowIndependent?: boolean,
+  ): Promise<NamedReferenceRevision | null>;
 }
 
 export interface WorkflowNamedReferenceAuthorizer {
@@ -35,7 +49,10 @@ export interface WorkflowNamedReferenceAuthorizer {
 }
 
 export class PgWorkflowNamedReferenceRepository implements WorkflowNamedReferenceRepository {
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly db: PgDb,
+    private readonly trustedKeys: Readonly<Record<string, string>> = {},
+  ) {}
 
   async findAssets(
     kind: NamedReferenceAsset["kind"],
@@ -59,11 +76,46 @@ export class PgWorkflowNamedReferenceRepository implements WorkflowNamedReferenc
     return rows as NamedReferenceAsset[];
   }
 
-  async findLatestRevision(assetId: string): Promise<NamedReferenceRevision | null> {
+  async findLatestRevision(
+    asset: Pick<NamedReferenceAsset, "id" | "name" | "version">,
+    signedKind?: ReleaseBoundSoftwareKind,
+    allowIndependent = signedKind === "sandbox-script" || signedKind === "usecase",
+  ): Promise<NamedReferenceRevision | null> {
+    if (signedKind) {
+      const active = await activeSoftwareReleaseRevision(
+        this.db,
+        asset.id,
+        signedKind,
+        this.trustedKeys,
+      );
+      if (active) {
+        if (active.name !== asset.name || active.version !== asset.version) return null;
+        return {
+          id: active.revisionId,
+          assetId: asset.id,
+          revision: active.revision,
+          payload: active.payload,
+        };
+      }
+      if (!allowIndependent) return null;
+    }
+    // An independent publication may use its latest revision only if no release binds the asset.
     const [row] = await this.db
       .select()
       .from(softwareAssetRevisions)
-      .where(eq(softwareAssetRevisions.assetId, assetId))
+      .where(
+        and(
+          eq(softwareAssetRevisions.assetId, asset.id),
+          signedKind && allowIndependent
+            ? notExists(
+                this.db
+                  .select({ id: ecosystemReleaseAssets.id })
+                  .from(ecosystemReleaseAssets)
+                  .where(eq(ecosystemReleaseAssets.assetId, asset.id)),
+              )
+            : undefined,
+        ),
+      )
       .orderBy(desc(softwareAssetRevisions.revision))
       .limit(1);
     return row ?? null;
@@ -100,20 +152,26 @@ export class WorkflowNamedReferenceResolver {
     node: workflowDsl.WorkflowNode,
     principal: BoundPrincipal | undefined,
   ): Promise<workflowDsl.WorkflowNode> {
+    if (node.type === "Reduce") {
+      const leaf = workflowDsl.commandExecutionNode(node);
+      if (
+        (leaf?.type === "Script" && leaf.scriptRef) ||
+        (leaf?.type === "SoftwareUsecaseComputing" && leaf.usecaseRef)
+      ) {
+        const reducer = workflowDsl.boundCommandReducer(await this.resolveNode(leaf, principal));
+        if (!reducer) throw new Error("Named Command executor did not resolve to a revision");
+        return { ...node, reducer };
+      }
+      return node;
+    }
     if (node.type === "SoftwareUsecaseComputing" && node.usecaseRef && node.softwareRef) {
       const canonicalPrincipal = requireCanonicalPrincipal(principal);
-      const [usecaseAsset, softwareAsset] = await Promise.all([
-        this.resolveAsset("usecase", node.usecaseRef),
-        this.resolveAsset("spack-package", node.softwareRef),
-      ]);
-      await Promise.all([
-        this.authorizer.assertUse(usecaseAsset.id, canonicalPrincipal),
-        this.authorizer.assertUse(softwareAsset.id, canonicalPrincipal),
-      ]);
-      const [usecaseRevision, softwareRevision] = await Promise.all([
-        this.resolveLatestRevision(usecaseAsset.id),
-        this.resolveLatestRevision(softwareAsset.id),
-      ]);
+      const usecaseAsset = await this.resolveAsset("usecase", node.usecaseRef);
+      await this.authorizer.assertUse(usecaseAsset.id, canonicalPrincipal);
+      const usecaseRevision = await this.resolveLatestRevision(
+        usecaseAsset,
+        usecaseAsset.source === "platform-fork" ? "usecase" : undefined,
+      );
       const payload = SoftwareAssetPayloadSchema.parse(usecaseRevision.payload);
       if (payload.kind !== "usecase")
         throw new Error("Named usecase asset has an invalid revision");
@@ -121,6 +179,25 @@ export class WorkflowNamedReferenceResolver {
       if (!sameSelector(usecasePackage.softwareRef, node.softwareRef)) {
         throw new Error("Named usecase softwareRef does not match the node softwareRef");
       }
+      const softwareAsset = await this.resolveAsset(
+        usecasePackage.software.kind === "Spack" ? "spack-package" : "site-runtime",
+        node.softwareRef,
+      );
+      await this.authorizer.assertUse(softwareAsset.id, canonicalPrincipal);
+      const requiredKind = releaseBoundSoftwareKind(
+        softwareAsset.kind,
+        softwareAsset.name,
+        softwareAsset.payload,
+      );
+      const ordinaryPlatformSpack =
+        !requiredKind &&
+        softwareAsset.kind === "spack-package" &&
+        softwareAsset.source === "platform-fork";
+      const softwareRevision = await this.resolveLatestRevision(
+        softwareAsset,
+        requiredKind ?? (ordinaryPlatformSpack ? "spack-package" : undefined),
+        ordinaryPlatformSpack,
+      );
       const { usecaseRef: _usecaseRef, softwareRef: _softwareRef, ...nodeFields } = node;
       return {
         ...nodeFields,
@@ -136,7 +213,10 @@ export class WorkflowNamedReferenceResolver {
       const canonicalPrincipal = requireCanonicalPrincipal(principal);
       const scriptAsset = await this.resolveAsset("sandbox-script", node.scriptRef);
       await this.authorizer.assertUse(scriptAsset.id, canonicalPrincipal);
-      const revision = await this.resolveLatestRevision(scriptAsset.id);
+      const revision = await this.resolveLatestRevision(
+        scriptAsset,
+        scriptAsset.source === "platform-fork" ? "sandbox-script" : undefined,
+      );
       const payload = SoftwareAssetPayloadSchema.parse(revision.payload);
       if (payload.kind !== "sandbox-script")
         throw new Error("Named script is not a Sandbox script");
@@ -189,9 +269,13 @@ export class WorkflowNamedReferenceResolver {
     return rows[0];
   }
 
-  private async resolveLatestRevision(assetId: string): Promise<NamedReferenceRevision> {
-    const row = await this.repository.findLatestRevision(assetId);
-    if (!row) throw new Error("Named Sandbox script has no immutable revision");
+  private async resolveLatestRevision(
+    asset: Pick<NamedReferenceAsset, "id" | "name" | "version">,
+    signedKind?: ReleaseBoundSoftwareKind,
+    allowIndependent?: boolean,
+  ): Promise<NamedReferenceRevision> {
+    const row = await this.repository.findLatestRevision(asset, signedKind, allowIndependent);
+    if (!row) throw new Error("Named asset has no immutable revision");
     return row;
   }
 }

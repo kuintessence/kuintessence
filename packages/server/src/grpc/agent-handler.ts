@@ -1,4 +1,4 @@
-import { create } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import type { ConnectRouter } from "@connectrpc/connect";
 import {
   type AgentMessage,
@@ -49,6 +49,7 @@ import type { FederationMediaImportTransport } from "../federation/media-import-
 import type { FederationResultTransport } from "../federation/result-transport";
 import type { AgentManager, ComputeHealthReport } from "../services/agent-manager";
 import type { DataDeliveryRevocationOutbox } from "../services/data-delivery-revocations";
+import type { DataReplicaCoordinator } from "../services/data-replica";
 import type { DataScanCoordinator } from "../services/data-scan-coordinator";
 import type { JobLogsService } from "../services/job-logs-service";
 import type { JobService } from "../services/job-service";
@@ -67,6 +68,7 @@ import type { SoftwareOperationService } from "../software-governance/operation-
 import type { PolicyPusher } from "../software-governance/policy-pusher";
 import type { PolicyStore } from "../software-governance/policy-store";
 import { completionFromJob, type JobCompletionRegistry } from "../workflow/job-completion-registry";
+import { commandFlow } from "./interaction-flow";
 import type { JobDispatchOutbox } from "./job-dispatch-outbox";
 
 export { collectedForJobCompletion } from "../workflow/job-completion-registry";
@@ -285,7 +287,15 @@ export interface AgentMetricsRecorder {
   ): Promise<void>;
 }
 
+import type { AgentSessions } from "./agent-sessions";
+import { receiveInteraction } from "./interaction-receiver";
+
 export interface AgentHandlerDeps {
+  transferCheckpoints?: Pick<
+    import("../services/transfer-session-store").PgTransferSessionStore,
+    "releasedCheckpointKeys"
+  >;
+  sessions?: AgentSessions;
   agentUpdates?: Pick<import("../services/agent-update").AgentUpdateService, "deliver" | "report">;
   federationMediaExports?: Pick<FederationMediaExportTransport, "grant" | "report">;
   federationMediaImports?: Pick<FederationMediaImportTransport, "grant" | "report">;
@@ -299,7 +309,7 @@ export interface AgentHandlerDeps {
   installedRegistry?: InstalledRegistry;
   softwareOperations?: Pick<SoftwareOperationService, "applyAgentResult"> &
     Partial<Pick<SoftwareOperationService, "renewFederationInstallation">>;
-  policyStore?: Pick<PolicyStore, "getForAgent">;
+  policyStore?: Pick<PolicyStore, "effectiveForAgent">;
   policyPusher?: Pick<PolicyPusher, "pushToAgent">;
   /** Optional: when present, GPU/disk/queue-depth samples land here. */
   metricsRecorder?: AgentMetricsRecorder;
@@ -346,21 +356,23 @@ export interface AgentHandlerDeps {
     ): Promise<{ partNumber: number; url: string }[]>;
   };
   sandboxArtifactRelease?: Pick<SandboxArtifactReleaseService, "resolve">;
+  replicaCoordinator?: Pick<DataReplicaCoordinator, "accept" | "relay">;
   dataScanCoordinator?: Pick<DataScanCoordinator, "acceptAgentResult" | "onAgentConnected">;
   dataDeliveryRevocations?: Pick<DataDeliveryRevocationOutbox, "acknowledge" | "redeliver">;
   jobCancellations?: Pick<JobCancellationOutbox, "acknowledge" | "redeliver">;
   jobDispatches?: Pick<JobDispatchOutbox, "acknowledge" | "redeliver"> &
     Partial<Pick<JobDispatchOutbox, "renewExecution">>;
-  jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver">;
+  jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver"> &
+    Partial<Pick<JobWorkRootReleaseOutbox, "acknowledgePvc" | "redeliverPvc">>;
 }
 
 async function pushLatestStoredPolicy(
   agentId: string,
-  policyStore: Pick<PolicyStore, "getForAgent">,
+  policyStore: Pick<PolicyStore, "effectiveForAgent">,
   policyPusher: Pick<PolicyPusher, "pushToAgent">,
   logger: Logger,
 ): Promise<void> {
-  const policy = await policyStore.getForAgent(agentId);
+  const policy = await policyStore.effectiveForAgent(agentId);
   if (!policy) return;
   const pushed = policyPusher.pushToAgent(agentId, {
     version: policy.version,
@@ -403,10 +415,6 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
     queueInventory,
     queueObservability,
     sshGateway,
-    shellExecRegistry,
-    jobLogsService,
-    federationAccounting,
-    transferRegistry,
     jobCompletionRegistry,
     partUrlMinter,
     sandboxArtifactRelease,
@@ -420,8 +428,10 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
   router.service(AgentService, {
     async *connect(requests: AsyncIterable<AgentMessage>): AsyncIterable<ServerMessage> {
       // Per-stream outbound queue
-      const outbound: ServerMessage[] = [];
+      const outbound: { message: ServerMessage; size: number }[] = [];
+      let interactionBytes = 0;
       let resolver: (() => void) | null = null;
+      const sessionId = crypto.randomUUID();
       let registeredAgentId: string | null = null;
       let computeHealthV1 = false;
       let queueInventoryV1 = false;
@@ -431,6 +441,10 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
       const requestIterator = requests[Symbol.asyncIterator]();
 
       const channel = {
+        controlSessionId: sessionId,
+        jobSchedulerLimits: false,
+        dataReplicaCopy: false,
+        replicaRangeTransfer: false,
         agentUpdateV1: false,
         spackMaterialDeliveryV1: false,
         spackPinnedExecutionV1: false,
@@ -462,7 +476,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
           if (!active) {
             throw new Error("agent stream closed");
           }
-          outbound.push(m);
+          const size = commandFlow(m) ? toBinary(ServerMessageSchema, m).length : 0;
+          if (size && (outbound.length >= 4096 || interactionBytes + size > 8 * 1024 * 1024))
+            throw new Error("Agent stream backpressure limit");
+          interactionBytes += size;
+          outbound.push({ message: m, size });
           if (resolver) {
             resolver();
             resolver = null;
@@ -479,6 +497,15 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         },
       };
 
+      const runForSession = async (agentId: string, work: () => Promise<void>) => {
+        const leave = await deps.sessions?.enter(agentId, sessionId);
+        if (deps.sessions && !leave) return;
+        try {
+          if (active && dispatcher.isCurrentChannel(agentId, channel)) await work();
+        } finally {
+          await leave?.();
+        }
+      };
       // Process inbound messages in background so outbound generator can run concurrently.
       // The IIFE result is consumed by the surrounding bidi handler; any rejection
       // (AbortError on agent disconnect, malformed payload, etc.) must NOT propagate
@@ -501,36 +528,33 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             break;
           }
 
-          if (payload.case === "register") {
-            const reg = payload.value;
+          if (registeredAgentId && payload.case === "register") {
+            channel.close();
+            break;
+          }
+          const leave =
+            registeredAgentId && deps.sessions
+              ? await deps.sessions.enter(
+                  registeredAgentId,
+                  sessionId,
+                  payload.case === "heartbeat",
+                )
+              : undefined;
+          if (registeredAgentId && deps.sessions && !leave) {
+            channel.close();
+            break;
+          }
+          try {
+            if (payload.case === "register") {
+              const reg = payload.value;
 
-            // Pin the body agentId to the verified certificate when mTLS context
-            // is present; development mode without that context trusts the body.
-            const verifiedAgentId = mtlsContext.getStore()?.agentId ?? null;
-            if (verifiedAgentId !== null && verifiedAgentId !== reg.agentId) {
-              logger.warn(
-                { bodyAgentId: reg.agentId, verifiedAgentId },
-                "Rejecting register: body agentId does not match verified mTLS cert",
-              );
-              channel.push(
-                create(ServerMessageSchema, {
-                  payload: {
-                    case: "registerResponse",
-                    value: create(RegisterResponseSchema, {
-                      accepted: false,
-                      message: `agentId mismatch: cert binds ${verifiedAgentId}, body claimed ${reg.agentId}`,
-                    }),
-                  },
-                }),
-              );
-              continue;
-            }
-            if (verifiedAgentId !== null) {
-              const existing = await agentManager.getById(reg.agentId);
-              if (!existing) {
+              // Pin the body agentId to the verified certificate when mTLS context
+              // is present; development mode without that context trusts the body.
+              const verifiedAgentId = mtlsContext.getStore()?.agentId ?? null;
+              if (verifiedAgentId !== null && verifiedAgentId !== reg.agentId) {
                 logger.warn(
-                  { agentId: reg.agentId },
-                  "Rejecting register: verified mTLS agent is not registered in Server",
+                  { bodyAgentId: reg.agentId, verifiedAgentId },
+                  "Rejecting register: body agentId does not match verified mTLS cert",
                 );
                 channel.push(
                   create(ServerMessageSchema, {
@@ -538,1100 +562,1161 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       case: "registerResponse",
                       value: create(RegisterResponseSchema, {
                         accepted: false,
-                        message: "agent is not registered; run kq agent register first",
+                        message: `agentId mismatch: cert binds ${verifiedAgentId}, body claimed ${reg.agentId}`,
                       }),
                     },
                   }),
                 );
                 continue;
               }
-            }
-
-            try {
-              await agentManager.register({
-                agentId: reg.agentId,
-                siteName: reg.siteName,
-                schedulerType: protoToSchedulerType(reg.schedulerType),
-                schedulerVersion: reg.schedulerVersion,
-                restrictedDataIsolation: reg.restrictedDataIsolation,
-                computeHealthV1: reg.computeHealthV1,
-                topology: {
-                  managedDatasetRootIds: ManagedDatasetRootIdsSchema.parse(
-                    reg.managedDatasetRootIds,
-                  ),
-                },
-                ...sandboxCapabilityFacts(reg.sandboxCapability),
-              });
-              await queueInventory?.declareCapability(reg.agentId, reg.queueInventoryV1);
-              logger.info({ agentId: reg.agentId }, "Agent registered via gRPC");
-              registeredAgentId = reg.agentId;
-              computeHealthV1 = reg.computeHealthV1;
-              queueInventoryV1 = reg.queueInventoryV1;
-              channel.spackMaterialDeliveryV1 = reg.spackMaterialDeliveryV1;
-              channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
-              channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
-              channel.federationAccountingV1 = reg.federationAccountingV1;
-              channel.federationMediaExportV1 = reg.federationMediaExportV1;
-              channel.federationMediaObjectExportV1 =
-                reg.federationMediaExportV1 && reg.federationMediaObjectExportV1;
-              channel.federationMediaImportV1 = reg.federationMediaImportV1;
-              channel.federationMediaUploadV1 =
-                reg.federationMediaImportV1 && reg.federationMediaUploadV1;
-              channel.federationTargetTransferV1 = reg.federationTargetTransferV1;
-              channel.federationInputCopyV1 = reg.federationInputCopyV1;
-              channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
-              channel.federationResultCopyV1 = reg.federationResultCopyV1;
-              channel.federationResultVerifyV1 = reg.federationResultVerifyV1;
-              channel.federationExecutionV1 = reg.federationExecutionV1;
-              channel.federationComputeLeaseV1 = reg.federationComputeLeaseV1;
-              channel.federationSandboxSignatureRenewalV1 = reg.federationSandboxSignatureRenewalV1;
-              channel.federationSandboxInputLeaseV1 = reg.federationSandboxInputLeaseV1;
-              channel.federationSandboxLocalInputV1 = reg.federationSandboxLocalInputV1;
-              channel.federationDataPreparationLeaseV1 = reg.federationDataPreparationLeaseV1;
-              channel.federationNetdriveInputLeaseV1 = reg.federationNetdriveInputLeaseV1;
-              channel.federationInstallationV1 = reg.federationInstallationV1;
-              channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
-              channel.federationInstallationMaterialLeaseV1 =
-                reg.federationInstallationMaterialLeaseV1;
-              channel.verifiedCertFingerprint =
-                mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
-              dispatcher.register(registeredAgentId, channel);
-              channel.agentUpdateV1 = reg.agentUpdateV1;
-              await jobCancellations?.redeliver(registeredAgentId);
-              await dataDeliveryRevocations?.redeliver(registeredAgentId);
-              await jobWorkRootReleases?.redeliver(registeredAgentId);
-              await dataScanCoordinator?.onAgentConnected(registeredAgentId);
-              channel.push(
-                create(ServerMessageSchema, {
-                  payload: {
-                    case: "registerResponse",
-                    value: create(RegisterResponseSchema, {
-                      accepted: true,
-                      message: "Registered",
-                      heartbeatAckSupported: true,
-                      jobStatusAckSupported: true,
-                      computeHealthV1Supported: true,
-                      queueInventoryV1Supported: queueInventory !== undefined,
-                      queueValidationShadowRejectionAckSupported: queueObservability !== undefined,
-                      federationMediaObjectExportV1Supported:
-                        !!deps.federationMediaExports &&
-                        channel.federationMediaObjectExportV1 &&
-                        !!channel.verifiedCertFingerprint,
-                      federationMediaExportV1Supported:
-                        !!deps.federationMediaExports &&
-                        reg.federationMediaExportV1 &&
-                        !!channel.verifiedCertFingerprint,
-                      federationMediaUploadV1Supported:
-                        !!deps.federationMediaImports &&
-                        channel.federationMediaUploadV1 &&
-                        !!channel.verifiedCertFingerprint &&
-                        ((!!deps.federationInputs &&
-                          reg.federationInputVerifyV1 &&
-                          (reg.federationTargetTransferV1 ||
-                            (deps.federationInputs.canCopy && reg.federationInputCopyV1))) ||
-                          (!!deps.federationResults &&
-                            reg.federationResultVerifyV1 &&
-                            (reg.federationTargetTransferV1 ||
-                              (deps.federationResults.canCopy && reg.federationResultCopyV1)))),
-                      federationMediaImportV1Supported:
-                        !!deps.federationMediaImports &&
-                        reg.federationMediaImportV1 &&
-                        !!channel.verifiedCertFingerprint,
-                      federationResultVerifyV1Supported:
-                        !!deps.federationResults &&
-                        (reg.federationTargetTransferV1 || reg.federationResultCopyV1) &&
-                        reg.federationResultVerifyV1 &&
-                        !!channel.verifiedCertFingerprint,
-                      federationResultCopyV1Supported:
-                        !!deps.federationResults?.canCopy &&
-                        reg.federationResultCopyV1 &&
-                        reg.federationResultVerifyV1 &&
-                        !!channel.verifiedCertFingerprint,
-                      federationInputVerifyV1Supported:
-                        !!deps.federationInputs &&
-                        (reg.federationTargetTransferV1 || reg.federationInputCopyV1) &&
-                        reg.federationInputVerifyV1 &&
-                        !!channel.verifiedCertFingerprint,
-                      federationInputCopyV1Supported:
-                        !!deps.federationInputs?.canCopy &&
-                        reg.federationInputCopyV1 &&
-                        reg.federationInputVerifyV1 &&
-                        !!channel.verifiedCertFingerprint,
-                      federationExecutionV1Supported:
-                        jobDispatches?.renewExecution !== undefined && reg.federationComputeLeaseV1,
-                      federationInstallationV1Supported:
-                        softwareOperations?.renewFederationInstallation !== undefined &&
-                        reg.federationInstallationLeaseV1 &&
-                        reg.federationInstallationMaterialLeaseV1,
-                    }),
-                  },
-                }),
-              );
-              if (policyStore && policyPusher) {
-                try {
-                  await pushLatestStoredPolicy(reg.agentId, policyStore, policyPusher, logger);
-                } catch (err) {
-                  logger.error(
-                    { err, agentId: reg.agentId },
-                    "Failed to push stored software policy after agent register",
-                  );
-                }
-              }
-              try {
-                await jobDispatches?.redeliver(registeredAgentId);
-              } catch (err) {
-                logger.warn({ err, agentId: registeredAgentId }, "Job dispatch replay deferred");
-              }
-            } catch (err) {
-              logger.error({ err, agentId: reg.agentId }, "Agent registration failed");
-              channel.push(
-                create(ServerMessageSchema, {
-                  payload: {
-                    case: "registerResponse",
-                    value: create(RegisterResponseSchema, {
-                      accepted: false,
-                      message: err instanceof Error ? err.message : "registration failed",
-                    }),
-                  },
-                }),
-              );
-            }
-            continue;
-          }
-
-          if (payload.case === "heartbeat") {
-            const hb = payload.value;
-            if (registeredAgentId === null) {
-              logger.warn("heartbeat before register — ignoring");
-              continue;
-            }
-            try {
-              const siteOperations = parseSiteOperations(hb.siteOperationsJson);
-              channel.siteAuditContext = siteOperations?.auditContext;
-              channel.siteAuditObservedAt = siteOperations?.observedAt;
-              await agentManager.heartbeat({
-                agentId: registeredAgentId,
-                cpuUsagePercent: hb.cpuUsagePercent,
-                memoryUsedMb: Number(hb.memoryUsedMb),
-                memoryTotalMb: Number(hb.memoryTotalMb),
-                runningJobs: hb.runningJobs,
-                siteOperations,
-                queuedJobs: hb.queuedJobs,
-                restrictedDataIsolation: hb.restrictedDataIsolation,
-                ...sandboxCapabilityFacts(hb.sandboxCapability),
-                ...(computeHealthV1 ? computeHealthFacts(hb.computeHealth) : {}),
-              });
-              try {
-                if (siteOperations?.update.request) {
-                  await deps.agentUpdates?.report(registeredAgentId, siteOperations.update.request);
-                }
-                await deps.agentUpdates?.deliver(registeredAgentId);
-              } catch (err) {
-                logger.warn(
-                  { err, agentId: registeredAgentId },
-                  "Agent update delivery will retry",
-                );
-              }
-            } catch (err) {
-              logger.warn({ err, agentId: registeredAgentId }, "Heartbeat for unknown agent");
-              continue;
-            }
-            let queueInventoryMetric: { status: string; reason: string | null } | undefined;
-            let queueInventoryPersisted = !(queueInventoryV1 && hb.queueInventory);
-            if (queueInventory && queueInventoryV1 && hb.queueInventory) {
-              try {
-                const reconciled = await queueInventory.reconcile(
-                  registeredAgentId,
-                  queueInventoryFacts(hb.queueInventory),
-                );
-                queueInventoryMetric = {
-                  status: reconciled.status,
-                  reason: reconciled.reason,
-                };
-                queueInventoryPersisted = true;
-              } catch (err) {
-                logger.error(
-                  { err, agentId: registeredAgentId },
-                  "Failed to reconcile scheduler queue inventory",
-                );
-              }
-            }
-            if (hb.sequence > 0n && queueInventoryPersisted) {
-              channel.push(
-                create(ServerMessageSchema, {
-                  payload: {
-                    case: "heartbeatAck",
-                    value: create(HeartbeatAckSchema, { sequence: hb.sequence }),
-                  },
-                }),
-              );
-            }
-
-            // Serialize snapshots in stream order. A delayed nonempty heartbeat
-            // must not restore entries after a later explicit empty report.
-            // Empty repeated fields remain ambiguous for legacy/replayed heartbeats.
-            if (installedRegistry && hb.installedSoftware.length > 0) {
-              await installedRegistry
-                .replaceForAgent(
-                  registeredAgentId,
-                  hb.installedSoftware.map((s) => ({
-                    name: s.name,
-                    version: s.version,
-                    hash: s.hash,
-                    compiler: s.compiler || undefined,
-                    arch: s.arch || undefined,
-                    spec: s.spec,
-                  })),
-                )
-                .catch((err) => {
-                  logger.error(
-                    { err, agentId: registeredAgentId },
-                    "Failed to refresh installed-software ledger from heartbeat",
-                  );
-                });
-            }
-
-            // append GPU / disk / scheduler-queue samples.
-            if (metricsRecorder) {
-              const samples: Parameters<AgentMetricsRecorder["record"]>[0] = [];
-              const now = new Date();
-              if (typeof hb.diskUsedPercent === "number" && hb.diskUsedPercent > 0) {
-                samples.push({
-                  agentId: registeredAgentId,
-                  metric: "disk_used_percent",
-                  value: hb.diskUsedPercent,
-                  ts: now,
-                });
-              }
-              if (hb.schedulerQueuedJobs > 0) {
-                samples.push({
-                  agentId: registeredAgentId,
-                  metric: "scheduler_queued_jobs",
-                  value: hb.schedulerQueuedJobs,
-                  ts: now,
-                });
-              }
-              if (queueInventoryMetric) {
-                samples.push({
-                  agentId: registeredAgentId,
-                  metric: "queue_inventory_available",
-                  value: queueInventoryMetric.status === "available" ? 1 : 0,
-                  payload: queueInventoryMetric,
-                  ts: now,
-                });
-              }
-              for (const g of hb.gpus) {
-                samples.push({
-                  agentId: registeredAgentId,
-                  metric: "gpu",
-                  value: g.utilPercent,
-                  payload: {
-                    index: g.index,
-                    model: g.model,
-                    memUsedMb: Number(g.memUsedMb),
-                    memTotalMb: Number(g.memTotalMb),
-                  },
-                  ts: now,
-                });
-              }
-              if (samples.length > 0) {
-                metricsRecorder.record(samples).catch((err) => {
-                  logger.error(
-                    { err, agentId: registeredAgentId },
-                    "Failed to record agent metrics",
-                  );
-                });
-              }
-            }
-            continue;
-          }
-
-          if (payload.case === "installedSoftwareReport") {
-            // out-of-band installed-list refresh (used when the
-            // list is too large to ride along with a heartbeat). Same
-            // ingest contract as the heartbeat path.
-            if (registeredAgentId === null) {
-              logger.warn("installedSoftwareReport before register — ignoring");
-              continue;
-            }
-            if (installedRegistry) {
-              const report = payload.value;
-              await installedRegistry
-                .replaceForAgent(
-                  registeredAgentId,
-                  report.installed.map((s) => ({
-                    name: s.name,
-                    version: s.version,
-                    hash: s.hash,
-                    compiler: s.compiler || undefined,
-                    arch: s.arch || undefined,
-                    spec: s.spec,
-                  })),
-                )
-                .catch((err) => {
-                  logger.error(
-                    { err, agentId: registeredAgentId },
-                    "Failed to apply installed-software report",
-                  );
-                });
-            }
-            continue;
-          }
-
-          if (payload.case === "softwarePolicyAck") {
-            // agent ack for a previously-pushed policy. We log
-            // it for now; a future commit can persist the ack into an
-            // audit trail keyed on (agentId, policyVersion).
-            const ack = payload.value;
-            logger.info(
-              {
-                policyVersion: ack.policyVersion,
-                applied: ack.applied,
-                error: ack.error,
-              },
-              "Agent acked software policy",
-            );
-            continue;
-          }
-
-          if (payload.case === "softwareOperationResult") {
-            if (registeredAgentId === null) {
-              logger.warn("softwareOperationResult before register — ignoring");
-              continue;
-            }
-            if (softwareOperations) {
-              try {
-                await softwareOperations.applyAgentResult(
-                  registeredAgentId,
-                  payload.value,
-                  channel.verifiedCertFingerprint,
-                );
-              } catch (err) {
-                logger.error(
-                  { err, agentId: registeredAgentId, operationId: payload.value.operationId },
-                  "Failed to apply software operation result",
-                );
-              }
-            } else {
-              logger.debug(
-                { operationId: payload.value.operationId },
-                "softwareOperationResult with no operation service",
-              );
-            }
-            continue;
-          }
-
-          if (payload.case === "queueValidationShadowRejection") {
-            if (registeredAgentId === null) {
-              logger.warn("queueValidationShadowRejection before register — ignoring");
-              continue;
-            }
-            const failureCode = QueueFailureCodeSchema.safeParse(payload.value.failureCode);
-            if (!failureCode.success) {
-              logger.warn(
-                { agentId: registeredAgentId },
-                "Ignoring queue validation shadow rejection with invalid failure code",
-              );
-              continue;
-            }
-            if (!payload.value.eventId) {
-              logger.warn(
-                { agentId: registeredAgentId },
-                "Ignoring legacy queue validation shadow rejection without event id",
-              );
-              continue;
-            }
-            if (!queueObservability) {
-              logger.warn(
-                { agentId: registeredAgentId, eventId: payload.value.eventId },
-                "Queue observability counter is unavailable; withholding shadow rejection ack",
-              );
-              continue;
-            }
-            try {
-              await queueObservability.recordEvent({
-                agentId: registeredAgentId,
-                eventId: payload.value.eventId,
-                metric: QUEUE_SHADOW_REJECTION_METRIC,
-                failureCode: failureCode.data,
-              });
-              channel.push(
-                create(ServerMessageSchema, {
-                  payload: {
-                    case: "queueValidationShadowRejectionAck",
-                    value: create(QueueValidationShadowRejectionAckSchema, {
-                      eventId: payload.value.eventId,
-                    }),
-                  },
-                }),
-              );
-            } catch (err) {
-              logger.error(
-                { err, agentId: registeredAgentId, eventId: payload.value.eventId },
-                "Failed to persist queue validation shadow rejection",
-              );
-            }
-            continue;
-          }
-
-          if (payload.case === "jobStatus") {
-            const update = payload.value;
-            if (registeredAgentId === null) {
-              logger.warn({ jobId: update.jobId }, "jobStatus before register — ignoring");
-              continue;
-            }
-            try {
-              const internalStatus = protoToJobStatus(update.status);
-              const terminal =
-                internalStatus === "completed" ||
-                internalStatus === "failed" ||
-                internalStatus === "cancelled";
-              const failureCode = QueueFailureCodeSchema.safeParse(update.failureCode);
-              const persistedJob = await jobService.updateStatus(
-                update.jobId,
-                internalStatus,
-                update.schedulerJobId || undefined,
-                registeredAgentId,
-                update.message || undefined,
-                update.exitCode,
-                terminal ? update.collected : undefined,
-                update.eventId || undefined,
-                {
-                  ...(update.node ? { node: update.node } : {}),
-                  reason: failureCode.success ? failureCode.data : update.reason || null,
-                  ...(update.accounting
-                    ? {
-                        accounting: SchedulerAccountingSchema.parse({
-                          version: 1,
-                          source: update.accounting.source,
-                          schedulerJobId: update.accounting.schedulerJobId,
-                          observedAt: update.accounting.observedAt,
-                          elapsedMilliseconds: update.accounting.elapsedMilliseconds,
-                          cpuTimeMilliseconds: update.accounting.cpuTimeMilliseconds,
-                          allocatedCpus: update.accounting.allocatedCpus,
-                        }),
-                      }
-                    : {}),
-                },
-                update.workingDir || undefined,
-              );
-              await jobDispatches?.acknowledge(registeredAgentId, update.jobId);
-              if (failureCode.success && failureCode.data === "SCHEDULER_SUBMIT_FAILED") {
-                if (!update.eventId) {
+              if (verifiedAgentId !== null) {
+                const existing = await agentManager.getById(reg.agentId);
+                if (!existing) {
                   logger.warn(
-                    { agentId: registeredAgentId, jobId: update.jobId },
-                    "Scheduler submission failure lacks event id and is excluded from reliable metrics",
+                    { agentId: reg.agentId },
+                    "Rejecting register: verified mTLS agent is not registered in Server",
                   );
-                } else if (queueObservability) {
-                  await queueObservability.recordEvent({
-                    agentId: registeredAgentId,
-                    eventId: update.eventId,
-                    metric: SCHEDULER_SUBMIT_FAILURE_METRIC,
-                    failureCode: failureCode.data,
-                  });
-                } else {
-                  throw new Error(
-                    "Queue observability is unavailable for a durable scheduler submission failure",
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "registerResponse",
+                        value: create(RegisterResponseSchema, {
+                          accepted: false,
+                          message: "agent is not registered; run kq agent register first",
+                        }),
+                      },
+                    }),
                   );
+                  continue;
                 }
               }
-              logger.info(
-                { jobId: update.jobId, status: internalStatus, agentId: registeredAgentId },
-                "Job status update from agent",
-              );
-              if (jobCompletionRegistry) {
-                const completion = completionFromJob(persistedJob);
-                if (completion) jobCompletionRegistry.complete(update.jobId, completion);
-              }
-              if (update.eventId) {
+
+              try {
+                await agentManager.register({
+                  agentId: reg.agentId,
+                  siteName: reg.siteName,
+                  schedulerType: protoToSchedulerType(reg.schedulerType),
+                  schedulerVersion: reg.schedulerVersion,
+                  restrictedDataIsolation: reg.restrictedDataIsolation,
+                  computeHealthV1: reg.computeHealthV1,
+                  topology: {
+                    managedDatasetRootIds: ManagedDatasetRootIdsSchema.parse(
+                      reg.managedDatasetRootIds,
+                    ),
+                  },
+                  ...sandboxCapabilityFacts(reg.sandboxCapability),
+                });
+                await queueInventory?.declareCapability(reg.agentId, reg.queueInventoryV1);
+                logger.info({ agentId: reg.agentId }, "Agent registered via gRPC");
+                await deps.sessions?.claim(reg.agentId, sessionId, {
+                  schedulerLimits: reg.jobSchedulerLimits,
+                  pinnedSpack:
+                    reg.spackPinnedExecutionV1 &&
+                    Boolean(mtlsContext.getStore()?.fingerprintSha256),
+                });
+                registeredAgentId = reg.agentId;
+                computeHealthV1 = reg.computeHealthV1;
+                queueInventoryV1 = reg.queueInventoryV1;
+                channel.spackMaterialDeliveryV1 = reg.spackMaterialDeliveryV1;
+                channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
+                channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
+                channel.federationAccountingV1 = reg.federationAccountingV1;
+                channel.federationMediaExportV1 = reg.federationMediaExportV1;
+                channel.federationMediaObjectExportV1 =
+                  reg.federationMediaExportV1 && reg.federationMediaObjectExportV1;
+                channel.federationMediaImportV1 = reg.federationMediaImportV1;
+                channel.federationMediaUploadV1 =
+                  reg.federationMediaImportV1 && reg.federationMediaUploadV1;
+                channel.federationTargetTransferV1 = reg.federationTargetTransferV1;
+                channel.federationInputCopyV1 = reg.federationInputCopyV1;
+                channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
+                channel.federationResultCopyV1 = reg.federationResultCopyV1;
+                channel.federationResultVerifyV1 = reg.federationResultVerifyV1;
+                channel.federationExecutionV1 = reg.federationExecutionV1;
+                channel.federationComputeLeaseV1 = reg.federationComputeLeaseV1;
+                channel.federationSandboxSignatureRenewalV1 =
+                  reg.federationSandboxSignatureRenewalV1;
+                channel.federationSandboxInputLeaseV1 = reg.federationSandboxInputLeaseV1;
+                channel.federationSandboxLocalInputV1 = reg.federationSandboxLocalInputV1;
+                channel.federationDataPreparationLeaseV1 = reg.federationDataPreparationLeaseV1;
+                channel.federationNetdriveInputLeaseV1 = reg.federationNetdriveInputLeaseV1;
+                channel.federationInstallationV1 = reg.federationInstallationV1;
+                channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
+                channel.federationInstallationMaterialLeaseV1 =
+                  reg.federationInstallationMaterialLeaseV1;
+                channel.verifiedCertFingerprint =
+                  mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
+                dispatcher.register(registeredAgentId, channel);
+                channel.dataReplicaCopy = reg.dataReplicaCopy;
+                channel.replicaRangeTransfer = reg.replicaRangeTransfer;
+                channel.jobSchedulerLimits = reg.jobSchedulerLimits;
+                channel.agentUpdateV1 = reg.agentUpdateV1;
+                await jobCancellations?.redeliver(registeredAgentId);
+                await dataDeliveryRevocations?.redeliver(registeredAgentId);
+                await jobWorkRootReleases?.redeliver(registeredAgentId);
+                await dataScanCoordinator?.onAgentConnected(registeredAgentId);
                 channel.push(
                   create(ServerMessageSchema, {
                     payload: {
-                      case: "jobStatusAck",
-                      value: create(JobStatusAckSchema, { eventId: update.eventId }),
+                      case: "registerResponse",
+                      value: create(RegisterResponseSchema, {
+                        accepted: true,
+                        message: "Registered",
+                        heartbeatAckSupported: true,
+                        jobStatusAckSupported: true,
+                        computeHealthV1Supported: true,
+                        queueInventoryV1Supported: queueInventory !== undefined,
+                        queueValidationShadowRejectionAckSupported:
+                          queueObservability !== undefined,
+                        federationMediaObjectExportV1Supported:
+                          !!deps.federationMediaExports &&
+                          channel.federationMediaObjectExportV1 &&
+                          !!channel.verifiedCertFingerprint,
+                        federationMediaExportV1Supported:
+                          !!deps.federationMediaExports &&
+                          reg.federationMediaExportV1 &&
+                          !!channel.verifiedCertFingerprint,
+                        federationMediaUploadV1Supported:
+                          !!deps.federationMediaImports &&
+                          channel.federationMediaUploadV1 &&
+                          !!channel.verifiedCertFingerprint &&
+                          ((!!deps.federationInputs &&
+                            reg.federationInputVerifyV1 &&
+                            (reg.federationTargetTransferV1 ||
+                              (deps.federationInputs.canCopy && reg.federationInputCopyV1))) ||
+                            (!!deps.federationResults &&
+                              reg.federationResultVerifyV1 &&
+                              (reg.federationTargetTransferV1 ||
+                                (deps.federationResults.canCopy && reg.federationResultCopyV1)))),
+                        federationMediaImportV1Supported:
+                          !!deps.federationMediaImports &&
+                          reg.federationMediaImportV1 &&
+                          !!channel.verifiedCertFingerprint,
+                        federationResultVerifyV1Supported:
+                          !!deps.federationResults &&
+                          (reg.federationTargetTransferV1 || reg.federationResultCopyV1) &&
+                          reg.federationResultVerifyV1 &&
+                          !!channel.verifiedCertFingerprint,
+                        federationResultCopyV1Supported:
+                          !!deps.federationResults?.canCopy &&
+                          reg.federationResultCopyV1 &&
+                          reg.federationResultVerifyV1 &&
+                          !!channel.verifiedCertFingerprint,
+                        federationInputVerifyV1Supported:
+                          !!deps.federationInputs &&
+                          (reg.federationTargetTransferV1 || reg.federationInputCopyV1) &&
+                          reg.federationInputVerifyV1 &&
+                          !!channel.verifiedCertFingerprint,
+                        federationInputCopyV1Supported:
+                          !!deps.federationInputs?.canCopy &&
+                          reg.federationInputCopyV1 &&
+                          reg.federationInputVerifyV1 &&
+                          !!channel.verifiedCertFingerprint,
+                        federationExecutionV1Supported:
+                          jobDispatches?.renewExecution !== undefined &&
+                          reg.federationComputeLeaseV1,
+                        federationInstallationV1Supported:
+                          softwareOperations?.renewFederationInstallation !== undefined &&
+                          reg.federationInstallationLeaseV1 &&
+                          reg.federationInstallationMaterialLeaseV1,
+                      }),
                     },
                   }),
                 );
-              } else {
-                logger.warn(
-                  { jobId: update.jobId, agentId: registeredAgentId },
-                  "Applied legacy job status update without event id; acknowledgement omitted",
+                if (policyStore && policyPusher) {
+                  try {
+                    await pushLatestStoredPolicy(reg.agentId, policyStore, policyPusher, logger);
+                  } catch (err) {
+                    logger.error(
+                      { err, agentId: reg.agentId },
+                      "Failed to push stored software policy after agent register",
+                    );
+                  }
+                }
+                try {
+                  await jobDispatches?.redeliver(registeredAgentId);
+                } catch (err) {
+                  logger.warn({ err, agentId: registeredAgentId }, "Job dispatch replay deferred");
+                }
+              } catch (err) {
+                logger.error({ err, agentId: reg.agentId }, "Agent registration failed");
+                channel.push(
+                  create(ServerMessageSchema, {
+                    payload: {
+                      case: "registerResponse",
+                      value: create(RegisterResponseSchema, {
+                        accepted: false,
+                        message: err instanceof Error ? err.message : "registration failed",
+                      }),
+                    },
+                  }),
                 );
               }
-            } catch (err) {
-              logger.error({ err, jobId: update.jobId }, "Failed to apply job status update");
-            }
-            continue;
-          }
-
-          if (payload.case === "dataDeliveryRevokeAck") {
-            if (registeredAgentId === null) continue;
-            await dataDeliveryRevocations?.acknowledge(
-              registeredAgentId,
-              payload.value.jobId,
-              payload.value.reasonCode,
-            );
-            continue;
-          }
-
-          if (payload.case === "cancelJobAck") {
-            if (registeredAgentId === null) {
-              logger.warn("cancelJobAck before register — ignoring");
               continue;
             }
-            const revokedEpoch = Number(payload.value.revokedEpoch);
-            if (!Number.isSafeInteger(revokedEpoch) || revokedEpoch < 0) {
-              logger.warn(
-                { agentId: registeredAgentId, jobId: payload.value.jobId },
-                "Ignoring cancellation acknowledgement with invalid revocation epoch",
-              );
-              continue;
-            }
-            const acknowledged = await jobCancellations?.acknowledge(
-              registeredAgentId,
-              payload.value.jobId,
-              revokedEpoch,
-              payload.value.installationsStopped,
-            );
-            if (acknowledged === false) {
-              logger.warn(
-                { agentId: registeredAgentId, jobId: payload.value.jobId, revokedEpoch },
-                "Ignoring unknown or stale cancellation acknowledgement",
-              );
-            }
-            continue;
-          }
 
-          if (payload.case === "jobWorkRootReleaseAck") {
-            if (registeredAgentId === null) {
-              logger.warn("jobWorkRootReleaseAck before register — ignoring");
-              continue;
-            }
-            const acknowledged = await jobWorkRootReleases?.acknowledge(
-              registeredAgentId,
-              payload.value.jobId,
-            );
-            if (acknowledged === false) {
-              logger.warn(
-                { agentId: registeredAgentId, jobId: payload.value.jobId },
-                "Ignoring unknown Job work-root release acknowledgement",
-              );
-            }
-            continue;
-          }
-
-          if (payload.case === "sandboxArtifactReleaseAck") {
-            if (registeredAgentId === null) {
-              logger.warn("sandboxArtifactReleaseAck before register — ignoring");
-              continue;
-            }
-            const ack = payload.value;
-            const resolved = sandboxArtifactRelease?.resolve({
-              requestId: ack.requestId,
-              releasedReplicaIds: ack.releasedReplicaIds,
-              failures: ack.failures,
-            });
-            if (!resolved) {
-              logger.warn(
-                { agentId: registeredAgentId, requestId: ack.requestId },
-                "Unknown Sandbox artifact release acknowledgement",
-              );
-            }
-            continue;
-          }
-
-          if (payload.case === "dataScanResult") {
-            if (registeredAgentId === null) {
-              logger.warn("dataScanResult before register — ignoring");
-              continue;
-            }
-            const result = payload.value;
-            if (dataScanCoordinator) {
-              await dataScanCoordinator
-                .acceptAgentResult(registeredAgentId, {
-                  requestId: result.requestId,
-                  importId: result.importId,
-                  assetId: result.assetId,
-                  versionId: result.versionId,
-                  agentId: result.agentId,
-                  managedRootId: result.managedRootId,
-                  relativePath: result.relativePath,
-                  providerOrgId: result.providerOrgId,
-                  manifestDigest: result.manifestDigest,
-                  contentSha256: result.contentSha256,
-                  totalSizeBytes: Number(result.totalSizeBytes),
-                  format: result.format,
-                  files: result.files.map((file) => ({
-                    path: file.relativePath,
-                    digest: file.sha256,
-                    sizeBytes: Number(file.sizeBytes),
-                    mediaType: file.mediaType || undefined,
-                  })),
-                  attestationAlgorithm: result.attestationAlgorithm,
-                  attestationKeyId: result.attestationKeyId,
-                  attestationSignature: result.attestationSignature,
-                  scannedAt: new Date(Number(result.scannedAtUnixMs)),
-                  error: result.error || undefined,
-                })
-                .catch((err) => {
+            if (payload.case === "heartbeat") {
+              const hb = payload.value;
+              if (registeredAgentId === null) {
+                logger.warn("heartbeat before register — ignoring");
+                continue;
+              }
+              try {
+                const siteOperations = parseSiteOperations(hb.siteOperationsJson);
+                channel.siteAuditContext = siteOperations?.auditContext;
+                channel.siteAuditObservedAt = siteOperations?.observedAt;
+                await agentManager.heartbeat({
+                  agentId: registeredAgentId,
+                  cpuUsagePercent: hb.cpuUsagePercent,
+                  memoryUsedMb: Number(hb.memoryUsedMb),
+                  memoryTotalMb: Number(hb.memoryTotalMb),
+                  runningJobs: hb.runningJobs,
+                  siteOperations,
+                  queuedJobs: hb.queuedJobs,
+                  restrictedDataIsolation: hb.restrictedDataIsolation,
+                  ...sandboxCapabilityFacts(hb.sandboxCapability),
+                  ...(computeHealthV1 ? computeHealthFacts(hb.computeHealth) : {}),
+                });
+                try {
+                  if (siteOperations?.update.request) {
+                    await deps.agentUpdates?.report(
+                      registeredAgentId,
+                      siteOperations.update.request,
+                    );
+                  }
+                  await deps.agentUpdates?.deliver(registeredAgentId);
+                  await jobWorkRootReleases?.redeliverPvc?.(registeredAgentId);
+                } catch (err) {
                   logger.warn(
-                    { err, agentId: registeredAgentId, requestId: result.requestId },
-                    "Rejected Agent data scan result",
+                    { err, agentId: registeredAgentId },
+                    "Agent update delivery will retry",
+                  );
+                }
+              } catch (err) {
+                logger.warn({ err, agentId: registeredAgentId }, "Heartbeat for unknown agent");
+                continue;
+              }
+              let queueInventoryMetric: { status: string; reason: string | null } | undefined;
+              let queueInventoryPersisted = !(queueInventoryV1 && hb.queueInventory);
+              if (queueInventory && queueInventoryV1 && hb.queueInventory) {
+                try {
+                  const reconciled = await queueInventory.reconcile(
+                    registeredAgentId,
+                    queueInventoryFacts(hb.queueInventory),
+                  );
+                  queueInventoryMetric = {
+                    status: reconciled.status,
+                    reason: reconciled.reason,
+                  };
+                  queueInventoryPersisted = true;
+                } catch (err) {
+                  logger.error(
+                    { err, agentId: registeredAgentId },
+                    "Failed to reconcile scheduler queue inventory",
+                  );
+                }
+              }
+              if (hb.sequence > 0n && queueInventoryPersisted) {
+                let releasedUploadCheckpointKeys: string[] = [];
+                if (
+                  hb.uploadCheckpointKeys.length &&
+                  dispatcher.isCurrentChannel(registeredAgentId, channel)
+                ) {
+                  try {
+                    releasedUploadCheckpointKeys =
+                      (await deps.transferCheckpoints?.releasedCheckpointKeys(
+                        registeredAgentId,
+                        hb.uploadCheckpointKeys,
+                      )) ?? [];
+                  } catch (err) {
+                    logger.warn({ err }, "Upload checkpoint reconciliation will retry");
+                  }
+                }
+                channel.push(
+                  create(ServerMessageSchema, {
+                    payload: {
+                      case: "heartbeatAck",
+                      value: create(HeartbeatAckSchema, {
+                        sequence: hb.sequence,
+                        releasedUploadCheckpointKeys,
+                      }),
+                    },
+                  }),
+                );
+              }
+
+              // Serialize snapshots in stream order. A delayed nonempty heartbeat
+              // must not restore entries after a later explicit empty report.
+              // Empty repeated fields remain ambiguous for legacy/replayed heartbeats.
+              if (installedRegistry && hb.installedSoftware.length > 0) {
+                await installedRegistry
+                  .replaceForAgent(
+                    registeredAgentId,
+                    hb.installedSoftware.map((s) => ({
+                      name: s.name,
+                      version: s.version,
+                      hash: s.hash,
+                      compiler: s.compiler || undefined,
+                      arch: s.arch || undefined,
+                      spec: s.spec,
+                    })),
+                  )
+                  .catch((err) => {
+                    logger.error(
+                      { err, agentId: registeredAgentId },
+                      "Failed to refresh installed-software ledger from heartbeat",
+                    );
+                  });
+              }
+
+              // append GPU / disk / scheduler-queue samples.
+              if (metricsRecorder) {
+                const samples: Parameters<AgentMetricsRecorder["record"]>[0] = [];
+                const now = new Date();
+                if (typeof hb.diskUsedPercent === "number" && hb.diskUsedPercent > 0) {
+                  samples.push({
+                    agentId: registeredAgentId,
+                    metric: "disk_used_percent",
+                    value: hb.diskUsedPercent,
+                    ts: now,
+                  });
+                }
+                if (hb.schedulerQueuedJobs > 0) {
+                  samples.push({
+                    agentId: registeredAgentId,
+                    metric: "scheduler_queued_jobs",
+                    value: hb.schedulerQueuedJobs,
+                    ts: now,
+                  });
+                }
+                if (queueInventoryMetric) {
+                  samples.push({
+                    agentId: registeredAgentId,
+                    metric: "queue_inventory_available",
+                    value: queueInventoryMetric.status === "available" ? 1 : 0,
+                    payload: queueInventoryMetric,
+                    ts: now,
+                  });
+                }
+                for (const g of hb.gpus) {
+                  samples.push({
+                    agentId: registeredAgentId,
+                    metric: "gpu",
+                    value: g.utilPercent,
+                    payload: {
+                      index: g.index,
+                      model: g.model,
+                      memUsedMb: Number(g.memUsedMb),
+                      memTotalMb: Number(g.memTotalMb),
+                    },
+                    ts: now,
+                  });
+                }
+                if (samples.length > 0) {
+                  metricsRecorder.record(samples).catch((err) => {
+                    logger.error(
+                      { err, agentId: registeredAgentId },
+                      "Failed to record agent metrics",
+                    );
+                  });
+                }
+              }
+              continue;
+            }
+
+            if (payload.case === "installedSoftwareReport") {
+              // out-of-band installed-list refresh (used when the
+              // list is too large to ride along with a heartbeat). Same
+              // ingest contract as the heartbeat path.
+              if (registeredAgentId === null) {
+                logger.warn("installedSoftwareReport before register — ignoring");
+                continue;
+              }
+              if (installedRegistry) {
+                const report = payload.value;
+                await installedRegistry
+                  .replaceForAgent(
+                    registeredAgentId,
+                    report.installed.map((s) => ({
+                      name: s.name,
+                      version: s.version,
+                      hash: s.hash,
+                      compiler: s.compiler || undefined,
+                      arch: s.arch || undefined,
+                      spec: s.spec,
+                    })),
+                  )
+                  .catch((err) => {
+                    logger.error(
+                      { err, agentId: registeredAgentId },
+                      "Failed to apply installed-software report",
+                    );
+                  });
+              }
+              continue;
+            }
+
+            if (payload.case === "softwarePolicyAck") {
+              // agent ack for a previously-pushed policy. We log
+              // it for now; a future commit can persist the ack into an
+              // audit trail keyed on (agentId, policyVersion).
+              const ack = payload.value;
+              logger.info(
+                {
+                  policyVersion: ack.policyVersion,
+                  applied: ack.applied,
+                  error: ack.error,
+                },
+                "Agent acked software policy",
+              );
+              continue;
+            }
+
+            if (payload.case === "softwareOperationResult") {
+              if (registeredAgentId === null) {
+                logger.warn("softwareOperationResult before register — ignoring");
+                continue;
+              }
+              if (softwareOperations) {
+                try {
+                  await softwareOperations.applyAgentResult(
+                    registeredAgentId,
+                    payload.value,
+                    channel.verifiedCertFingerprint,
+                  );
+                } catch (err) {
+                  logger.error(
+                    { err, agentId: registeredAgentId, operationId: payload.value.operationId },
+                    "Failed to apply software operation result",
+                  );
+                }
+              } else {
+                logger.debug(
+                  { operationId: payload.value.operationId },
+                  "softwareOperationResult with no operation service",
+                );
+              }
+              continue;
+            }
+
+            if (payload.case === "queueValidationShadowRejection") {
+              if (registeredAgentId === null) {
+                logger.warn("queueValidationShadowRejection before register — ignoring");
+                continue;
+              }
+              const failureCode = QueueFailureCodeSchema.safeParse(payload.value.failureCode);
+              if (!failureCode.success) {
+                logger.warn(
+                  { agentId: registeredAgentId },
+                  "Ignoring queue validation shadow rejection with invalid failure code",
+                );
+                continue;
+              }
+              if (!payload.value.eventId) {
+                logger.warn(
+                  { agentId: registeredAgentId },
+                  "Ignoring legacy queue validation shadow rejection without event id",
+                );
+                continue;
+              }
+              if (!queueObservability) {
+                logger.warn(
+                  { agentId: registeredAgentId, eventId: payload.value.eventId },
+                  "Queue observability counter is unavailable; withholding shadow rejection ack",
+                );
+                continue;
+              }
+              try {
+                await queueObservability.recordEvent({
+                  agentId: registeredAgentId,
+                  eventId: payload.value.eventId,
+                  metric: QUEUE_SHADOW_REJECTION_METRIC,
+                  failureCode: failureCode.data,
+                });
+                channel.push(
+                  create(ServerMessageSchema, {
+                    payload: {
+                      case: "queueValidationShadowRejectionAck",
+                      value: create(QueueValidationShadowRejectionAckSchema, {
+                        eventId: payload.value.eventId,
+                      }),
+                    },
+                  }),
+                );
+              } catch (err) {
+                logger.error(
+                  { err, agentId: registeredAgentId, eventId: payload.value.eventId },
+                  "Failed to persist queue validation shadow rejection",
+                );
+              }
+              continue;
+            }
+
+            if (payload.case === "jobStatus") {
+              const update = payload.value;
+              if (registeredAgentId === null) {
+                logger.warn({ jobId: update.jobId }, "jobStatus before register — ignoring");
+                continue;
+              }
+              try {
+                const internalStatus = protoToJobStatus(update.status);
+                const terminal =
+                  internalStatus === "completed" ||
+                  internalStatus === "failed" ||
+                  internalStatus === "cancelled";
+                const failureCode = QueueFailureCodeSchema.safeParse(update.failureCode);
+                const persistedJob = await jobService.updateStatus(
+                  update.jobId,
+                  internalStatus,
+                  update.schedulerJobId || undefined,
+                  registeredAgentId,
+                  update.message || undefined,
+                  update.exitCode,
+                  terminal ? update.collected : undefined,
+                  update.eventId || undefined,
+                  {
+                    ...(update.node ? { node: update.node } : {}),
+                    reason: failureCode.success ? failureCode.data : update.reason || null,
+                    ...(update.accounting
+                      ? {
+                          accounting: SchedulerAccountingSchema.parse({
+                            version: 1,
+                            source: update.accounting.source,
+                            schedulerJobId: update.accounting.schedulerJobId,
+                            observedAt: update.accounting.observedAt,
+                            elapsedMilliseconds: update.accounting.elapsedMilliseconds,
+                            cpuTimeMilliseconds: update.accounting.cpuTimeMilliseconds,
+                            allocatedCpus: update.accounting.allocatedCpus,
+                          }),
+                        }
+                      : {}),
+                  },
+                  update.workingDir || undefined,
+                );
+                await jobDispatches?.acknowledge(registeredAgentId, update.jobId);
+                if (failureCode.success && failureCode.data === "SCHEDULER_SUBMIT_FAILED") {
+                  if (!update.eventId) {
+                    logger.warn(
+                      { agentId: registeredAgentId, jobId: update.jobId },
+                      "Scheduler submission failure lacks event id and is excluded from reliable metrics",
+                    );
+                  } else if (queueObservability) {
+                    await queueObservability.recordEvent({
+                      agentId: registeredAgentId,
+                      eventId: update.eventId,
+                      metric: SCHEDULER_SUBMIT_FAILURE_METRIC,
+                      failureCode: failureCode.data,
+                    });
+                  } else {
+                    throw new Error(
+                      "Queue observability is unavailable for a durable scheduler submission failure",
+                    );
+                  }
+                }
+                logger.info(
+                  { jobId: update.jobId, status: internalStatus, agentId: registeredAgentId },
+                  "Job status update from agent",
+                );
+                if (jobCompletionRegistry) {
+                  const completion = completionFromJob(persistedJob);
+                  if (completion) jobCompletionRegistry.complete(update.jobId, completion);
+                }
+                if (update.eventId) {
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "jobStatusAck",
+                        value: create(JobStatusAckSchema, { eventId: update.eventId }),
+                      },
+                    }),
+                  );
+                } else {
+                  logger.warn(
+                    { jobId: update.jobId, agentId: registeredAgentId },
+                    "Applied legacy job status update without event id; acknowledgement omitted",
+                  );
+                }
+              } catch (err) {
+                logger.error({ err, jobId: update.jobId }, "Failed to apply job status update");
+              }
+              continue;
+            }
+
+            if (payload.case === "dataDeliveryRevokeAck") {
+              if (registeredAgentId === null) continue;
+              await dataDeliveryRevocations?.acknowledge(
+                registeredAgentId,
+                payload.value.jobId,
+                payload.value.reasonCode,
+              );
+              continue;
+            }
+
+            if (payload.case === "cancelJobAck") {
+              if (registeredAgentId === null) {
+                logger.warn("cancelJobAck before register — ignoring");
+                continue;
+              }
+              const revokedEpoch = Number(payload.value.revokedEpoch);
+              if (!Number.isSafeInteger(revokedEpoch) || revokedEpoch < 0) {
+                logger.warn(
+                  { agentId: registeredAgentId, jobId: payload.value.jobId },
+                  "Ignoring cancellation acknowledgement with invalid revocation epoch",
+                );
+                continue;
+              }
+              const acknowledged = await jobCancellations?.acknowledge(
+                registeredAgentId,
+                payload.value.jobId,
+                revokedEpoch,
+                payload.value.installationsStopped,
+              );
+              if (acknowledged === false) {
+                logger.warn(
+                  { agentId: registeredAgentId, jobId: payload.value.jobId, revokedEpoch },
+                  "Ignoring unknown or stale cancellation acknowledgement",
+                );
+              }
+              continue;
+            }
+
+            if (payload.case === "sandboxPvcReleaseAck") {
+              if (registeredAgentId && dispatcher.isCurrentChannel(registeredAgentId, channel))
+                await jobWorkRootReleases?.acknowledgePvc?.(registeredAgentId, payload.value.jobId);
+              continue;
+            }
+            if (payload.case === "jobWorkRootReleaseAck") {
+              if (registeredAgentId === null) {
+                logger.warn("jobWorkRootReleaseAck before register — ignoring");
+                continue;
+              }
+              const acknowledged = await jobWorkRootReleases?.acknowledge(
+                registeredAgentId,
+                payload.value.jobId,
+              );
+              if (acknowledged === false) {
+                logger.warn(
+                  { agentId: registeredAgentId, jobId: payload.value.jobId },
+                  "Ignoring unknown Job work-root release acknowledgement",
+                );
+              }
+              continue;
+            }
+
+            if (payload.case === "sandboxArtifactReleaseAck") {
+              if (
+                registeredAgentId === null ||
+                !dispatcher.isCurrentChannel(registeredAgentId, channel)
+              ) {
+                logger.warn(
+                  "Ignoring Sandbox release acknowledgement outside the current Agent session",
+                );
+                continue;
+              }
+              const ack = payload.value;
+              const resolved = sandboxArtifactRelease?.resolve({
+                agentId: registeredAgentId,
+                requestId: ack.requestId,
+                releasedReplicaIds: ack.releasedReplicaIds,
+                failures: ack.failures,
+              });
+              if (!resolved) {
+                logger.warn(
+                  { agentId: registeredAgentId, requestId: ack.requestId },
+                  "Unknown Sandbox artifact release acknowledgement",
+                );
+              }
+              continue;
+            }
+
+            if (payload.case === "replicaRangeRequest" || payload.case === "replicaRangeResult") {
+              const range =
+                payload.case === "replicaRangeRequest" ? payload.value : payload.value.range;
+              if (
+                range &&
+                registeredAgentId &&
+                channel.verifiedCertFingerprint &&
+                dispatcher.isCurrentChannel(registeredAgentId, channel)
+              )
+                await deps.replicaCoordinator
+                  ?.relay(
+                    registeredAgentId,
+                    channel.verifiedCertFingerprint,
+                    range,
+                    payload.case === "replicaRangeResult" ? payload.value : undefined,
+                  )
+                  .catch((err) =>
+                    logger.warn({ err, agentId: registeredAgentId }, "Rejected replica range"),
+                  );
+              continue;
+            }
+            if (payload.case === "dataReplicaReceipt") {
+              if (
+                registeredAgentId &&
+                channel.verifiedCertFingerprint &&
+                dispatcher.isCurrentChannel(registeredAgentId, channel)
+              ) {
+                await deps.replicaCoordinator
+                  ?.accept(registeredAgentId, channel.verifiedCertFingerprint, payload.value)
+                  .catch((err) =>
+                    logger.warn({ err, agentId: registeredAgentId }, "Rejected replica receipt"),
+                  );
+              }
+              continue;
+            }
+            if (payload.case === "dataScanResult") {
+              if (registeredAgentId === null) {
+                logger.warn("dataScanResult before register — ignoring");
+                continue;
+              }
+              const result = payload.value;
+              if (dataScanCoordinator) {
+                await dataScanCoordinator
+                  .acceptAgentResult(registeredAgentId, {
+                    requestId: result.requestId,
+                    importId: result.importId,
+                    assetId: result.assetId,
+                    versionId: result.versionId,
+                    agentId: result.agentId,
+                    managedRootId: result.managedRootId,
+                    relativePath: result.relativePath,
+                    providerOrgId: result.providerOrgId,
+                    manifestDigest: result.manifestDigest,
+                    contentSha256: result.contentSha256,
+                    totalSizeBytes: Number(result.totalSizeBytes),
+                    format: result.format,
+                    files: result.files.map((file) => ({
+                      path: file.relativePath,
+                      digest: file.sha256,
+                      sizeBytes: Number(file.sizeBytes),
+                      mediaType: file.mediaType || undefined,
+                    })),
+                    attestationAlgorithm: result.attestationAlgorithm,
+                    attestationKeyId: result.attestationKeyId,
+                    attestationSignature: result.attestationSignature,
+                    scannedAt: new Date(Number(result.scannedAtUnixMs)),
+                    error: result.error || undefined,
+                  })
+                  .catch((err) => {
+                    logger.warn(
+                      { err, agentId: registeredAgentId, requestId: result.requestId },
+                      "Rejected Agent data scan result",
+                    );
+                  });
+              } else {
+                logger.debug({ requestId: result.requestId }, "dataScanResult with no coordinator");
+              }
+              continue;
+            }
+
+            if (
+              registeredAgentId &&
+              dispatcher.interactionRelay?.reply(registeredAgentId, sessionId, msg)
+            )
+              continue;
+            if (
+              [
+                "sshOutput",
+                "sshClosed",
+                "shellExecResponse",
+                "jobLogsResponse",
+                "fileTransferProgress",
+                "federationAccountingResponse",
+              ].includes(payload.case ?? "")
+            ) {
+              if (
+                registeredAgentId &&
+                (payload.case !== "federationAccountingResponse" || channel.federationAccountingV1)
+              ) {
+                await receiveInteraction(deps, registeredAgentId, msg, (response) =>
+                  channel.push(response),
+                ).catch(() => {
+                  logger.warn(
+                    { agentId: registeredAgentId, kind: payload.case },
+                    "Agent interaction response rejected",
                   );
                 });
-            } else {
-              logger.debug({ requestId: result.requestId }, "dataScanResult with no coordinator");
-            }
-            continue;
-          }
-
-          // reverse SSH stream. The gateway consumes both
-          // sshOutput and sshClosed; if no gateway is wired (dev/test
-          // mode without WebSocket support) we silently drop, since the
-          // Server can't fan out to a non-existent client anyway.
-          if (payload.case === "sshOutput" || payload.case === "sshClosed") {
-            if (sshGateway) {
-              sshGateway.handleAgentMessage(msg);
-            } else {
-              logger.debug({ case: payload.case }, "SSH frame received but no gateway attached");
-            }
-            continue;
-          }
-
-          if (payload.case === "shellExecResponse") {
-            const r = payload.value;
-            if (shellExecRegistry) {
-              shellExecRegistry.resolve(r.requestId, {
-                stdout: r.stdout,
-                stderr: r.stderr,
-                exitCode: r.exitCode,
-                error: r.error,
-              });
-            } else {
-              logger.debug({ requestId: r.requestId }, "shellExecResponse with no registry");
-            }
-            continue;
-          }
-
-          if (payload.case === "federationAccountingResponse") {
-            if (
-              registeredAgentId === null ||
-              !channel.federationAccountingV1 ||
-              !federationAccounting
-            )
-              continue;
-            try {
-              await federationAccounting.receive(registeredAgentId, payload.value.responseJson);
-            } catch {
-              logger.warn(
-                { agentId: registeredAgentId },
-                "Accounting response rejected; collection remains pending",
-              );
-            }
-            continue;
-          }
-
-          if (payload.case === "jobLogsResponse") {
-            const response = payload.value;
-            if (jobLogsService) {
-              jobLogsService.resolve(response.requestId, {
-                text: response.text,
-                error: response.error,
-                unavailable: response.unavailable,
-              });
-            } else {
-              logger.debug({ requestId: response.requestId }, "jobLogsResponse with no service");
-            }
-            continue;
-          }
-
-          if (payload.case === "fileTransferProgress") {
-            const p = payload.value;
-            const state = (p.state === "succeeded" || p.state === "failed" ? p.state : "running") as
-              | "running"
-              | "succeeded"
-              | "failed";
-            if (transferRegistry) {
-              transferRegistry.update(p.requestId, {
-                copiedBytes: Number(p.copiedBytes),
-                state,
-                error: p.error || undefined,
-                sha256: p.sha256 || undefined,
-                parts: p.parts.map((x) => ({ partNumber: x.partNumber, etag: x.etag })),
-              });
-            } else {
-              logger.debug({ requestId: p.requestId }, "fileTransferProgress with no registry");
-            }
-            continue;
-          }
-
-          if (
-            payload.case === "federationMediaExportLeaseRequest" ||
-            payload.case === "federationMediaExportReport"
-          ) {
-            if (
-              !registeredAgentId ||
-              !active ||
-              !channel.federationMediaExportV1 ||
-              !channel.verifiedCertFingerprint ||
-              !deps.federationMediaExports ||
-              !dispatcher.isCurrentChannel(registeredAgentId, channel)
-            )
-              continue;
-            const agentId = registeredAgentId;
-            const transport = deps.federationMediaExports;
-            const request = payload;
-            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
-            const key =
-              request.case === "federationMediaExportLeaseRequest"
-                ? request.value.requestId
-                : "media-export-report";
-            if (
-              key.length > 128 ||
-              pendingTransferRequests.has(key) ||
-              pendingTransferRequests.size >= 2
-            )
-              continue;
-            pendingTransferRequests.add(key);
-            void (async () => {
-              try {
-                if (request.case === "federationMediaExportLeaseRequest") {
-                  const response = await transport.grant(agentId, request.value);
-                  if (current())
-                    channel.push(
-                      create(ServerMessageSchema, {
-                        payload: { case: "federationMediaExportLeaseResponse", value: response },
-                      }),
-                    );
-                } else await transport.report(agentId, request.value);
-              } catch {
-                if (request.case === "federationMediaExportLeaseRequest" && current())
-                  channel.push(
-                    create(ServerMessageSchema, {
-                      payload: {
-                        case: "federationMediaExportLeaseResponse",
-                        value: create(FederationMediaExportLeaseResponseSchema, {
-                          requestId: request.value.requestId,
-                        }),
-                      },
-                    }),
-                  );
               }
-            })()
-              .catch(() => logger.warn({ agentId }, "Media export response unavailable"))
-              .finally(() => pendingTransferRequests.delete(key));
-            continue;
-          }
+              continue;
+            }
 
-          if (
-            payload.case === "federationMediaImportKeyRequest" ||
-            payload.case === "federationMediaImportReport"
-          ) {
             if (
-              !registeredAgentId ||
-              !active ||
-              !channel.federationMediaImportV1 ||
-              !channel.verifiedCertFingerprint ||
-              !deps.federationMediaImports ||
-              !dispatcher.isCurrentChannel(registeredAgentId, channel)
-            )
-              continue;
-            const agentId = registeredAgentId;
-            const transport = deps.federationMediaImports;
-            const request = payload;
-            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
-            const key =
-              request.case === "federationMediaImportKeyRequest"
-                ? request.value.requestId
-                : "media-import-report";
-            if (
-              key.length > 128 ||
-              pendingTransferRequests.has(key) ||
-              pendingTransferRequests.size >= 2
-            )
-              continue;
-            pendingTransferRequests.add(key);
-            void (async () => {
-              try {
-                if (request.case === "federationMediaImportKeyRequest") {
-                  const response = await transport.grant(agentId, request.value);
-                  if (current())
-                    channel.push(
-                      create(ServerMessageSchema, {
-                        payload: { case: "federationMediaImportGrantResponse", value: response },
-                      }),
-                    );
-                } else await transport.report(agentId, request.value);
-              } catch {
-                if (request.case === "federationMediaImportKeyRequest" && current())
-                  channel.push(
-                    create(ServerMessageSchema, {
-                      payload: {
-                        case: "federationMediaImportGrantResponse",
-                        value: create(FederationMediaImportGrantResponseSchema, {
-                          requestId: request.value.requestId,
-                        }),
-                      },
-                    }),
-                  );
-              }
-            })()
-              .catch(() => logger.warn({ agentId }, "Media import response unavailable"))
-              .finally(() => pendingTransferRequests.delete(key));
-            continue;
-          }
-
-          if (
-            payload.case === "federationResultGrantRequest" ||
-            payload.case === "federationResultCopyReport"
-          ) {
-            if (
-              !registeredAgentId ||
-              !active ||
-              !channel.federationResultVerifyV1 ||
-              (!channel.federationResultCopyV1 && !channel.federationTargetTransferV1) ||
-              !channel.verifiedCertFingerprint ||
-              !deps.federationResults ||
-              !dispatcher.isCurrentChannel(registeredAgentId, channel)
-            )
-              continue;
-            const agentId = registeredAgentId;
-            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
-            const request = payload;
-            const key =
-              request.case === "federationResultGrantRequest"
-                ? request.value.requestId
-                : request.value.generation;
-            if (
-              key.length > 128 ||
-              pendingTransferRequests.has(key) ||
-              pendingTransferRequests.size >= 2
-            )
-              continue;
-            pendingTransferRequests.add(key);
-            const transport = deps.federationResults;
-            void (async () => {
-              try {
-                if (request.case === "federationResultGrantRequest") {
-                  if (
-                    !request.value.verificationJson &&
-                    !request.value.upload &&
-                    (!channel.federationResultCopyV1 || !transport.canCopy)
-                  )
-                    throw new Error("SOURCE_DOWNLOAD_DISABLED");
-                  const response = await transport.grant(agentId, request.value);
-                  if (current())
-                    channel.push(
-                      create(ServerMessageSchema, {
-                        payload: { case: "federationResultGrantResponse", value: response },
-                      }),
-                    );
-                } else await transport.report(agentId, request.value);
-              } catch {
-                if (request.case === "federationResultGrantRequest" && current())
-                  channel.push(
-                    create(ServerMessageSchema, {
-                      payload: {
-                        case: "federationResultGrantResponse",
-                        value: create(FederationResultGrantResponseSchema, {
-                          requestId: request.value.requestId,
-                        }),
-                      },
-                    }),
-                  );
-                // Never log request bodies, presigned grants or raw storage errors.
-              }
-            })()
-              .catch(() => logger.warn({ agentId }, "Federation result response unavailable"))
-              .finally(() => pendingTransferRequests.delete(key));
-            continue;
-          }
-
-          if (
-            payload.case === "federationInputGrantRequest" ||
-            payload.case === "federationInputCopyReport"
-          ) {
-            if (
-              !registeredAgentId ||
-              !active ||
-              !channel.federationInputVerifyV1 ||
-              (!channel.federationInputCopyV1 && !channel.federationTargetTransferV1) ||
-              !channel.verifiedCertFingerprint ||
-              !deps.federationInputs ||
-              !dispatcher.isCurrentChannel(registeredAgentId, channel)
-            )
-              continue;
-            const agentId = registeredAgentId;
-            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
-            const request = payload;
-            const key =
-              request.case === "federationInputGrantRequest"
-                ? request.value.requestId
-                : request.value.generation;
-            if (
-              key.length > 128 ||
-              pendingTransferRequests.has(key) ||
-              pendingTransferRequests.size >= 2
-            )
-              continue;
-            pendingTransferRequests.add(key);
-            const transport = deps.federationInputs;
-            void (async () => {
-              try {
-                if (request.case === "federationInputGrantRequest") {
-                  if (
-                    !request.value.verificationJson &&
-                    !request.value.upload &&
-                    (!channel.federationInputCopyV1 || !transport.canCopy)
-                  )
-                    throw new Error("SOURCE_DOWNLOAD_DISABLED");
-                  const response = await transport.grant(agentId, request.value);
-                  if (current())
-                    channel.push(
-                      create(ServerMessageSchema, {
-                        payload: { case: "federationInputGrantResponse", value: response },
-                      }),
-                    );
-                } else await transport.report(agentId, request.value);
-              } catch {
-                if (request.case === "federationInputGrantRequest" && current())
-                  channel.push(
-                    create(ServerMessageSchema, {
-                      payload: {
-                        case: "federationInputGrantResponse",
-                        value: create(FederationInputGrantResponseSchema, {
-                          requestId: request.value.requestId,
-                        }),
-                      },
-                    }),
-                  );
-                // Never log request bodies, presigned grants or raw storage errors.
-              }
-            })()
-              .catch(() => logger.warn({ agentId }, "Federation input response unavailable"))
-              .finally(() => pendingTransferRequests.delete(key));
-            continue;
-          }
-
-          if (payload.case === "federationExecutionRequest") {
-            if (registeredAgentId === null) continue;
-            const request = payload.value;
-            if (
-              request.requestId.length > 128 ||
-              request.jobId.length > 128 ||
-              request.operationId.length > 128 ||
-              pendingFederationGrants.has(request.requestId)
-            )
-              continue;
-            const agentId = registeredAgentId;
-            const respond = (decision: FederationExecutionDecision) =>
-              channel.push(
-                create(ServerMessageSchema, {
-                  payload: {
-                    case: "federationExecutionResponse",
-                    value: create(FederationExecutionResponseSchema, {
-                      requestId: request.requestId,
-                      jobId: request.jobId,
-                      dispatchEpoch: request.dispatchEpoch,
-                      operationId: request.operationId,
-                      runtimeRenewal: request.runtimeRenewal,
-                      decision,
-                    }),
-                  },
-                }),
-              );
-            if (
-              (request.operationId && request.runtimeRenewal) ||
-              !(request.operationId
-                ? channel.federationInstallationV1 &&
-                  channel.federationInstallationLeaseV1 &&
-                  channel.federationInstallationMaterialLeaseV1
-                : channel.federationExecutionV1 && channel.federationComputeLeaseV1) ||
-              !channel.verifiedCertFingerprint
+              payload.case === "federationMediaExportLeaseRequest" ||
+              payload.case === "federationMediaExportReport"
             ) {
-              respond(FederationExecutionDecision.DENIED);
-              continue;
-            }
-            if (pendingFederationGrants.size >= 16) {
-              respond(FederationExecutionDecision.RETRY);
-              continue;
-            }
-            pendingFederationGrants.add(request.requestId);
-            void (async () => {
-              try {
-                const send = (response: FederationExecutionResponse) =>
-                  channel.push(
-                    create(ServerMessageSchema, {
-                      payload: { case: "federationExecutionResponse", value: response },
-                    }),
-                  );
-                const granted = request.operationId
-                  ? await softwareOperations?.renewFederationInstallation?.(agentId, request, send)
-                  : await jobDispatches?.renewExecution?.(agentId, request, send);
-                if (!granted) respond(FederationExecutionDecision.DENIED);
-              } catch (error) {
-                const denied =
-                  !(error instanceof AuthorizationUnavailableError) &&
-                  ((error instanceof FederationError &&
-                    error.code !== "DATA_WAITING" &&
-                    error.code !== "ASSET_UNAVAILABLE") ||
-                    (error instanceof WorkflowExecutionInterrupted && !error.retryable) ||
-                    (error instanceof AppError && error.code === ErrorCode.FORBIDDEN));
-                respond(
-                  denied ? FederationExecutionDecision.DENIED : FederationExecutionDecision.RETRY,
-                );
-              }
-            })()
-              .catch(() =>
-                logger.warn({ agentId }, "Federation execution response could not be delivered"),
+              if (
+                !registeredAgentId ||
+                !active ||
+                !channel.federationMediaExportV1 ||
+                !channel.verifiedCertFingerprint ||
+                !deps.federationMediaExports ||
+                !dispatcher.isCurrentChannel(registeredAgentId, channel)
               )
-              .finally(() => pendingFederationGrants.delete(request.requestId));
-            continue;
-          }
-
-          if (payload.case === "partUrlsRequest") {
-            const reqv = payload.value;
-            if (registeredAgentId === null) {
-              logger.warn("partUrlsRequest before register — ignoring");
-              continue;
-            }
-            if (
-              Boolean(reqv.correlationId) !== Boolean(reqv.uploadId) ||
-              reqv.correlationId.length > 128 ||
-              reqv.uploadId.length > 1024
-            ) {
-              logger.warn(
-                { requestId: reqv.requestId },
-                "Invalid multipart URL request binding — ignoring",
-              );
-              continue;
-            }
-            if (partUrlMinter) {
+                continue;
               const agentId = registeredAgentId;
-              void partUrlMinter
-                .mintPartUrlsFor(
-                  reqv.requestId,
-                  reqv.partNumbers,
-                  agentId,
-                  reqv.uploadId || undefined,
-                )
-                .then((urls) =>
-                  dispatcher.pushPartUrlsResponse(
-                    agentId,
-                    reqv.requestId,
-                    urls,
-                    reqv.correlationId,
-                    reqv.uploadId,
-                  ),
-                )
-                .catch((err) =>
-                  logger.error({ err, requestId: reqv.requestId }, "mintPartUrls failed"),
-                );
+              const transport = deps.federationMediaExports;
+              const request = payload;
+              const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+              const key =
+                request.case === "federationMediaExportLeaseRequest"
+                  ? request.value.requestId
+                  : "media-export-report";
+              if (
+                key.length > 128 ||
+                pendingTransferRequests.has(key) ||
+                pendingTransferRequests.size >= 2
+              )
+                continue;
+              pendingTransferRequests.add(key);
+              void runForSession(agentId, async () => {
+                try {
+                  if (request.case === "federationMediaExportLeaseRequest") {
+                    const response = await transport.grant(agentId, request.value);
+                    if (current())
+                      channel.push(
+                        create(ServerMessageSchema, {
+                          payload: { case: "federationMediaExportLeaseResponse", value: response },
+                        }),
+                      );
+                  } else await transport.report(agentId, request.value);
+                } catch {
+                  if (request.case === "federationMediaExportLeaseRequest" && current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: {
+                          case: "federationMediaExportLeaseResponse",
+                          value: create(FederationMediaExportLeaseResponseSchema, {
+                            requestId: request.value.requestId,
+                          }),
+                        },
+                      }),
+                    );
+                }
+              })
+                .catch(() => logger.warn({ agentId }, "Media export response unavailable"))
+                .finally(() => pendingTransferRequests.delete(key));
+              continue;
             }
-            continue;
-          }
 
-          logger.warn({ case: payload.case }, "Unknown AgentMessage payload case");
+            if (
+              payload.case === "federationMediaImportKeyRequest" ||
+              payload.case === "federationMediaImportReport"
+            ) {
+              if (
+                !registeredAgentId ||
+                !active ||
+                !channel.federationMediaImportV1 ||
+                !channel.verifiedCertFingerprint ||
+                !deps.federationMediaImports ||
+                !dispatcher.isCurrentChannel(registeredAgentId, channel)
+              )
+                continue;
+              const agentId = registeredAgentId;
+              const transport = deps.federationMediaImports;
+              const request = payload;
+              const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+              const key =
+                request.case === "federationMediaImportKeyRequest"
+                  ? request.value.requestId
+                  : "media-import-report";
+              if (
+                key.length > 128 ||
+                pendingTransferRequests.has(key) ||
+                pendingTransferRequests.size >= 2
+              )
+                continue;
+              pendingTransferRequests.add(key);
+              void runForSession(agentId, async () => {
+                try {
+                  if (request.case === "federationMediaImportKeyRequest") {
+                    const response = await transport.grant(agentId, request.value);
+                    if (current())
+                      channel.push(
+                        create(ServerMessageSchema, {
+                          payload: { case: "federationMediaImportGrantResponse", value: response },
+                        }),
+                      );
+                  } else await transport.report(agentId, request.value);
+                } catch {
+                  if (request.case === "federationMediaImportKeyRequest" && current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: {
+                          case: "federationMediaImportGrantResponse",
+                          value: create(FederationMediaImportGrantResponseSchema, {
+                            requestId: request.value.requestId,
+                          }),
+                        },
+                      }),
+                    );
+                }
+              })
+                .catch(() => logger.warn({ agentId }, "Media import response unavailable"))
+                .finally(() => pendingTransferRequests.delete(key));
+              continue;
+            }
+
+            if (
+              payload.case === "federationResultGrantRequest" ||
+              payload.case === "federationResultCopyReport"
+            ) {
+              if (
+                !registeredAgentId ||
+                !active ||
+                !channel.federationResultVerifyV1 ||
+                (!channel.federationResultCopyV1 && !channel.federationTargetTransferV1) ||
+                !channel.verifiedCertFingerprint ||
+                !deps.federationResults ||
+                !dispatcher.isCurrentChannel(registeredAgentId, channel)
+              )
+                continue;
+              const agentId = registeredAgentId;
+              const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+              const request = payload;
+              const key =
+                request.case === "federationResultGrantRequest"
+                  ? request.value.requestId
+                  : request.value.generation;
+              if (
+                key.length > 128 ||
+                pendingTransferRequests.has(key) ||
+                pendingTransferRequests.size >= 2
+              )
+                continue;
+              pendingTransferRequests.add(key);
+              const transport = deps.federationResults;
+              void runForSession(agentId, async () => {
+                try {
+                  if (request.case === "federationResultGrantRequest") {
+                    if (
+                      !request.value.verificationJson &&
+                      !request.value.upload &&
+                      (!channel.federationResultCopyV1 || !transport.canCopy)
+                    )
+                      throw new Error("SOURCE_DOWNLOAD_DISABLED");
+                    const response = await transport.grant(agentId, request.value);
+                    if (current())
+                      channel.push(
+                        create(ServerMessageSchema, {
+                          payload: { case: "federationResultGrantResponse", value: response },
+                        }),
+                      );
+                  } else await transport.report(agentId, request.value);
+                } catch {
+                  if (request.case === "federationResultGrantRequest" && current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: {
+                          case: "federationResultGrantResponse",
+                          value: create(FederationResultGrantResponseSchema, {
+                            requestId: request.value.requestId,
+                          }),
+                        },
+                      }),
+                    );
+                  // Never log request bodies, presigned grants or raw storage errors.
+                }
+              })
+                .catch(() => logger.warn({ agentId }, "Federation result response unavailable"))
+                .finally(() => pendingTransferRequests.delete(key));
+              continue;
+            }
+
+            if (
+              payload.case === "federationInputGrantRequest" ||
+              payload.case === "federationInputCopyReport"
+            ) {
+              if (
+                !registeredAgentId ||
+                !active ||
+                !channel.federationInputVerifyV1 ||
+                (!channel.federationInputCopyV1 && !channel.federationTargetTransferV1) ||
+                !channel.verifiedCertFingerprint ||
+                !deps.federationInputs ||
+                !dispatcher.isCurrentChannel(registeredAgentId, channel)
+              )
+                continue;
+              const agentId = registeredAgentId;
+              const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+              const request = payload;
+              const key =
+                request.case === "federationInputGrantRequest"
+                  ? request.value.requestId
+                  : request.value.generation;
+              if (
+                key.length > 128 ||
+                pendingTransferRequests.has(key) ||
+                pendingTransferRequests.size >= 2
+              )
+                continue;
+              pendingTransferRequests.add(key);
+              const transport = deps.federationInputs;
+              void runForSession(agentId, async () => {
+                try {
+                  if (request.case === "federationInputGrantRequest") {
+                    if (
+                      !request.value.verificationJson &&
+                      !request.value.upload &&
+                      (!channel.federationInputCopyV1 || !transport.canCopy)
+                    )
+                      throw new Error("SOURCE_DOWNLOAD_DISABLED");
+                    const response = await transport.grant(agentId, request.value);
+                    if (current())
+                      channel.push(
+                        create(ServerMessageSchema, {
+                          payload: { case: "federationInputGrantResponse", value: response },
+                        }),
+                      );
+                  } else await transport.report(agentId, request.value);
+                } catch {
+                  if (request.case === "federationInputGrantRequest" && current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: {
+                          case: "federationInputGrantResponse",
+                          value: create(FederationInputGrantResponseSchema, {
+                            requestId: request.value.requestId,
+                          }),
+                        },
+                      }),
+                    );
+                  // Never log request bodies, presigned grants or raw storage errors.
+                }
+              })
+                .catch(() => logger.warn({ agentId }, "Federation input response unavailable"))
+                .finally(() => pendingTransferRequests.delete(key));
+              continue;
+            }
+
+            if (payload.case === "federationExecutionRequest") {
+              if (registeredAgentId === null) continue;
+              const request = payload.value;
+              if (
+                request.requestId.length > 128 ||
+                request.jobId.length > 128 ||
+                request.operationId.length > 128 ||
+                pendingFederationGrants.has(request.requestId)
+              )
+                continue;
+              const agentId = registeredAgentId;
+              const respond = (decision: FederationExecutionDecision) =>
+                channel.push(
+                  create(ServerMessageSchema, {
+                    payload: {
+                      case: "federationExecutionResponse",
+                      value: create(FederationExecutionResponseSchema, {
+                        requestId: request.requestId,
+                        jobId: request.jobId,
+                        dispatchEpoch: request.dispatchEpoch,
+                        operationId: request.operationId,
+                        runtimeRenewal: request.runtimeRenewal,
+                        decision,
+                      }),
+                    },
+                  }),
+                );
+              if (
+                (request.operationId && request.runtimeRenewal) ||
+                !(request.operationId
+                  ? channel.federationInstallationV1 &&
+                    channel.federationInstallationLeaseV1 &&
+                    channel.federationInstallationMaterialLeaseV1
+                  : channel.federationExecutionV1 && channel.federationComputeLeaseV1) ||
+                !channel.verifiedCertFingerprint
+              ) {
+                respond(FederationExecutionDecision.DENIED);
+                continue;
+              }
+              if (pendingFederationGrants.size >= 16) {
+                respond(FederationExecutionDecision.RETRY);
+                continue;
+              }
+              pendingFederationGrants.add(request.requestId);
+              void runForSession(agentId, async () => {
+                try {
+                  const send = (response: FederationExecutionResponse) =>
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: { case: "federationExecutionResponse", value: response },
+                      }),
+                    );
+                  const granted = request.operationId
+                    ? await softwareOperations?.renewFederationInstallation?.(
+                        agentId,
+                        request,
+                        send,
+                      )
+                    : await jobDispatches?.renewExecution?.(agentId, request, send);
+                  if (!granted) respond(FederationExecutionDecision.DENIED);
+                } catch (error) {
+                  const denied =
+                    !(error instanceof AuthorizationUnavailableError) &&
+                    ((error instanceof FederationError &&
+                      error.code !== "DATA_WAITING" &&
+                      error.code !== "ASSET_UNAVAILABLE") ||
+                      (error instanceof WorkflowExecutionInterrupted && !error.retryable) ||
+                      (error instanceof AppError && error.code === ErrorCode.FORBIDDEN));
+                  respond(
+                    denied ? FederationExecutionDecision.DENIED : FederationExecutionDecision.RETRY,
+                  );
+                }
+              })
+                .catch(() =>
+                  logger.warn({ agentId }, "Federation execution response could not be delivered"),
+                )
+                .finally(() => pendingFederationGrants.delete(request.requestId));
+              continue;
+            }
+
+            if (payload.case === "partUrlsRequest") {
+              const reqv = payload.value;
+              if (registeredAgentId === null) {
+                logger.warn("partUrlsRequest before register — ignoring");
+                continue;
+              }
+              if (
+                Boolean(reqv.correlationId) !== Boolean(reqv.uploadId) ||
+                reqv.correlationId.length > 128 ||
+                reqv.uploadId.length > 1024
+              ) {
+                logger.warn(
+                  { requestId: reqv.requestId },
+                  "Invalid multipart URL request binding — ignoring",
+                );
+                continue;
+              }
+              if (partUrlMinter) {
+                const agentId = registeredAgentId;
+                void partUrlMinter
+                  .mintPartUrlsFor(
+                    reqv.requestId,
+                    reqv.partNumbers,
+                    agentId,
+                    reqv.uploadId || undefined,
+                  )
+                  .then(
+                    (urls) =>
+                      active &&
+                      dispatcher.isCurrentChannel(agentId, channel) &&
+                      dispatcher.pushPartUrlsResponse(
+                        agentId,
+                        reqv.requestId,
+                        urls,
+                        reqv.correlationId,
+                        reqv.uploadId,
+                      ),
+                  )
+                  .catch((err) =>
+                    logger.error({ err, requestId: reqv.requestId }, "mintPartUrls failed"),
+                  );
+              }
+              continue;
+            }
+
+            logger.warn({ case: payload.case }, "Unknown AgentMessage payload case");
+          } finally {
+            await leave?.();
+          }
         }
         // Inbound stream ended — signal the outbound generator to stop
         channel.close();
@@ -1654,8 +1739,25 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
       try {
         while (active) {
           while (outbound.length > 0) {
-            const m = outbound.shift();
-            if (m) yield m;
+            const item = outbound.shift();
+            if (!item) continue;
+            const m = item.message;
+            interactionBytes -= item.size;
+            if (registeredAgentId && deps.sessions) {
+              const leave = await deps.sessions.enter(registeredAgentId, sessionId);
+              if (!leave) {
+                outbound.length = 0;
+                channel.close();
+                break;
+              }
+              // Release at the wire handoff, before awaiting the peer's next read.
+              const released = leave();
+              try {
+                yield m;
+              } finally {
+                await released;
+              }
+            } else yield m;
           }
           if (!active) break;
           // Suspend until dispatcher pushes a message or inbound stream ends
@@ -1669,16 +1771,23 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         }
         // Drain any remaining messages before closing
         while (outbound.length > 0) {
-          const m = outbound.shift();
-          if (m) yield m;
+          const m = outbound.shift()?.message;
+          if (m && (!deps.sessions || !registeredAgentId || m.payload.case === "registerResponse"))
+            yield m;
         }
       } finally {
         if (registeredAgentId) {
           dispatcher.unregister(registeredAgentId, channel);
+
           // The agent's stream just dropped — its ssh2 channels are gone, so
           // free any SSH sessions bound to it instead of leaving clients on a
           // frozen terminal that still holds their concurrent-session slot.
-          const orphaned = sshGateway?.closeSessionsForAgent(registeredAgentId);
+          const orphaned = sshGateway?.closeSessionsForAgent(
+            registeredAgentId,
+            "agent disconnected",
+            channel,
+          );
+          await deps.sessions?.release(registeredAgentId, sessionId);
           if (orphaned) {
             logger.info({ agentId: registeredAgentId, orphaned }, "Closed orphaned SSH sessions");
           }

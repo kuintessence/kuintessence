@@ -114,11 +114,6 @@ GitHub workflow 会设置 `DOCS_BASE` 以适配 GitHub Pages project site。
 
 ## 运行条件与限制
 
-执行前确认以下条件：
+受管安装要求站点配置隔离运行时、受信任的材料和执行身份。离线交付可由发行方使用 Ed25519 签名，接收方在 Registry 配置交付公钥。在[软件治理](/operate/software-governance)中配置源站、同步清单和材料回收。
 
-- sandbox 中的 `spack concretize/install`。
-- source mirror 和 buildcache worker。
-- signed air-gap bundle export/import。
-- Monaco + 结构化 `package.py` 编辑器。
-- 通知执行器。
-- 正式 OIDC、对象存储和调度资源需按所在环境完成配置。
+站内通知可直接查收，邮件与签名 Webhook 需要配置实际接收方。OIDC、对象存储和调度资源须分别在目标环境验收。

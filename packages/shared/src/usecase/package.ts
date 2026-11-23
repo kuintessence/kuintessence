@@ -6,8 +6,10 @@ import {
   DataRequirementsSchema,
   DataSensitivitySchema,
 } from "../data-market";
+import { EnvironmentNameSchema } from "../schemas/job";
 import { LicenseRequirementSchema } from "../software-governance";
 import { ValueOutputSchema } from "../workflow-dsl/extract";
+import { OutputValidatorSchema } from "../workflow-dsl/output-validator";
 import { AssetSelectorSchema } from "../workflow-dsl/refs";
 
 /**
@@ -53,7 +55,7 @@ const ArgumentMaterialSchema = z.strictObject({
 
 const EnvironmentMaterialSchema = z.strictObject({
   descriptor: z.string(),
-  key: z.string(),
+  key: EnvironmentNameSchema,
   valueFormat: z.string().default("{}"),
 });
 
@@ -168,7 +170,7 @@ const TypedUsecaseInputSchema = z
 const TypedUsecaseOutputSchema = z.strictObject({
   descriptor: z.string().min(1),
   type: TypedUsecaseValueSchema,
-  validators: z.array(z.unknown()).default([]),
+  validators: z.array(OutputValidatorSchema).max(32).default([]),
 });
 
 const UsecaseMaterialMappingSchema = z.discriminatedUnion("kind", [
@@ -180,7 +182,7 @@ const UsecaseMaterialMappingSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("env"),
     descriptor: z.string().min(1),
-    key: z.string().min(1),
+    key: EnvironmentNameSchema,
     template: z.string().default("{}"),
   }),
   z.strictObject({ kind: z.literal("stdin"), descriptor: z.string().min(1) }),

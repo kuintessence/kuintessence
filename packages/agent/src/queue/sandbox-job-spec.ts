@@ -40,7 +40,18 @@ export const SandboxJobSpecSchema = z.object({
       inlineContentBase64: mount.inlineContentBase64 ?? undefined,
     })),
   ),
+  licensedInputs: z
+    .array(
+      z.strictObject({
+        hostPath: z.string(),
+        containerPath: z.string(),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      }),
+    )
+    .max(32)
+    .optional(),
   resources: SandboxUnsignedManifestSchema.shape.resources.optional(),
   limits: SandboxUnsignedManifestSchema.shape.limits,
   kubernetesArtifactPvc: z.string().optional(),
+  kubernetesArtifactPvcUid: z.uuid().optional(),
 }) satisfies z.ZodType<SandboxJobSpec>;

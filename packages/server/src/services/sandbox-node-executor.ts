@@ -22,6 +22,7 @@ import {
   SandboxTrustedExecutionProfileSchema,
   WorkflowExecutionInterrupted,
   workflowDsl,
+  workflowJobResources,
 } from "@kuintessence/shared";
 import type { FederationExecutionTarget } from "@kuintessence/shared/federation";
 import { and, eq, inArray, isNull } from "drizzle-orm";
@@ -81,6 +82,7 @@ export interface SandboxNodeExecutorOptions {
   jobService: JobService;
   orchestrator: Pick<PlacementOrchestrator, "placeAndDispatch">;
   artifactService: WorkflowArtifactService;
+  releasePvc?(agentId: string, jobId: string): Promise<void>;
   awaitCompletion(jobId: string): Promise<CompletionResult>;
   resolveFileInput?(value: unknown): Promise<unknown>;
   submittedBy: string;
@@ -328,7 +330,11 @@ export class SandboxNodeExecutor {
     if (!node.source) {
       throw new Error("Sandbox Script must resolve source and runtime references before execution");
     }
-    const source = await this.options.resolver.resolveSource(node, this.options.submittedBy);
+    const source = await this.options.resolver.resolveSource(
+      node,
+      this.options.submittedBy,
+      this.options.orgId ?? undefined,
+    );
     const runtimeContractRef = node.runtimeContractRef ?? source.runtimeContractRef;
     const preferredAgentIds = await this.options.resolvePlannedAgents?.(node.id);
     const plannedAgentId = preferredAgentIds?.[0];
@@ -365,18 +371,36 @@ export class SandboxNodeExecutor {
       sizeLimitBytes: this.options.limits.outputBytes,
       required: output.required,
     }));
+    const declared = workflowJobResources(
+      node.requirements,
+      this.options.resourceLimits ? { memoryMiB: this.options.resourceLimits.memoryMb } : undefined,
+    );
+    if ((declared?.schedulerLimits?.nodeCount ?? 1) > 1)
+      throw new Error("Sandbox execution requires a single attested node");
     const requestedResources = {
-      cpus: Math.max(1, node.requirements?.cpuCores ?? 1),
-      memoryMb: this.options.resourceLimits?.memoryMb ?? 1024,
-      ...(node.requirements?.maxWallTime != null
-        ? { wallTimeSec: node.requirements.maxWallTime }
-        : {}),
+      ...declared,
+      cpus: Math.max(1, declared?.cpus ?? 1),
+      memoryMb: declared?.memoryMb ?? 1024,
     };
     const requestedIdentity =
       node.executionIdentity.type === "Inherit"
         ? this.options.defaultExecutionIdentity
         : node.executionIdentity;
+    if (
+      node.licensedMaterials?.length &&
+      (!lease ||
+        !this.options.federationTargets?.length ||
+        !source.assetRevisionId ||
+        source.assetLifecycle !== "published")
+    )
+      throw new Error(
+        "Licensed Sandbox inputs require an authorized federation invocation and a published script revision",
+      );
+    const materials = node.licensedMaterials?.length
+      ? { licensedMaterials: node.licensedMaterials }
+      : {};
     const jobData: JobSubmit = {
+      ...materials,
       name: node.name,
       command: "sandbox-manifest",
       resources: this.options.resourceLimits
@@ -418,6 +442,7 @@ export class SandboxNodeExecutor {
     let job: Awaited<ReturnType<JobService["submit"]>>;
     if (lease) {
       const intent: SandboxJobSubmission = {
+        ...materials,
         nodeId: node.id,
         invocation,
         name: jobData.name,
@@ -480,6 +505,7 @@ export class SandboxNodeExecutor {
       workflowRunId: this.options.workflowRunId,
       federationTargets: this.options.federationTargets,
       job: {
+        ...materials,
         name: job.name,
         command: job.command,
         resources: {
@@ -487,6 +513,7 @@ export class SandboxNodeExecutor {
           memoryMb: job.memoryMb,
           gpus: job.gpus ?? 0,
           wallTimeSec: Number(job.wallTimeSec ?? 0),
+          schedulerLimits: job.schedulerLimits ?? undefined,
         },
         workingDir: job.workingDir ?? undefined,
         envVars: {},
@@ -654,6 +681,12 @@ export class SandboxNodeExecutor {
     const completion = await this.options.awaitCompletion(job.id);
     await lease?.renew();
     if (completion.status !== "completed") {
+      if (
+        dispatch.selectedAgentId &&
+        runtime.ociDigest &&
+        ["failed", "cancelled"].includes(completion.status)
+      )
+        await this.options.releasePvc?.(dispatch.selectedAgentId, job.id);
       await this.recordStats({
         jobId: job.id,
         assetRevisionId: source.assetRevisionId,
@@ -686,16 +719,38 @@ export class SandboxNodeExecutor {
     if (!agent?.siteId || !agent.clusterId) throw new Error("Selected Agent lacks locality facts");
     const values: Record<string, workflowDsl.CelValue> = {};
     let actualOutputBytes = 0;
-    for (const [descriptor, output] of Object.entries(node.outputs)) {
-      const rawFact = completion.collected[`$sandbox-artifact:${descriptor}`];
-      if (!rawFact && !output.required) continue;
-      const fact = artifactFact(rawFact, descriptor);
-      const fileMembers = validateArtifactMembers({
-        ioType: output.type,
-        contentHash: fact.sha256,
-        sizeBytes: fact.sizeBytes,
-        fileMembers: fact.facts,
+    // Check every declared output before registering any of this invocation's artifacts.
+    const validateOutputs = () =>
+      Object.entries(node.outputs).flatMap(([descriptor, output]) => {
+        const rawFact = completion.collected[`$sandbox-artifact:${descriptor}`];
+        if (!rawFact && !output.required) return [];
+        const fact = artifactFact(rawFact, descriptor);
+        const fileMembers = validateArtifactMembers({
+          ioType: output.type,
+          contentHash: fact.sha256,
+          sizeBytes: fact.sizeBytes,
+          fileMembers: fact.facts,
+        });
+        let value: unknown;
+        if (output.type === "Text" || output.type === "JSON") {
+          const text = completion.collected[descriptor];
+          if (text === undefined)
+            throw new Error(`Missing collected Sandbox output '${descriptor}'`);
+          value = output.type === "Text" ? text : JSON.parse(text);
+        } else {
+          value = { sha256: fact.sha256, sizeBytes: fact.sizeBytes, members: fileMembers };
+        }
+        if (output.validator) workflowDsl.validateOutput(descriptor, output.validator, value);
+        return [{ descriptor, output, fact, fileMembers, value }];
       });
+    let outputs: ReturnType<typeof validateOutputs>;
+    try {
+      outputs = validateOutputs();
+    } catch (error) {
+      if (runtime.ociDigest) await this.options.releasePvc?.(dispatch.selectedAgentId, job.id);
+      throw error;
+    }
+    for (const { descriptor, output, fact, fileMembers, value } of outputs) {
       actualOutputBytes += fact.sizeBytes;
       const artifact = await this.options.artifactService.registerLocal({
         workflowRunId: this.options.workflowRunId,
@@ -713,10 +768,10 @@ export class SandboxNodeExecutor {
         clusterId: agent.clusterId,
         storageRef: fact.storageRef,
       });
-      if (output.type === "Text") values[descriptor] = completion.collected[descriptor] ?? "";
-      else if (output.type === "JSON")
-        values[descriptor] = JSON.parse(completion.collected[descriptor] ?? "null");
-      else values[descriptor] = { artifactId: artifact.id, type: output.type };
+      values[descriptor] =
+        output.type === "Text" || output.type === "JSON"
+          ? value
+          : { artifactId: artifact.id, type: output.type };
     }
     await this.recordStats({
       jobId: job.id,
@@ -728,6 +783,7 @@ export class SandboxNodeExecutor {
       actualOutputBytes,
       succeeded: true,
     });
+    if (runtime.ociDigest) await this.options.releasePvc?.(dispatch.selectedAgentId, job.id);
     return { status: "Succeeded", values };
   }
 

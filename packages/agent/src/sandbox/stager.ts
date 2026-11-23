@@ -648,6 +648,18 @@ export async function removeSandboxRun(rootPath: string, jobId: string): Promise
   if (!pathInside(root, canonicalParent)) {
     throw new Error("Sandbox work-root cleanup parent escapes the managed root");
   }
+  if (process.platform === "linux") {
+    const mounts = await readFile("/proc/self/mountinfo", "utf8");
+    for (const line of mounts.trimEnd().split("\n")) {
+      const encoded = line.split(" ")[4];
+      if (!encoded) throw new Error("Cannot verify Sandbox mounts before cleanup");
+      const path = encoded.replace(/\\([0-7]{3})/g, (_, octal: string) =>
+        String.fromCharCode(Number.parseInt(octal, 8)),
+      );
+      if (pathInside(target, path))
+        throw new Error("Sandbox work root still contains an active mount");
+    }
+  }
   await rm(target, { recursive: true, force: true, maxRetries: 2 });
 }
 

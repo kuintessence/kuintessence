@@ -1,5 +1,5 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
-import { FederationDelegationSchema, FederationError } from "@kuintessence/shared/federation";
+import { FederationError, FederationSubmissionSchema } from "@kuintessence/shared/federation";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
@@ -45,7 +45,7 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
       );
     throw error;
   });
-  r.post("/federation/outbound", kqValidator("json", FederationDelegationSchema), async (c) =>
+  r.post("/federation/outbound", kqValidator("json", FederationSubmissionSchema), async (c) =>
     c.json(
       { success: true, data: await service.enqueue(c.get("federationActor"), c.req.valid("json")) },
       202,

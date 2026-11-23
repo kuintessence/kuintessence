@@ -84,12 +84,34 @@ export function createBuildcacheRoutes(opts: CreateBuildcacheRoutesOptions): Hon
       checkNamespaceAccess(principal, ns, "write", publisherRoles);
       const file = c.req.param("filename") ?? "";
       const parsed = parseSpackFilename(file);
-      if (parsed.kind !== "tarball") {
-        return ociErrorJson(
-          c,
-          400,
-          "MANIFEST_INVALID",
-          "PUT only supports the .spack binary; spec.json is regenerated server-side",
+      if (parsed.kind === "spec") {
+        const reader = c.req.raw.body?.getReader();
+        if (!reader) throw new RegistryError("MANIFEST_INVALID", "Missing Spack spec");
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        try {
+          for (;;) {
+            const part = await reader.read();
+            if (part.done) break;
+            size += part.value.length;
+            if (size > 2 * 1024 * 1024) {
+              void reader.cancel().catch(() => {});
+              throw new RegistryError("MANIFEST_INVALID", "Spec exceeds 2 MiB", 413);
+            }
+            chunks.push(part.value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        return c.json(
+          await service.putSpackMetadata(
+            ns,
+            parsed.pkg,
+            parsed.hash,
+            Buffer.concat(chunks),
+            principal,
+          ),
+          201,
         );
       }
       const arch = c.req.query("arch") ?? "linux-x86_64";

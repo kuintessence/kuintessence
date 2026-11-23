@@ -16,6 +16,7 @@ import { describeTemplate, SoftwarePage, suggestNextTemplateVersion } from "./So
 const softwareClient = vi.hoisted(() => ({
   decideLicenseEntitlementClaim: vi.fn(),
   createAppTemplate: vi.fn(),
+  getSpackCatalogSource: vi.fn(),
   createSpackCatalogPackage: vi.fn(),
   createUsecasePackage: vi.fn(),
   createWorkflowTemplate: vi.fn(),
@@ -1345,6 +1346,12 @@ describe("SoftwarePage", () => {
     softwareClient.updateSpackCatalogPackage.mockResolvedValueOnce({});
     softwareClient.deleteSpackCatalogPackage.mockResolvedValueOnce({});
 
+    const recipe =
+      'class Demo(Package):\n    version("1.0", sha256="hash")  # keep\n    def install(self): pass\n';
+    softwareClient.getSpackCatalogSource.mockResolvedValue({
+      content: recipe,
+      digest: "a".repeat(64),
+    });
     render(<SoftwarePage />, { wrapper: wrapper() });
 
     await activateTab("software-tab-spack", "software-spack-catalog-summary");
@@ -1359,6 +1366,12 @@ describe("SoftwarePage", () => {
         target: { value: "platform-cfd-updated" },
       },
     );
+    fireEvent.click(await within(editForm).findByText("software.manage.recipeFields"));
+    fireEvent.change(within(editForm).getByLabelText("version"), { target: { value: "2.0" } });
+    expect(within(editForm).getByLabelText("package.py")).toHaveProperty(
+      "value",
+      recipe.replace("1.0", "2.0"),
+    );
     fireEvent.submit(editForm);
 
     await waitFor(() => {
@@ -1366,7 +1379,12 @@ describe("SoftwarePage", () => {
     });
     expect(softwareClient.updateSpackCatalogPackage.mock.calls[0]).toEqual([
       "catalog-official-cfd",
-      expect.objectContaining({ name: "platform-cfd-updated", source: "official" }),
+      expect.objectContaining({
+        name: "platform-cfd-updated",
+        source: "official",
+        packageFile: recipe.replace("1.0", "2.0"),
+        expectedSourceDigest: "a".repeat(64),
+      }),
       undefined,
     ]);
 

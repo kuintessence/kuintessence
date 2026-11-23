@@ -6,12 +6,22 @@ import {
   SpackMaterialPathSchema,
   spackMaterialInputBlobs,
 } from "@kuintessence/shared/browser";
-import { publishSpackMaterial, uploadSpackMaterial } from "./spack-materials-client";
+import {
+  getSpackMaterialImportStatus,
+  publishSpackMaterial,
+  uploadSpackMaterial,
+} from "./spack-materials-client";
 
 export class MaterialPackError extends Error {
   constructor(readonly code: "invalidManifest" | "invalidFiles" | "accessChanged") {
     super(code);
     this.name = "MaterialPackError";
+  }
+}
+
+export class MissingMaterialFiles extends Error {
+  constructor(readonly paths: string[]) {
+    super("Missing material files");
   }
 }
 
@@ -66,7 +76,6 @@ export function matchMaterialFiles(
     if (!blob || file.size !== blob.size) throw new MaterialPackError("invalidFiles");
     matched.set(blob.digest, file);
   }
-  if (matched.size !== pack.files.length) throw new MaterialPackError("invalidFiles");
   return matched;
 }
 
@@ -89,6 +98,7 @@ interface MaterialImportOptions {
 }
 
 interface MaterialImportClient {
+  status: typeof getSpackMaterialImportStatus;
   upload: typeof uploadSpackMaterial;
   publish: typeof publishSpackMaterial;
 }
@@ -101,7 +111,11 @@ function errorStatus(error: unknown): number | undefined {
 
 export async function runMaterialImport(
   options: MaterialImportOptions,
-  client: MaterialImportClient = { upload: uploadSpackMaterial, publish: publishSpackMaterial },
+  client: MaterialImportClient = {
+    status: getSpackMaterialImportStatus,
+    upload: uploadSpackMaterial,
+    publish: publishSpackMaterial,
+  },
 ): Promise<void> {
   const { signal, canWriteRepository, onProgress } = options;
   signal.throwIfAborted();
@@ -112,42 +126,75 @@ export async function runMaterialImport(
     signal.throwIfAborted();
     if (!canWriteRepository(repository)) throw new MaterialPackError("accessChanged");
   };
-  // Validate the whole pending batch before sending any bytes.
-  for (const file of pack.files) {
-    if (files.get(file.blob.digest)?.size !== file.blob.size) {
-      throw new MaterialPackError("invalidFiles");
+  const expected = new Map(pack.files.map((entry) => [entry.blob.digest, entry]));
+  for (const [digest, file] of files) {
+    if (file.size !== expected.get(digest)?.blob.size) throw new MaterialPackError("invalidFiles");
+  }
+  function requireFiles(missing: Iterable<string>) {
+    const absent: string[] = [];
+    for (const digest of missing) {
+      const path = expected.get(digest)?.path;
+      if (!path) throw new MaterialPackError("invalidManifest");
+      if (!files.has(digest)) absent.push(path);
     }
+    if (absent.length) throw new MissingMaterialFiles(absent);
   }
   if (new Set(indices).size !== indices.length) throw new MaterialPackError("invalidManifest");
-  for (const index of indices) {
+  const pending = indices.map((index) => {
     const release = pack.releases[index];
     if (!Number.isInteger(index) || !release) throw new MaterialPackError("invalidManifest");
     checkAccess(release.repository);
+    return { index, release };
+  });
+  const recovered = new Set<number>();
+  function reportPublished(index: number, totalFiles: number, binding: SpackMaterialBinding) {
+    onProgress({ index, totalFiles, verifiedFiles: totalFiles, status: "published", binding });
   }
-  const uploaded = new Set<string>();
-  for (const index of indices) {
-    const release = pack.releases[index];
-    if (!release) throw new MaterialPackError("invalidManifest");
+  // A later release can require the same digest in another repository. Check the whole
+  // partial selection before writing, then use fresh receipts as each release runs.
+  if (files.size < pack.files.length && indices.length > 1) {
+    const missing = new Set<string>();
+    for (const { index, release } of pending) {
+      const references = spackMaterialInputBlobs(release);
+      if (references.every((blob) => files.has(blob.digest))) continue;
+      checkAccess(release.repository);
+      const status = await client.status(release, signal);
+      checkAccess(release.repository);
+      if (status.state === "published") {
+        reportPublished(index, references.length, status.binding);
+        recovered.add(index);
+      } else {
+        for (const digest of status.missing) missing.add(digest);
+      }
+    }
+    requireFiles(missing);
+  }
+  for (const { index, release } of pending) {
+    if (recovered.has(index)) continue;
     checkAccess(release.repository);
-    const references = [
-      ...new Map(spackMaterialInputBlobs(release).map((blob) => [blob.digest, blob])).values(),
-    ];
+    const references = spackMaterialInputBlobs(release);
     const progress = { index, verifiedFiles: 0, totalFiles: references.length };
     let publishing = false;
     try {
       onProgress({ ...progress, status: "uploading" });
+      const status = await client.status(release, signal);
+      checkAccess(release.repository);
+      if (status.state === "published") {
+        reportPublished(index, references.length, status.binding);
+        continue;
+      }
+      const missing = new Set(status.missing);
+      requireFiles(missing);
       for (const blob of references) {
         checkAccess(release.repository);
-        const key = `${release.repository}:${blob.digest}`;
-        if (!uploaded.has(key)) {
+        if (missing.has(blob.digest)) {
           const file = files.get(blob.digest);
           if (!file) throw new MaterialPackError("invalidFiles");
-          const receipt = await client.upload(release.repository, blob, file, signal);
+          const receipt = await client.upload(release.repository, blob, file, signal, checkAccess);
           checkAccess(release.repository);
           if (receipt.digest !== blob.digest || receipt.size !== blob.size) {
             throw new MaterialPackError("invalidFiles");
           }
-          uploaded.add(key);
         }
         progress.verifiedFiles++;
         onProgress({ ...progress, status: "uploading" });
@@ -168,6 +215,7 @@ export async function runMaterialImport(
         status: uncertain ? "uncertain" : interrupted ? "interrupted" : "failed",
         error,
       });
+      if (error instanceof MissingMaterialFiles && !interrupted) throw error;
       if (interrupted || status === 401 || status === 403) {
         throw new MaterialPackError("accessChanged");
       }

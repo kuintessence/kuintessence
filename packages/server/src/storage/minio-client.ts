@@ -71,12 +71,13 @@ export interface MinioBackend {
   dataMarketStagingBucket: string;
   dataMarketImmutableBucket: string;
   putBlob(key: string, body: Buffer | Uint8Array, contentType: string): Promise<{ etag: string }>;
-  getBlob(key: string): Promise<Buffer>;
+  getBlob(key: string, versionId?: string, maxBytes?: number): Promise<Buffer>;
   sha256(key: string, versionId?: string): Promise<string | null>;
   presignStagingUpload(key: string, expiresInSec: number, contentType?: string): Promise<string>;
   headStaging(key: string): Promise<ObjectStat | null>;
   sha256Staging(key: string): Promise<string | null>;
   deleteStaging(key: string): Promise<void>;
+  copyVersionToStaging(key: string, versionId: string, stagingKey: string): Promise<void>;
   copyStagingToImmutable(
     sourceKey: string,
     targetKey: string,
@@ -103,7 +104,7 @@ export interface MinioBackend {
     filename?: string,
   ): Promise<string>;
   head(key: string, versionId?: string): Promise<ObjectStat | null>;
-  delete(key: string): Promise<void>;
+  delete(key: string, versionId?: string): Promise<void>;
   /** Throws on failure; resolves quietly on a healthy bucket. */
   healthCheck(): Promise<void>;
   /** Verifies the bucket controls required by immutable Data Market commits. */
@@ -222,10 +223,14 @@ export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<M
       return { etag: stripQuotes(result.etag ?? "") };
     },
 
-    async getBlob(key) {
-      const stream = await client.getObject(cfg.bucket, key);
+    async getBlob(key, versionId, maxBytes) {
+      const stream = await client.getObject(cfg.bucket, key, versionId ? { versionId } : undefined);
+      let total = 0;
       const chunks: Buffer[] = [];
       for await (const chunk of stream as AsyncIterable<Buffer>) {
+        total += chunk.length;
+        if (maxBytes !== undefined && total > maxBytes)
+          throw new Error("Object exceeds read limit");
         chunks.push(chunk);
       }
       return Buffer.concat(chunks);
@@ -261,6 +266,13 @@ export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<M
 
     async deleteStaging(key) {
       await client.removeObject(cfg.dataMarketStagingBucket, key);
+    },
+
+    async copyVersionToStaging(key, versionId, stagingKey) {
+      await client.copyObject(
+        new mod.CopySourceOptions({ Bucket: cfg.bucket, Object: key, VersionID: versionId }),
+        new mod.CopyDestinationOptions({ Bucket: cfg.dataMarketStagingBucket, Object: stagingKey }),
+      );
     },
 
     async copyStagingToImmutable(sourceKey, targetKey, options) {
@@ -344,8 +356,8 @@ export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<M
       }
     },
 
-    async delete(key) {
-      await client.removeObject(cfg.bucket, key);
+    async delete(key, versionId) {
+      await client.removeObject(cfg.bucket, key, versionId ? { versionId } : undefined);
     },
 
     async createMultipartUpload(key, contentType) {

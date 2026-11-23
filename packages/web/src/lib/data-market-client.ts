@@ -19,7 +19,9 @@ export type DataReplicaStatus =
   | "syncing"
   | "available"
   | "failed"
-  | "revoked"
+  | "stale"
+  | "expired"
+  | "mismatch"
   | "deleted";
 export type DataImportStatus = "pending" | "running" | "completed" | "failed" | "canceled";
 export type DataAccessRequestStatus = "pending" | "approved" | "rejected" | "canceled" | "expired";
@@ -144,11 +146,10 @@ export type CpDataImportSource =
 
 export interface DataReplicaInput {
   agentId: string;
-  clusterId: string;
-  locationKind: DataLocationKind;
-  siteId: string;
-  managedRootId?: string;
-  relativePath?: string;
+  managedRootId: string;
+  locationKind: "cp-local";
+  siteId?: string;
+  clusterId?: string;
 }
 
 interface ApiEnvelope<T> {
@@ -350,23 +351,36 @@ export const dataMarketClient = {
       offset: number;
       total: number;
     }>,
-  startCpImport: (assetId: string, version: string, source: CpDataImportSource) =>
+  cancelCpImport: (assetId: string, importId: string) =>
+    request<{ status: "canceled" }>(`/cp/data/assets/${assetId}/imports/${importId}/cancel`, {
+      method: "POST",
+    }),
+  startCpImport: (
+    assetId: string,
+    version: string,
+    source: CpDataImportSource,
+    key = idempotencyKey(),
+  ) =>
     request<{
       dataImport: DataAssetImport;
-      dispatchState: "dispatched" | "queued";
+      dispatchState: "dispatched" | "queued" | "completed" | "failed" | "canceled";
       replayed: boolean;
       version: DataAssetVersion;
     }>(
       "/cp/data/imports",
       { body: JSON.stringify({ assetId, source, version }), method: "POST" },
-      idempotencyKey(),
+      key,
     ),
-  createReplica: (versionId: string, input: DataReplicaInput) =>
+  createReplica: (versionId: string, input: DataReplicaInput, key = idempotencyKey()) =>
     request<DataAssetReplica>(
       `/cp/data/versions/${versionId}/replicas`,
       { body: JSON.stringify(input), method: "POST" },
-      idempotencyKey(),
+      key,
     ),
+  cancelReplica: (versionId: string, replicaId: string) =>
+    request<null>(`/cp/data/versions/${versionId}/replicas/${replicaId}/cancel`, {
+      method: "POST",
+    }),
   cpAccessRequests: (
     query: { limit?: number; offset?: number; status?: DataAccessRequestStatus } = {},
   ) =>

@@ -212,6 +212,22 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     }
   });
 
+  test("purge requires a withdrawn revision, a current super admin and released references", async () => {
+    const binding = release();
+    const { lifecycle } = await ready();
+    const remove = mock(async () => {});
+    await db.update(users).set({ role: "super_admin" }).where(eq(users.id, OPERATOR));
+    await expectError(lifecycle.purgeWithdrawn(binding, OPERATOR, 0, remove), CONFLICT);
+    await lifecycle.transition(binding, OPERATOR, change(), allow);
+    await expectError(lifecycle.purgeWithdrawn(binding, OPERATOR, 2, remove), CONFLICT);
+    await db.update(users).set({ role: "user" }).where(eq(users.id, OPERATOR));
+    await expectError(lifecycle.purgeWithdrawn(binding, OPERATOR, 1, remove), FORBIDDEN);
+    expect(remove).not.toHaveBeenCalled();
+    await db.update(users).set({ role: "super_admin" }).where(eq(users.id, OPERATOR));
+    await lifecycle.purgeWithdrawn(binding, OPERATOR, 1, remove);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
   test("catalog reads a bounded authorized batch without exposing audit history", async () => {
     const { lifecycle } = await ready();
     const bindings = [release(), release(), release()];

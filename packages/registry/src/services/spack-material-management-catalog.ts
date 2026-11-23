@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
-import { lstat, opendir } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import type { SpackMaterialCatalogState } from "@kuintessence/db";
 import {
@@ -10,6 +10,7 @@ import {
   spackMaterialBlobs,
 } from "@kuintessence/shared";
 import { managementCursor } from "./spack-material-management-cursor";
+import { indexedMaterialDigests } from "./spack-material-name-index";
 import {
   isMissing,
   type MaterialMetadataReadOptions,
@@ -100,18 +101,22 @@ export class SpackMaterialManagementCatalogReader {
       };
       const digests: string[] = [];
       if (info) {
-        const entries = await opendir(directory);
         let count = 0;
-        for await (const entry of entries) {
-          checkpoint();
-          if (++count > this.limits.maxEntries) throw new SpackMaterialManagementLimitError();
-          if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
-          if (!entry.isFile()) throw new SpackMaterialError(500, "Invalid management catalog file");
-          const digest = `sha256:${entry.name.slice(0, -5)}`;
-          if (after === undefined || digest > after) digests.push(digest);
+        for await (const hex of indexedMaterialDigests(
+          this.root,
+          repositoryId,
+          after?.slice(7),
+          checkpoint,
+          () => {
+            checkpoint();
+            if (++count > this.limits.maxEntries) throw new SpackMaterialManagementLimitError();
+          },
+          () => new SpackMaterialManagementLimitError(),
+        )) {
+          digests.push(`sha256:${hex}`);
+          if (digests.length > query.limit) break;
         }
       }
-      digests.sort();
       const candidates = digests.slice(0, query.limit);
       const stored: StoredSpackMaterialManifest[] = [];
       let metadataBytes = 0;

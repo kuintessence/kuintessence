@@ -320,13 +320,20 @@ export class FederationMarketService {
         (input.operation === "claim-demand" && input.claim.providerSiteId !== this.siteId)
       )
         throw new FederationError("POLICY_DENIED");
-      if (input.operation === "cancel-open-demand") {
+      if (
+        input.operation === "cancel-open-demand" ||
+        (input.operation === "publish-demand" && input.demand.reopens)
+      ) {
         const [published] = await tx
           .select()
           .from(submissions)
           .where(
             and(
-              eq(submissions.id, demandId),
+              eq(
+                submissions.id,
+                (input.operation === "publish-demand" && input.demand.reopens?.demandId) ||
+                  demandId,
+              ),
               eq(submissions.localOrgId, actor.orgId),
               eq(submissions.localSiteId, this.siteId),
               eq(submissions.state, "committed"),

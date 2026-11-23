@@ -120,6 +120,10 @@ message AgentMessage {
     FederationMediaExportReport federation_media_export_report = 27;
     FederationMediaImportKeyRequest federation_media_import_key_request = 28;
     FederationMediaImportReport federation_media_import_report = 29;
+    DataReplicaReceipt data_replica_receipt = 30;
+    ReplicaRange replica_range_request = 31;
+    ReplicaRangeResult replica_range_result = 32;
+    JobWorkRootReleaseAck sandbox_pvc_release_ack = 33;
   }
   reserved 15;
 }
@@ -170,7 +174,61 @@ message ServerMessage {
     FederationMediaImportGrantResponse federation_media_import_grant_response = 34;
     FederationMediaUpload federation_media_upload = 35;
     AgentUpdateRequest agent_update_request = 36;
+    // Separate message so Agents without subsystem support never open a shell for binary input.
+    SshOpen sftp_open = 37;
+    DataReplicaCommand data_replica_command = 38;
+    ReplicaRangeRead replica_range_read = 39;
+    ReplicaRangeResult replica_range_result = 40;
+    ReleaseJobWorkRoot release_sandbox_pvc = 41;
+    SshRouteOpen ssh_route_open = 42;
   }
+}
+
+message DataReplicaEntry {
+  string path = 1;
+  string sha256 = 2;
+  int64 size_bytes = 3;
+  string download_url = 4;
+}
+
+message DataReplicaCommand {
+  string replica_id = 1;
+  string attempt_id = 2;
+  string managed_root_id = 3;
+  int64 expires_at_unix_ms = 4;
+  repeated DataReplicaEntry entries = 5;
+  bool release = 6;
+  bool managed_source = 7;
+}
+
+// Only the Server resolves source roots and destination channels.
+message ReplicaRange {
+  string request_id = 1;
+  string replica_id = 2;
+  string attempt_id = 3;
+  string path = 4;
+  int64 offset = 5;
+}
+message ReplicaRangeRead {
+  ReplicaRange range = 1;
+  string managed_root_id = 2;
+  string dataset_path = 3;
+  int64 size_bytes = 4;
+  string sha256 = 5;
+  int64 expires_at_unix_ms = 6;
+}
+message ReplicaRangeResult {
+  ReplicaRange range = 1;
+  bytes data = 2;
+  string outcome = 3;
+}
+
+message DataReplicaReceipt {
+  string replica_id = 1;
+  string attempt_id = 2;
+  repeated DataScanFile files = 3;
+  // copied, released, retry, mismatch or failed. No URLs or filesystem paths in errors.
+  string outcome = 4;
 }
 
 message AgentUpdateRequest {
@@ -270,6 +328,9 @@ message RegisterRequest {
   bool federation_target_transfer_v1 = 41;
   // Local supervisor accepts only signed, pinned site releases.
   bool agent_update_v1 = 42;
+  bool data_replica_copy = 43;
+  bool replica_range_transfer = 45;
+  bool job_scheduler_limits = 44;
 }
 
 message RegisterResponse {
@@ -325,6 +386,8 @@ message Heartbeat {
   QueueInventory queue_inventory = 17;
   // Bounded, schema-validated optional site operations telemetry; no credentials or paths.
   string site_operations_json = 18;
+  // SHA-256 of transfer IDs whose local multipart checkpoints still exist.
+  repeated string upload_checkpoint_keys = 19;
 }
 
 // A point-in-time scheduler controller observation. `reason` is a canonical
@@ -386,6 +449,16 @@ message DispatchJob {
   SpackJobExecution spack_execution = 24;
   // Requires a fresh FederationExecutionResponse before starting scheduler submission.
   bool federation_execution = 25;
+  JobSchedulerLimits scheduler_limits = 26;
+  // Opportunistic batching hint for ready siblings of one workflow ForEach leaf.
+  string for_each_group = 27;
+}
+
+message JobSchedulerLimits {
+  optional int32 node_count = 1;
+  optional int32 max_cpu_time = 2;
+  // UTC Unix seconds.
+  optional int64 stop_time = 3;
 }
 
 message FederationExecutionRequest {
@@ -800,6 +873,7 @@ message JobStatusAck {
 
 message HeartbeatAck {
   uint64 sequence = 1;
+  repeated string released_upload_checkpoint_keys = 2;
 }
 
 // one Spack spec entry as observed on the agent. Mirrors the
@@ -918,8 +992,7 @@ message SoftwareOperationResult {
 // SshOutput / SshClosed (Agent→Server) message. The `auth` payload carries
 // either a passphrase or a private key blob — the Server credential vault is
 // responsible for redacting these from any audit / log surface before
-// emission. Window resize rides its own SshResize message; jumphosts and X11
-// forwarding remain out of scope.
+// emission. Window resize rides its own SshResize message.
 message SshOpen {
   string session_id = 1;
   string host = 2;
@@ -929,6 +1002,13 @@ message SshOpen {
   // Base64 SHA-256 of the expected host public key. When non-empty the Agent
   // pins the connection to it (rejects a mismatched host key — MITM defense).
   string host_key_sha256 = 6;
+}
+
+// A distinct control message prevents fallback to a direct SSH connection.
+message SshRouteOpen {
+  SshOpen destination = 1;
+  repeated SshOpen jumps = 2;
+  bool sftp = 3;
 }
 
 // SSH authentication material. Exactly one of `password` or

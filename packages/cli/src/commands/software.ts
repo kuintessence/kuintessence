@@ -20,6 +20,7 @@ import {
   localSpack,
   localSpackErrorMessage,
 } from "../lib/local-spack";
+import { registerScriptImport } from "./import-script";
 
 /** Guard a local-only subcommand: mirror/buildcache have no Server endpoint yet. */
 export function requireLocal(command: string, local: boolean | undefined): void {
@@ -195,6 +196,7 @@ export function formatRemoteSoftwareCatalog(page: RemoteCatalogPage): string {
 
 export function registerSoftwareCommand(program: Command): void {
   const sw = program.command("software").description("Manage software policies and templates");
+  registerScriptImport(sw);
 
   sw.command("list")
     .description("List the Registry Spack catalog")

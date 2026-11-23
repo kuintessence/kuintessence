@@ -6,7 +6,8 @@ import {
   usecasePackages,
 } from "@kuintessence/db";
 import { SoftwareAssetPayloadSchema } from "@kuintessence/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
+import { activeSoftwareReleaseRevision, releaseBoundSoftwareKind } from "../services/site-runtime";
 import type { PackageStore } from "./package-resolver";
 
 /**
@@ -18,7 +19,10 @@ import type { PackageStore } from "./package-resolver";
  * Integration-verified (needs Postgres), mirroring the other Drizzle-backed
  * services in this codebase.
  */
-export function createDbPackageStore(db: PgDb): PackageStore {
+export function createDbPackageStore(
+  db: PgDb,
+  trustedKeys: Readonly<Record<string, string>> = {},
+): PackageStore {
   return {
     getById: async (id) => {
       const [row] = await db
@@ -61,6 +65,8 @@ export function createDbPackageStore(db: PgDb): PackageStore {
     getSoftwareRevision: async (id) => {
       const [row] = await db
         .select({
+          kind: softwareAssets.kind,
+          currentPayload: softwareAssets.payload,
           asset: {
             id: softwareAssets.id,
             source: softwareAssets.source,
@@ -74,9 +80,29 @@ export function createDbPackageStore(db: PgDb): PackageStore {
         })
         .from(softwareAssetRevisions)
         .innerJoin(softwareAssets, eq(softwareAssetRevisions.assetId, softwareAssets.id))
-        .where(and(eq(softwareAssetRevisions.id, id), eq(softwareAssets.kind, "spack-package")))
+        .where(
+          and(
+            eq(softwareAssetRevisions.id, id),
+            inArray(softwareAssets.kind, ["spack-package", "site-runtime"]),
+          ),
+        )
         .limit(1);
-      return row ?? null;
+      if (!row || row.kind !== row.payload.kind) return null;
+      const signedKind =
+        releaseBoundSoftwareKind(row.kind, row.asset.name, row.currentPayload) ??
+        releaseBoundSoftwareKind(row.kind, row.asset.name, row.payload);
+      if (signedKind) {
+        const active = await activeSoftwareReleaseRevision(
+          db,
+          row.asset.id,
+          signedKind,
+          trustedKeys,
+        );
+        return active?.revisionId === id
+          ? { ...row, payload: active.payload, signedRelease: true }
+          : null;
+      }
+      return row;
     },
   };
 }

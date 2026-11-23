@@ -101,7 +101,7 @@ Workflow template 面向全平台发布，仅 `platform_admin` / `super_admin` �
 
 ## Package.py 编写建议
 
-当前页面提供 textarea 和解析功能，Monaco 与结构化侧栏尚未实现。编写时注意：
+在新建页或自建包的编辑面板中粘贴源码，选择 Monaco 可使用 Python 编辑器。“编辑声明字段”直接修改包类中 version、variant、depends_on、provides、conflicts、license 和 maintainers 的字符串参数，保留同一文件中的注释和函数。复杂表达式可在源码中修改。目录解析用于预览元数据，保存后有管理权限的维护者可重新打开完整源码。若他人已经保存了修改，请重新打开并核对内容。
 
 - 明确所有 source URL 和 checksum。
 - 避免不可审计的动态下载。

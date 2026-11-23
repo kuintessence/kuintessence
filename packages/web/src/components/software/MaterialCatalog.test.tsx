@@ -28,19 +28,20 @@ vi.mock("react-i18next", () => ({
 }));
 vi.mock("../../lib/spack-materials-client", () => ({
   uploadSpackMaterial: vi.fn(),
+  getSpackMaterialImportStatus: vi.fn(),
   publishSpackMaterial: vi.fn(),
   getSpackMaterial: vi.fn(),
   listSpackMaterials: vi.fn(),
 }));
 
-function catalog(count = 1, repository = "public/materials"): SpackMaterialCatalog {
+function catalog(count = 1, repository = "public/materials", offset = 0): SpackMaterialCatalog {
   const { binding, manifest } = materialFixture(repository);
   return {
     releases: Array.from({ length: count }, (_, index) => ({
       ...binding,
-      manifestDigest: `sha256:${index.toString(16).padStart(64, "0")}`,
+      manifestDigest: `sha256:${(offset + index).toString(16).padStart(64, "0")}`,
       repository,
-      spec: `source-${index}@1.0`,
+      spec: `source-${offset + index}@1.0`,
       target: manifest.target,
       spackVersion: manifest.spackVersion,
       redistribution: "unrestricted",
@@ -77,7 +78,10 @@ test("loads summaries automatically and opens the selected binding in the existi
   vi.mocked(client.listSpackMaterials).mockResolvedValue(data);
   mount(false);
   const table = within(await screen.findByRole("table", { name: "Material catalog" }));
-  expect(client.listSpackMaterials).toHaveBeenCalledExactlyOnceWith({}, expect.any(AbortSignal));
+  expect(client.listSpackMaterials).toHaveBeenCalledExactlyOnceWith(
+    { limit: 20 },
+    expect.any(AbortSignal),
+  );
   expect(table.getByText("public/materials")).toBeTruthy();
   expect(table.getByText("source-0@1.0")).toBeTruthy();
   expect(table.getByText("linux-ubuntu24.04-x86_64")).toBeTruthy();
@@ -92,63 +96,72 @@ test("loads summaries automatically and opens the selected binding in the existi
   expectNoWrites();
 });
 
-test("paginates locally with twenty rows, fixed bounds, and no additional requests", async () => {
-  vi.mocked(client.listSpackMaterials).mockResolvedValue(catalog(41));
+const nextCursor = `${"e".repeat(64)}.${"13".padStart(64, "0")}`;
+
+test("next and previous fetch authorized pages with twenty rows per request", async () => {
+  const first = { ...catalog(20), nextCursor };
+  vi.mocked(client.listSpackMaterials)
+    .mockResolvedValueOnce(first)
+    .mockResolvedValueOnce(catalog(1, "public/materials", 20))
+    .mockResolvedValueOnce({ releases: [] });
   mount();
   const table = within(await screen.findByRole("table", { name: "Material catalog" }));
   expect(table.getAllByRole("row")).toHaveLength(21);
-  expect(screen.getByText("1 / 3")).toBeTruthy();
-  const previous = screen.getByRole("button", { name: "Previous materials" });
-  const next = screen.getByRole("button", { name: "Next materials" });
-  expect(previous).toHaveProperty("disabled", true);
-  fireEvent.click(previous);
-  fireEvent.click(next);
-  expect(table.getByText("source-20@1.0")).toBeTruthy();
-  expect(table.queryByText("source-0@1.0")).toBeNull();
-  fireEvent.click(next);
-  expect(screen.getByText("3 / 3")).toBeTruthy();
-  expect(table.getAllByRole("row")).toHaveLength(2);
-  expect(table.getByText("source-40@1.0")).toBeTruthy();
-  expect(next).toHaveProperty("disabled", true);
-  fireEvent.click(next);
-  expect(screen.getByText("3 / 3")).toBeTruthy();
-  fireEvent.click(previous);
-  expect(screen.getByText("2 / 3")).toBeTruthy();
-  expect(client.listSpackMaterials).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: "Previous materials" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Next materials" }));
+  await screen.findByText("source-20@1.0");
+  expect(client.listSpackMaterials).toHaveBeenLastCalledWith(
+    { limit: 20, after: nextCursor },
+    expect.any(AbortSignal),
+  );
+  expect(screen.getByText("Page 2")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Next materials" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Previous materials" }));
+  await screen.findByText("No materials found");
+  expect(screen.queryByText("source-0@1.0")).toBeNull();
+  expect(client.listSpackMaterials).toHaveBeenLastCalledWith(
+    { limit: 20 },
+    expect.any(AbortSignal),
+  );
 });
 
-test("filter, refresh and reset clear prior rows and reset the page when results shrink", async () => {
+test("filter, refresh and reset discard the continuation", async () => {
+  const repository = "org/org-a/sources";
   vi.mocked(client.listSpackMaterials)
-    .mockResolvedValueOnce(catalog(21))
-    .mockResolvedValueOnce(catalog(21, "org/org-a/sources"))
-    .mockResolvedValueOnce(catalog(1, "org/org-a/sources"))
+    .mockResolvedValueOnce({ ...catalog(20), nextCursor })
+    .mockResolvedValueOnce(catalog(1, "public/materials", 20))
+    .mockResolvedValueOnce({ ...catalog(20, repository), nextCursor })
+    .mockResolvedValueOnce(catalog(1, repository, 20))
+    .mockResolvedValueOnce(catalog(1, repository))
     .mockResolvedValueOnce(catalog());
   mount();
-  await screen.findByRole("table", { name: "Material catalog" });
-  fireEvent.click(screen.getByRole("button", { name: "Next materials" }));
-  search("org/org-a/sources");
-  expect(screen.queryByText("source-20@1.0")).toBeNull();
   await screen.findByText("source-0@1.0");
-  expect(screen.getByText("1 / 2")).toBeTruthy();
-  expect(client.listSpackMaterials).toHaveBeenNthCalledWith(
-    2,
-    { repository: "org/org-a/sources" },
+  fireEvent.click(screen.getByRole("button", { name: "Next materials" }));
+  await screen.findByText("Page 2");
+  search(repository);
+  await screen.findByText("Page 1");
+  expect(client.listSpackMaterials).toHaveBeenLastCalledWith(
+    { repository, limit: 20 },
     expect.any(AbortSignal),
   );
   fireEvent.click(screen.getByRole("button", { name: "Next materials" }));
+  await screen.findByText("Page 2");
   fireEvent.click(screen.getByRole("button", { name: "Refresh materials" }));
-  await screen.findByText("source-0@1.0");
-  expect(screen.getByText("1 / 1")).toBeTruthy();
+  await screen.findByText("Page 1");
   expect(screen.getByRole("button", { name: "Next materials" })).toHaveProperty("disabled", true);
-  expect(client.listSpackMaterials).toHaveBeenNthCalledWith(
-    3,
-    { repository: "org/org-a/sources" },
+  expect(client.listSpackMaterials).toHaveBeenLastCalledWith(
+    { repository, limit: 20 },
     expect.any(AbortSignal),
   );
   fireEvent.click(screen.getByRole("button", { name: "Reset material filter" }));
   await screen.findByText("public/materials");
-  expect(nativeControl(screen.getByLabelText("Exact repository"))).toHaveProperty("value", "");
-  expect(client.listSpackMaterials).toHaveBeenNthCalledWith(4, {}, expect.any(AbortSignal));
+  expect(client.listSpackMaterials).toHaveBeenLastCalledWith(
+    { limit: 20 },
+    expect.any(AbortSignal),
+  );
 });
 
 test("invalid filters cannot fetch and an empty search restores the complete catalog", async () => {
@@ -165,7 +178,10 @@ test("invalid filters cannot fetch and an empty search restores the complete cat
   search("");
   await screen.findByText("No materials found");
   expect(client.listSpackMaterials).toHaveBeenCalledTimes(2);
-  expect(client.listSpackMaterials).toHaveBeenLastCalledWith({}, expect.any(AbortSignal));
+  expect(client.listSpackMaterials).toHaveBeenLastCalledWith(
+    { limit: 20 },
+    expect.any(AbortSignal),
+  );
   expect(screen.queryByRole("button", { name: "Next materials" })).toBeNull();
 });
 
@@ -201,18 +217,21 @@ test.each([
 });
 
 test("language changes translate the catalog without refreshing or resetting its page", async () => {
-  vi.mocked(client.listSpackMaterials).mockResolvedValue(catalog(21));
+  vi.mocked(client.listSpackMaterials)
+    .mockResolvedValueOnce({ ...catalog(20), nextCursor })
+    .mockResolvedValueOnce(catalog(1, "public/materials", 20));
   const view = mount();
   await screen.findByText("source-0@1.0");
   fireEvent.click(screen.getByRole("button", { name: "Next materials" }));
+  await screen.findByText("Page 2");
   await act(async () => {
     await i18n.changeLanguage("zh");
   });
   view.rerender(<SpackMaterialsPanel canManage />);
   expect(screen.getByRole("table", { name: "材料目录" })).toBeTruthy();
   expect(screen.getByText("source-20@1.0")).toBeTruthy();
-  expect(screen.getByText("2 / 2")).toBeTruthy();
-  expect(client.listSpackMaterials).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("第 2 页")).toBeTruthy();
+  expect(client.listSpackMaterials).toHaveBeenCalledTimes(2);
 });
 
 test("catalog limit errors are localized without disclosing server details or refetching", async () => {

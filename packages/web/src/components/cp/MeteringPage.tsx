@@ -86,10 +86,11 @@ export function MeteringPage({
   const organizationName = useOrganizationName(grouping === "org");
   const groupLabel = (id: string) => (grouping === "org" ? organizationName(id) : id);
 
+  const [format, setFormat] = useState("csv");
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  async function onExportCsv(): Promise<void> {
+  async function onExport(): Promise<void> {
     if (!fromIso || !toIso || rangeError) return;
     setExporting(true);
     setExportError(null);
@@ -99,13 +100,12 @@ export function MeteringPage({
         to: toIso,
         period,
         grouping,
-        format: "csv",
-        limit: String(QUERY_LIMIT),
+        format,
       });
       if (activeOrganizationId) qs.set("orgIds", activeOrganizationId);
       await downloadAuthedFile(
         `/metering/export?${qs.toString()}`,
-        `metering-${period}-${grouping}.csv`,
+        `metering-${period}-${grouping}.${format}`,
       );
     } catch (err) {
       setExportError(toUserFacingError(err, t("cp.metering.loadFailed")));
@@ -202,15 +202,26 @@ export function MeteringPage({
         title={t("cp.metering.title")}
         subtitle={t("cp.metering.subtitle")}
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="metering-export"
-            disabled={exporting || rows.length === 0 || Boolean(rangeError)}
-            onClick={onExportCsv}
-          >
-            {exporting ? t("cp.metering.exporting") : t("cp.metering.export")}
-          </Button>
+          <>
+            <NativeSelect
+              aria-label={t("cp.metering.exportFormat")}
+              value={format}
+              onChange={(e) => setFormat(e.target.value)}
+            >
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+              <option value="parquet">Parquet</option>
+            </NativeSelect>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="metering-export"
+              disabled={exporting || rows.length === 0 || Boolean(rangeError)}
+              onClick={onExport}
+            >
+              {exporting ? t("cp.metering.exporting") : t("cp.metering.export")}
+            </Button>
+          </>
         }
       />
 

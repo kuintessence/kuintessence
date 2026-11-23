@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { UuidSchema } from "./common";
+import { OutputValidatorSchema } from "./output-validator";
 import { AssetSelectorSchema } from "./refs";
 
 export const SandboxLanguageSchema = z.enum(["python", "nodejs", "bash"]);
@@ -10,14 +11,16 @@ export type ScriptIoType = z.infer<typeof ScriptIoTypeSchema>;
 
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, "must be a lowercase SHA-256 digest");
 
+export const AssetRevisionSourceSchema = z.strictObject({
+  type: z.literal("AssetRevision"),
+  assetId: UuidSchema,
+  assetRevisionId: UuidSchema.optional(),
+  revision: z.number().int().positive(),
+  sha256: Sha256Schema,
+});
+
 export const ScriptSourceSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    type: z.literal("AssetRevision"),
-    assetId: UuidSchema,
-    assetRevisionId: UuidSchema.optional(),
-    revision: z.number().int().positive(),
-    sha256: Sha256Schema,
-  }),
+  AssetRevisionSourceSchema,
   z.strictObject({
     type: z.literal("Inline"),
     language: SandboxLanguageSchema,
@@ -69,7 +72,7 @@ export type OutputSizeHint = z.infer<typeof OutputSizeHintSchema>;
 export const ScriptOutputSpecSchema = z.strictObject({
   type: ScriptIoTypeSchema,
   required: z.boolean().default(true),
-  validator: z.unknown().nullish(),
+  validator: OutputValidatorSchema.nullish(),
   locality: OutputLocalitySchema.default({ type: "Auto" }),
   durability: ArtifactDurabilitySchema.default("Ephemeral"),
   sizeHint: OutputSizeHintSchema.default({ type: "SizeClass", value: "Unknown" }),
@@ -83,13 +86,6 @@ export const PlacementConstraintSchema = z.strictObject({
   dataMovement: z.enum(["Allow", "Forbid"]).default("Allow"),
 });
 export type PlacementConstraint = z.infer<typeof PlacementConstraintSchema>;
-
-/** Script origins used by the Reduce Command reducer. */
-export const ScriptOriginKindSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("Git"), url: z.string() }),
-  z.strictObject({ type: z.literal("Edit"), content: z.string() }),
-]);
-export type ScriptOriginKind = z.infer<typeof ScriptOriginKindSchema>;
 
 export const UsecaseRefSchema = z.strictObject({
   usecaseVersionId: UuidSchema,

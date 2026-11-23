@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { activeRemoteJobs, type SqliteDb } from "@kuintessence/db";
 import {
+  JobSchedulerLimitsSchema,
   QueueTargetModeSchema,
   QueueValidationModeSchema,
   SchedulerAccountingSchema,
@@ -211,8 +212,8 @@ export class ActiveRemoteJobs {
 
   async recordCompleted(input: RecordSubmittedInput, result: JobStatusResult): Promise<void> {
     this.assertConfirmedId(input.schedulerJobId);
-    if (input.spec.sandbox || result.status !== "completed")
-      throw new Error("Only a real ordinary job completion may be persisted");
+    if (result.status !== "completed")
+      throw new Error("Only a completed scheduler result may be persisted");
     const [row] = await this.db
       .select()
       .from(activeRemoteJobs)
@@ -258,8 +259,6 @@ export class ActiveRemoteJobs {
 }
 
 function activeRemoteJobFromRow(row: typeof activeRemoteJobs.$inferSelect): ActiveRemoteJobRecord {
-  if (row.spec.completionSnapshot !== undefined && row.spec.sandbox !== undefined)
-    throw new Error("Sandbox completion snapshots are unsupported");
   const spec = jsonToJobSpec(row.spec);
   if (spec.jobId !== row.jobId) throw new Error("Active job identity binding changed");
   const expectedOutputs = row.expectedOutputs.map(jsonToExpectedOutput);
@@ -319,7 +318,6 @@ export function validateCompletionSnapshot(
     !value ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    spec.sandbox ||
     schedulerJobId === PENDING_SCHEDULER_SUBMISSION ||
     !schedulerJobId
   )
@@ -400,10 +398,12 @@ function jsonToJobSpec(value: Record<string, unknown>): JobSpec {
     memoryMb: requireNumber(value.memoryMb, "memoryMb"),
     gpus: requireNumber(value.gpus, "gpus"),
     wallTimeSec: requireNumber(value.wallTimeSec, "wallTimeSec"),
+    schedulerLimits: JobSchedulerLimitsSchema.optional().parse(value.schedulerLimits),
     workingDir: requireString(value.workingDir, "workingDir"),
     envVars: jsonToStringMap(value.envVars),
     queueName: optionalString(value.queueName),
     schedulerName: optionalString(value.schedulerName),
+    forEachGroup: optionalString(value.forEachGroup),
     federationDispatchEpoch: z
       .number()
       .int()

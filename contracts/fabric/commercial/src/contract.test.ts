@@ -2111,7 +2111,7 @@ test.each([
     publicState = new Map(f.stub.state);
   const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.record()).toString()));
   expect(receipt.recordId).toBe(f.payment.receiptId);
-  expect(f.stub.privateState.size).toBe(original.size + 2);
+  expect(f.stub.privateState.size).toBe(original.size + 4);
   for (const [key, value] of original) expect(f.stub.privateState.get(key)).toEqual(value);
   expect(f.stub.state).toEqual(publicState);
   expect(JSON.stringify(receipt)).not.toContain("PRIVATE-BANK-RECEIPT");
@@ -2130,8 +2130,12 @@ test.each([
   const changed = CommercialReceiptSchema.parse(
     JSON.parse((await f.record(correction)).toString()),
   );
-  expect(f.stub.privateState.size).toBe(original.size + 3);
+  expect(f.stub.privateState.size).toBe(original.size + 5);
   for (const [key, value] of original) expect(f.stub.privateState.get(key)).toEqual(value);
+  const total = f.stub.privateState.get(
+    `commercial_AB_v1:${f.stub.createCompositeKey("bill-payments", [domainId, f.bill.billId])}`,
+  );
+  expect(JSON.parse(Buffer.from(total ?? []).toString()).amount).toBe("0");
   await f.record();
   const head = f.stub.privateState.get(
     `commercial_AB_v1:${f.stub.createCompositeKey("payment-head", [domainId, f.payment.paymentId])}`,
@@ -3401,4 +3405,67 @@ test("commercial trust append preserves revoked keys when granting new purposes 
   expect(
     JSON.parse(Buffer.from(await f.stub.getState("kq.commercial.trust.v1")).toString()),
   ).toEqual(second);
+});
+
+test("discharge requires the original closed gate, settlement and full current payment", async () => {
+  const f = await settlementFixture();
+  if (!f.chain) throw new Error("Missing reservation");
+  const { reservationId, demandId } = f.chain.reservation;
+  const discharge = async (claim = reservationId, demand = demandId) => {
+    f.stub.fcn = "GetClaimDischarge";
+    f.stub.transient.clear();
+    f.stub.params = [domainId, claim, demand];
+    return JSON.parse((await f.ledger.invoke(f.stub, identity(0, "market"))).toString());
+  };
+  expect(await discharge(randomUUID())).toEqual({ state: "unreserved" });
+  await expect(discharge(reservationId, randomUUID())).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(discharge()).rejects.toThrow("DATA_WAITING");
+  await f.settle();
+  await expect(discharge()).rejects.toThrow("DATA_WAITING");
+  const payment = CommercialPaymentSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-payment",
+    receiptId: randomUUID(),
+    paymentId: randomUUID(),
+    domainId,
+    agreementRevisionId: f.value.agreementRevisionId,
+    agreementDigest: f.receipt.digest,
+    billId: f.bill.billId,
+    billDigest: f.value.billDigest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    amount: f.value.chargedAmount,
+    unit: f.value.unit,
+    occurredAt: f.bill.issuedAt,
+    issuedAt: f.bill.issuedAt,
+    evidenceDigest: "sha256:" + "d".repeat(64),
+    previous: null,
+    reason: "Matched bill",
+    salt: randomBytes(32).toString("hex"),
+  });
+  const receipt = CommercialReceiptSchema.parse(
+    JSON.parse(
+      (
+        await f.call(
+          "RecordPayment",
+          payment.receiptId,
+          await bilateral(CommercialPaymentSchema, payment),
+        )
+      ).toString(),
+    ),
+  );
+  expect(await discharge()).toEqual({ state: "settled" });
+  const correction = {
+    ...payment,
+    receiptId: randomUUID(),
+    amount: "0",
+    previous: { receiptId: receipt.recordId, digest: receipt.digest },
+    salt: randomBytes(32).toString("hex"),
+  };
+  await f.call(
+    "RecordPayment",
+    correction.receiptId,
+    await bilateral(CommercialPaymentSchema, correction),
+  );
+  await expect(discharge()).rejects.toThrow("DATA_WAITING");
 });

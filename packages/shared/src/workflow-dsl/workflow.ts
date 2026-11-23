@@ -2,6 +2,7 @@ import { z } from "zod";
 import { SlugSchema, UuidSchema } from "./common";
 import { ValueTypeSchema } from "./expr";
 import { WorkflowSpecSchema } from "./node";
+import { expandUsecaseHooks } from "./usecase-hooks";
 
 /** Workflow-level input parameter (referenced by expressions via `params.<name>`). */
 export const ParameterSchema = z.strictObject({
@@ -20,14 +21,19 @@ export const AdvancedSchema = z.strictObject({
 export type Advanced = z.infer<typeof AdvancedSchema>;
 
 /** Top-level workflow document. */
-export const WorkflowSchema = z.strictObject({
-  schemaVersion: z.literal(2).optional(),
-  id: UuidSchema.optional(),
-  name: z.string().min(1),
-  description: z.string().nullish(),
-  logo: z.string().nullish(),
-  parameters: z.array(ParameterSchema).default([]),
-  advanced: AdvancedSchema.optional(),
-  spec: WorkflowSpecSchema,
-});
+export const WorkflowSchema = z
+  .strictObject({
+    schemaVersion: z.literal(2).optional(),
+    id: UuidSchema.optional(),
+    name: z.string().min(1),
+    description: z.string().nullish(),
+    logo: z.string().nullish(),
+    parameters: z.array(ParameterSchema).default([]),
+    advanced: AdvancedSchema.optional(),
+    spec: WorkflowSpecSchema,
+  })
+  .transform((workflow, ctx) => ({
+    ...workflow,
+    spec: expandUsecaseHooks(workflow.spec, (message) => ctx.addIssue({ code: "custom", message })),
+  }));
 export type Workflow = z.infer<typeof WorkflowSchema>;

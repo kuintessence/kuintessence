@@ -52,6 +52,8 @@ export type RecipeSnapshot = z.infer<typeof RecipeSnapshotSchema>;
 export const RecipeRepositorySchema = z.strictObject({
   id: RecipeRepositoryIdSchema,
   repository: RecipeRepositoryNameSchema,
+  migrated: z.literal(true).optional(),
+  delegatedWrite: z.literal(true).optional(),
   activeCommit: RecipeCommitSchema.nullable(),
   snapshots: z.array(RecipeSnapshotSchema),
 });
@@ -78,4 +80,15 @@ export const RecipeBootstrapManifestSchema = z.strictObject({
       }),
     )
     .max(100),
+});
+
+export const RecipeGrantSchema = z.strictObject({
+  subject: z.uuid(),
+  access: z.enum(["read", "write"]),
+});
+export type RecipeGrant = z.infer<typeof RecipeGrantSchema>;
+
+export const RecipeMigrationSchema = z.strictObject({
+  repository: RecipeRepositoryNameSchema,
+  acknowledgePublicHistory: z.literal(true).optional(),
 });

@@ -31,7 +31,7 @@ test.each([
   const runner = new TransferRunner({
     db: {} as PgDb,
     dispatcher: {
-      onlineAgentIds: () => ["agent"],
+      interactionAgentIds: () => ["agent"],
       pushFileTransfer: () => true,
     } as unknown as AgentDispatcher,
     netdriveService: netdrive,
@@ -74,7 +74,7 @@ test.each(["cancel", "failed-event"])("old %s abort cannot clear a resumed round
   const runner = new TransferRunner({
     db: {} as PgDb,
     dispatcher: {
-      onlineAgentIds: () => ["agent"],
+      interactionAgentIds: () => ["agent"],
       pushFileTransfer: () => true,
       pushFileTransferCancel: () => true,
     } as unknown as AgentDispatcher,

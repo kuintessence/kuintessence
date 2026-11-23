@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import {
   type OfflineDeliveryResult,
   OfflineDeliverySchema,
   type RecipeRepository,
+  SignedOfflineDeliverySchema,
   SPACK_LOCK_MAX_BYTES,
   SpackMaterialBindingSchema,
   spackMaterialInputBlobs,
@@ -31,9 +32,11 @@ import {
   type RbacPrincipal,
   type RegistryRole,
 } from "./namespace";
+import { isDeliveryBinary, type OfflineDeliveryBinaries } from "./offline-delivery-binaries";
 import type { DeliveryReceipts } from "./offline-delivery-receipts";
 import { RecipeStoreError } from "./recipe-git";
 import { RecipeGitStore } from "./recipe-git-store";
+import { RegistryError } from "./registry-service";
 import type { SpackInstallBindingAccess } from "./spack-install-bindings";
 import { SpackMaterialError } from "./spack-material-storage";
 import type { SpackMaterialStore } from "./spack-material-store";
@@ -60,12 +63,14 @@ const savedSchema = z.object({
   receipt: z.unknown().optional(),
 });
 interface Options {
+  binaries?: OfflineDeliveryBinaries;
   recipes: RecipeGitStore;
   materials: SpackMaterialStore;
   ecosystem: Pick<EcosystemReleaseService, "stage" | "activate">;
   bindings: Pick<SpackInstallBindingAccess, "inspect" | "change">;
   receipts: DeliveryReceipts;
   trustedKeys: Record<string, string>;
+  deliveryKeys?: Record<string, string>;
   publisherRoles?: RegistryRole[];
   resolvePrincipal: (subject: string) => Promise<(RbacPrincipal & { suspended: boolean }) | null>;
 }
@@ -75,6 +80,11 @@ export class OfflineDeliveryService {
   private activePreflights = 0;
 
   parse(input: unknown): OfflineDelivery {
+    return this.readManifest(input).plan;
+  }
+
+  private readManifest(input: unknown) {
+    let signatureInfo: OfflineDeliveryReport["signature"];
     if (
       input &&
       typeof input === "object" &&
@@ -83,10 +93,46 @@ export class OfflineDeliveryService {
     ) {
       throw new DeliveryError(FORGE_DELIVERY_GAPS.code, 422, FORGE_DELIVERY_GAPS);
     }
+    if (input && typeof input === "object" && "format" in input) {
+      const signed = SignedOfflineDeliverySchema.safeParse(input);
+      if (!signed.success) return fail("DELIVERY_CONTRACT_INVALID");
+      const { payload, signature, keyId, format } = signed.data;
+      const keys = this.options.deliveryKeys;
+      if (!keys || !Object.hasOwn(keys, keyId)) return fail("DELIVERY_SIGNING_KEY_UNKNOWN", 403);
+      const bytes = Buffer.from(payload, "utf8");
+      if (bytes.toString("utf8") !== payload) return fail("DELIVERY_CONTRACT_INVALID");
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      try {
+        const key = createPublicKey({
+          format: "der",
+          type: "spki",
+          key: Buffer.from(keys[keyId] ?? "", "base64"),
+        });
+        if (
+          key.asymmetricKeyType !== "ed25519" ||
+          !verify(
+            null,
+            Buffer.from([format, keyId, digest].join("\n")),
+            key,
+            Buffer.from(signature, "base64"),
+          )
+        )
+          return fail("DELIVERY_SIGNATURE_INVALID", 403);
+      } catch {
+        return fail("DELIVERY_SIGNATURE_INVALID", 403);
+      }
+      signatureInfo = { keyId, payloadSha256: digest };
+      try {
+        input = JSON.parse(payload);
+      } catch {
+        return fail("DELIVERY_CONTRACT_INVALID");
+      }
+    } else if (this.options.deliveryKeys !== undefined)
+      return fail("DELIVERY_SIGNATURE_REQUIRED", 403);
     const parsed = OfflineDeliverySchema.safeParse(input);
     if (!parsed.success)
       throw new DeliveryError("DELIVERY_CONTRACT_INVALID", 422, parsed.error.issues);
-    return parsed.data;
+    return { plan: parsed.data, signature: signatureInfo };
   }
 
   async principal(subject: string) {
@@ -125,11 +171,30 @@ export class OfflineDeliveryService {
       }
   }
 
+  private binaries() {
+    return this.options.binaries ?? fail("DELIVERY_BINARY_STORE_UNAVAILABLE", 503);
+  }
+
+  async verify(input: unknown, subject: string) {
+    const plan = this.parse(input);
+    this.authorize(plan, await this.principal(subject));
+    await this.checkBinaryFiles(plan);
+    for (const item of plan.items) {
+      if (item.kind === "vendor-local") await this.binaries().checkLocal(plan.repository, item);
+    }
+    return plan;
+  }
+
+  private async checkBinaryFiles(plan: OfflineDelivery) {
+    if (plan.items.some(isDeliveryBinary))
+      await this.binaries().checkDistributableFiles(plan.files.map(({ blob }) => blob.digest));
+  }
+
   private identity(plan: OfflineDelivery) {
     return `delivery:${deliveryDigest([plan.repository, plan.name, plan.release])}`;
   }
   private itemKey(plan: OfflineDelivery, item: OfflineDeliveryItem) {
-    return `delivery-item:${deliveryDigest([plan.repository, item.kind === "activate" || item.kind === "binding" ? plan : item, item.kind === "recipe" || item.kind === "ecosystem" ? plan.files.find((file) => file.path === item.file)?.blob : null])}`;
+    return `delivery-item:${deliveryDigest([plan.repository, item.kind === "activate" || item.kind === "binding" || isDeliveryBinary(item) ? plan : item, item.kind === "recipe" || item.kind === "ecosystem" ? plan.files.find((file) => file.path === item.file)?.blob : null])}`;
   }
   private async file(plan: OfflineDelivery, path: string) {
     const file = plan.files.find((entry) => entry.path === path);
@@ -157,18 +222,30 @@ export class OfflineDeliveryService {
   }
 
   private async inspect(input: unknown, subject: string): Promise<OfflineDeliveryReport> {
-    const plan = this.parse(input);
+    const { plan, signature } = this.readManifest(input);
     const actor = await this.principal(subject);
     this.authorize(plan, actor);
+    await this.checkBinaryFiles(plan);
     const digest = deliveryDigest(plan);
     const existing = savedSchema.safeParse(await this.options.receipts.read(this.identity(plan)));
     if (existing.success && existing.data.digest !== digest) fail("DELIVERY_VERSION_CONFLICT", 409);
-    const report: OfflineDeliveryReport = { digest, status: "planned", items: [] };
+    const report: OfflineDeliveryReport = {
+      digest,
+      status: "planned",
+      items: [],
+      ...(signature ? { signature } : {}),
+    };
     const snapshots = new Map<string, RecipeRepository>();
     for (const item of plan.items) {
       const result: OfflineDeliveryResult = { id: item.id, kind: item.kind, status: "planned" };
       try {
-        if (item.kind === "recipe") {
+        if (isDeliveryBinary(item)) {
+          const live = await this.binaries().process(plan, item, actor, false);
+          if (live.existing) {
+            result.status = "existing";
+            result.receipt = live.receipt;
+          }
+        } else if (item.kind === "recipe") {
           const { file, blob } = await this.file(plan, item.file);
           if (file.blob.size > this.options.recipes.limits.maxBundleBytes) {
             await blob.stream.cancel();
@@ -251,7 +328,7 @@ export class OfflineDeliveryService {
         const saved = savedSchema.safeParse(
           await this.options.receipts.read(this.itemKey(plan, item)),
         );
-        if (saved.success && saved.data.status === "completed") {
+        if (!isDeliveryBinary(item) && saved.success && saved.data.status === "completed") {
           result.status = "existing";
           result.receipt = saved.data.receipt;
         }
@@ -271,7 +348,7 @@ export class OfflineDeliveryService {
   async run(input: unknown, subject: string): Promise<OfflineDeliveryReport> {
     const plan = this.parse(input);
     return this.options.receipts.exclusive(async () => {
-      const report = await this.preflight(plan, subject);
+      const report = await this.preflight(input, subject);
       const key = this.identity(plan);
       if (report.items.some((item) => !["planned", "existing"].includes(item.status))) {
         report.status = "failed";
@@ -337,6 +414,8 @@ export class OfflineDeliveryService {
     actor: RbacPrincipal,
     completed: Map<string, unknown>,
   ): Promise<unknown> {
+    if (isDeliveryBinary(item))
+      return (await this.binaries().process(plan, item, actor, true)).receipt;
     if (item.kind === "recipe") {
       try {
         return await this.options.recipes.getSnapshot(
@@ -393,6 +472,8 @@ export class OfflineDeliveryService {
   }
 
   private code(error: unknown): string {
+    if (error instanceof RegistryError)
+      return error.status === 409 ? "DELIVERY_BINARY_CONFLICT" : `DELIVERY_${error.code}`;
     if (error instanceof NamespacePermissionError) return "DELIVERY_PERMISSION_DENIED";
     if (error instanceof AppError) {
       if (error.message === "Bundle signing key is not trusted")

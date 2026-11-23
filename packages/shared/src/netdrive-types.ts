@@ -10,9 +10,6 @@ import { z } from "zod";
  * authority.
  */
 
-// POSIX-safe path: forward slashes only, no `..`, no leading slash. Same
-// shape as the existing files-mock POSIX_KEY but with explicit `..` ban
-// to keep object-store keys flat and traversal-safe.
 const NETDRIVE_PATH = z
   .string()
   .min(1)

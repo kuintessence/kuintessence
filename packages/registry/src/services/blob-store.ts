@@ -1,24 +1,7 @@
-// Pluggable blob storage for Registry.
-//
-// `BlobStore` is the only place the registry talks to bytes. Production
-// wiring points it at MinIO/S3 (the Server already maintains a hardened
-// MinIO client at `packages/server/src/storage/minio-client.ts` — the
-// integrator can adapt it later). The two implementations here cover:
-//
-//   - InMemoryBlobStore — used by every route/service unit test.
-//     Keeps content-addressed bytes in a `Map`. Zero filesystem touch.
-//   - FilesystemBlobStore — gated on env (BLOB_STORE_DIR=/some/path).
-//     Useful for single-process local deployments and integration tests
-//     that want to verify on-disk durability.
-//
-// Streams in / streams out: the OCI route layer must accept large blobs
-// (multi-GB container layers in production). Routes give us a
-// `ReadableStream<Uint8Array>` from `c.req.raw.body`; the BlobStore
-// consumes it and lets the integrator swap to a streaming S3 multipart
-// upload without touching the route handlers.
+// OCI content-addressed blobs and resumable upload staging.
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, open, rename, rm, stat } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { copyFile, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface BlobStat {
@@ -61,11 +44,13 @@ export interface BlobStore {
     uploadId: string,
     source: ReadableStream<Uint8Array> | Uint8Array,
     maxBytes: number,
+    committedOffset?: number,
   ): Promise<number>;
 
   completeUpload(
     uploadId: string,
     expectedDigest: string,
+    retainStaging?: boolean,
   ): Promise<{ digest: string; size: number }>;
 
   cancelUpload(uploadId: string): Promise<void>;
@@ -215,9 +200,21 @@ export class InMemoryBlobStore implements BlobStore {
     uploadId: string,
     source: ReadableStream<Uint8Array> | Uint8Array,
     maxBytes: number,
+    committedOffset?: number,
   ): Promise<number> {
+    if (committedOffset === 0) this.uploads.set(uploadId, { chunks: [], size: 0 });
     const upload = this.uploads.get(uploadId);
-    if (!upload) throw new BlobNotFoundError(uploadId);
+    if (!upload || (committedOffset !== undefined && upload.size < committedOffset))
+      throw new BlobNotFoundError(uploadId);
+    if (committedOffset !== undefined && upload.size > committedOffset) {
+      let kept = 0;
+      upload.chunks = upload.chunks.flatMap((chunk) => {
+        const length = Math.max(0, Math.min(chunk.length, committedOffset - kept));
+        kept += length;
+        return length ? [chunk.subarray(0, length)] : [];
+      });
+      upload.size = kept;
+    }
     await forEachChunk(source, async (chunk) => {
       const attemptedSize = upload.size + chunk.byteLength;
       if (attemptedSize > maxBytes) {
@@ -232,6 +229,7 @@ export class InMemoryBlobStore implements BlobStore {
   async completeUpload(
     uploadId: string,
     expectedDigest: string,
+    retainStaging?: boolean,
   ): Promise<{ digest: string; size: number }> {
     const upload = this.uploads.get(uploadId);
     if (!upload) throw new BlobNotFoundError(uploadId);
@@ -242,7 +240,7 @@ export class InMemoryBlobStore implements BlobStore {
       offset += chunk.byteLength;
     }
     const stored = await this.put(bytes, expectedDigest);
-    this.uploads.delete(uploadId);
+    if (!retainStaging) this.uploads.delete(uploadId);
     return stored;
   }
 
@@ -255,9 +253,6 @@ export class InMemoryBlobStore implements BlobStore {
  * Filesystem implementation. Files are stored under
  * `<root>/<algo>/<hash[0:2]>/<hash>` to keep directory fan-out bounded.
  *
- * The integrator can flip the OCI router from in-memory to filesystem by
- * setting BLOB_STORE_DIR; tests intentionally never exercise this path
- * (filesystem state in unit tests is fragile in CI).
  */
 export class FilesystemBlobStore implements BlobStore {
   constructor(private readonly root: string) {}
@@ -328,12 +323,20 @@ export class FilesystemBlobStore implements BlobStore {
     uploadId: string,
     source: ReadableStream<Uint8Array> | Uint8Array,
     maxBytes: number,
+    committedOffset?: number,
   ): Promise<number> {
     const file = this.uploadPath(uploadId);
-    if (!existsSync(file)) throw new BlobNotFoundError(uploadId);
-    let size = (await stat(file)).size;
-    const handle = await open(file, "a");
+    if (committedOffset === 0) await mkdir(join(this.root, "_uploads"), { recursive: true });
+    if (committedOffset !== 0 && !existsSync(file)) throw new BlobNotFoundError(uploadId);
+    const handle = await open(file, "a+");
     try {
+      let size = (await handle.stat()).size;
+      if (committedOffset !== undefined) {
+        if (size < committedOffset)
+          throw new Error("Upload staging is shorter than its committed offset");
+        if (size > committedOffset) await handle.truncate(committedOffset);
+        size = committedOffset;
+      }
       await forEachChunk(source, async (chunk) => {
         const attemptedSize = size + chunk.byteLength;
         if (attemptedSize > maxBytes) {
@@ -346,6 +349,7 @@ export class FilesystemBlobStore implements BlobStore {
         }
         size = attemptedSize;
       });
+      await handle.sync();
       return size;
     } finally {
       await handle.close();
@@ -355,6 +359,7 @@ export class FilesystemBlobStore implements BlobStore {
   async completeUpload(
     uploadId: string,
     expectedDigest: string,
+    retainStaging?: boolean,
   ): Promise<{ digest: string; size: number }> {
     assertDigestForm(expectedDigest);
     const actual = await this.digestUpload(uploadId);
@@ -364,13 +369,21 @@ export class FilesystemBlobStore implements BlobStore {
     const source = this.uploadPath(uploadId);
     const { dir, file } = this.pathFor(actual.digest);
     await mkdir(dir, { recursive: true });
-    if (existsSync(file)) await rm(source, { force: true });
+    if (retainStaging) {
+      if (!existsSync(file)) {
+        const temp = source + ".publish";
+        await copyFile(source, temp, constants.COPYFILE_FICLONE);
+        await rename(temp, file);
+      }
+    } else if (existsSync(file)) await rm(source, { force: true });
     else await rename(source, file);
     return actual;
   }
 
   async cancelUpload(uploadId: string): Promise<void> {
-    await rm(this.uploadPath(uploadId), { force: true });
+    const path = this.uploadPath(uploadId);
+    await rm(path, { force: true });
+    await rm(path + ".publish", { force: true });
   }
 
   private async digestUpload(uploadId: string): Promise<{ digest: string; size: number }> {
@@ -393,11 +406,4 @@ export class FilesystemBlobStore implements BlobStore {
     }
     return { digest: `sha256:${hash.digest("hex")}`, size };
   }
-}
-
-/** Build the blob store for production wiring: a filesystem store when a
- *  directory is configured (config.BLOB_STORE_DIR), else an in-memory store. */
-export function createBlobStore(dir?: string): BlobStore {
-  if (dir && dir.length > 0) return new FilesystemBlobStore(dir);
-  return new InMemoryBlobStore();
 }

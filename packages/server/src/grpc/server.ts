@@ -63,7 +63,8 @@ export interface CreateGrpcHandlerDeps {
   dataDeliveryRevocations?: Pick<DataDeliveryRevocationOutbox, "acknowledge" | "redeliver">;
   jobCancellations?: Pick<JobCancellationOutbox, "acknowledge" | "redeliver">;
   jobDispatches?: Pick<JobDispatchOutbox, "acknowledge" | "redeliver">;
-  jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver">;
+  jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver"> &
+    Partial<Pick<JobWorkRootReleaseOutbox, "acknowledgePvc" | "redeliverPvc">>;
 }
 
 export interface GrpcTransportTrustConfig extends MtlsHeaderGuardConfig {

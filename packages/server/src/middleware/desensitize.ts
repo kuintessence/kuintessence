@@ -1,28 +1,4 @@
-/**
- * apply middleware.
- *
- * Walks a JSON response body and replaces field values according to the
- * decision engine's per-field action. Default OFF: when
- * `config.globalEnabled === false`, the body is returned unchanged.
- *
- * Recursion contract:
- *   - object → walk each top-level key (only top-level: nested objects are
- *     left alone unless explicitly listed via dotted paths in a future
- *     extension).
- *   - array  → recursively walk each element.
- *   - primitives → returned untouched.
- *
- * Hide semantics: when an action returns the DESENSITIZE_HIDE sentinel, the
- * key is removed from the output object (not set to undefined). For arrays
- * this means hidden elements remain at their index (a future extension may
- * compact arrays — left as TODO).
- *
- * Alias semantics: when an action produces an alias, the middleware writes
- * an (alias_id, salt, original) row via the injected `recordAlias` callback
- * so the F22.15 export endpoint can resolve it later. The callback is async
- * but errors are swallowed (recording is best-effort; we never block the
- * response body on a slow DB write).
- */
+/** Apply configured field actions to a JSON response before serialization. */
 import { applyAction, DESENSITIZE_HIDE, type DesensitizeAction } from "@kuintessence/shared";
 import { type DesensitizeConfig, decideAction } from "../desensitize/decision";
 
@@ -49,7 +25,9 @@ export interface ApplyContext {
 
 /** True for plain objects (excludes null and arrays). */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
+  if (typeof v !== "object" || v === null) return false;
+  const prototype = Object.getPrototypeOf(v);
+  return prototype === Object.prototype || prototype === null;
 }
 
 /**
@@ -75,82 +53,40 @@ async function applyOne(
   return out;
 }
 
-/**
- * Walk a single record (plain object) and apply per-field actions.
- * Returns a new object — never mutates the input.
- */
-async function applyToRecord(
+async function walk(
   config: DesensitizeConfig,
-  record: Record<string, unknown>,
+  value: unknown,
   ctx: ApplyContext,
-): Promise<Record<string, unknown>> {
-  const next: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
+  parent: string,
+): Promise<unknown> {
+  if (Array.isArray(value)) {
+    const result: unknown[] = [];
+    for (const item of value) result.push(await walk(config, item, ctx, parent));
+    return result;
+  }
+  if (!isPlainObject(value)) return value;
+  const entries: [string, unknown][] = [];
+  for (const [key, item] of Object.entries(value)) {
+    const fieldPath = parent ? `${parent}.${key}` : key;
     const action = decideAction(config, {
-      fieldPath: key,
+      fieldPath,
       providerId: ctx.providerId,
       clusterId: ctx.clusterId,
     });
-    const replaced = await applyOne(action, value, ctx);
-    if (replaced === DESENSITIZE_HIDE) continue;
-    next[key] = replaced;
+    const replacement =
+      action === "passthrough"
+        ? await walk(config, item, ctx, fieldPath)
+        : await applyOne(action, item, ctx);
+    if (replacement !== DESENSITIZE_HIDE) entries.push([key, replacement]);
   }
-  return next;
+  return Object.fromEntries(entries);
 }
 
-/**
- * Top-level apply. Handles plain objects, arrays of records, the {entries:[…]}
- * envelope used by the audit-log route, and pass-through for primitives.
- */
 export async function applyDesensitizationToBody<T>(
   config: DesensitizeConfig,
   body: T,
   ctx: ApplyContext,
 ): Promise<T> {
   if (!config.globalEnabled) return body;
-
-  if (Array.isArray(body)) {
-    const out: unknown[] = [];
-    for (const item of body) {
-      if (isPlainObject(item)) {
-        out.push(await applyToRecord(config, item, ctx));
-      } else {
-        out.push(item);
-      }
-    }
-    return out as unknown as T;
-  }
-
-  if (isPlainObject(body)) {
-    // The envelope shape `{entries: [...]}` is treated as a thin wrapper so
-    // the audit-log route can return its native shape and still get every
-    // entry walked. Other top-level keys are passed through the per-field
-    // resolver as usual.
-    const next: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(body)) {
-      if (Array.isArray(value)) {
-        const out: unknown[] = [];
-        for (const item of value) {
-          if (isPlainObject(item)) {
-            out.push(await applyToRecord(config, item, ctx));
-          } else {
-            out.push(item);
-          }
-        }
-        next[key] = out;
-        continue;
-      }
-      const action = decideAction(config, {
-        fieldPath: key,
-        providerId: ctx.providerId,
-        clusterId: ctx.clusterId,
-      });
-      const replaced = await applyOne(action, value, ctx);
-      if (replaced === DESENSITIZE_HIDE) continue;
-      next[key] = replaced;
-    }
-    return next as unknown as T;
-  }
-
-  return body;
+  return (await walk(config, body, ctx, "")) as T;
 }

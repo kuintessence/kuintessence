@@ -2,7 +2,11 @@
 
 本指南介绍本地 Compose、生产入口与调度队列配置。命令示例从仓库根目录执行；
 启动、重建、迁移和运行状态检查会改变环境，执行前应确认目标与维护窗口。
-Server 当前只支持单实例部署，尚未通过 Redis 实现多实例协调。
+Server 使用共享 PostgreSQL 保存 Agent 会话归属、待派发作业和 HTTP 命令终端。作业及工作流事件通过 LISTEN/NOTIFY 广播。Agent 重连后由新连接领取任务，旧连接的迟到回执按会话标识复核。
+
+多实例部署中，每个 Server 配置指向本实例的 `AGENT_RELAY_ORIGIN`（例如 `wss://server-a.peer.example.org`），通过 `AGENT_RELAY_PEERS` 列出可访问的实例 WSS origin，以逗号分隔。为所有实例提供同一份至少 32 字符的专用 `AGENT_RELAY_SECRET`、同一 JWT 密钥和持久的 Agent CA。TLS 入口按主机名转发 WebSocket 升级到对应实例的 `/internal/agent-interactions`，客户端须信任其证书。SSH/SFTP、命令、日志、文件传输和联邦计量回执可以通过此通道返回请求发起方。连接中断会终止该交互，SSH 客户端需重新连接。
+
+HTTP 命令终端按用户和会话加密保存最近 200 条审计帧。`TERMINAL_RETENTION_DAYS` 默认 7 天，从最近一次会话写入起算。交互式 PTY 和 SFTP 走 SSH 网关。
 
 自托管对象存储使用 RustFS，旧 MinIO 数据不自动迁移；升级前先阅读
 [RustFS 迁移边界](../deploy/rustfs/README.md)，不要复用旧对象存储目录。
@@ -153,6 +157,10 @@ bun run compose -- aio up --build --attach
 这些都是公开的测试值。Compose 仅发布本机回环地址上的 `8080`、`9000`、`9001`，
 不通过公网代理或 Tunnel 暴露。存储密钥可用 `KQ_DATA_MARKET_COMMITTER_SECRET_KEY` 覆盖。
 用户、数据库、RustFS 数据和 Registry 文件保存在 `kq-aio-data` 卷中。
+计量汇总按 UTC 小时、日期和月份在 PostgreSQL 中领取。周期记录与汇总表更新同事务提交。日、月 Webhook 使用单独的周期记录，接收方可按签名正文中的 `summaryId` 去重；请求的 `Idempotency-Key` 头使用同一个值。
+
+Registry 上传进度由 PostgreSQL 保存。多个 Registry 进程需要访问同一个支持跨进程 flock 和原子 rename 的 POSIX 文件目录；切换后，OCI 客户端可 GET 上传 Location 查询 Range，再通过带 Content-Range 的 PATCH 或 PUT 接续。同一偏移的并发写入只有一次成功，已完成 PUT 在会话保留期内可按相同摘要重放。Spack buildcache 与 OCI 按摘要协调写入和回收。多副本应关闭 recipe Git，跨节点挂载同一支持上述语义的 ReadWriteMany 卷。启用 recipe Git 时使用单写者和 Recreate。
+
 Registry 的 `BLOB_STORE_DIR=/data/registry/blobs` 保存 OCI blob 和 Spack buildcache，
 重启或重建容器时保留。启动脚本完成数据库迁移、存储桶和存储账号初始化。
 
@@ -183,7 +191,7 @@ full、scheduler、preview Compose 同时向 Server 和 Registry 透传可选
 Helm 使用共享 `spackMaterial.epoch`，默认空且不注入环境变量，没有默认 UUID。
 必须采用 `pause` 返回的新 epoch，在重启前为所有升级后的 Server/Registry 配置一致值。
 持久化仍为 PostgreSQL、recipe 本地 Git 和不可变源码文件系统，
-原有数据卷/PVC、Secret 引用与单 Registry 写者要求不变。
+启用 recipe Git 的 Registry 使用持久卷、Secret 引用和一个写入副本。
 
 `pause` 后须在外部停止并排空所有 Server/Registry，包括离线及回滚副本，
 撤销/轮换旧 DB、Registry、ticket 凭据并更新访问与网络策略。
@@ -199,7 +207,8 @@ ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 ep
 
 `CI` 的基础检查包括 Biome、本地文档链接、workflow 引用、部署脚本契约，
 以及默认配置的 Web 构建和浏览器交互。安装依赖时使用
-`bun install --frozen-lockfile --ignore-scripts`；需要的 protobuf 单独生成。
+`bun install --frozen-lockfile --ignore-scripts`，需要的 protobuf 单独生成。
+从仓库根构建镜像时，BuildKit 在安装依赖的步骤只读挂载根目录的 `.npmrc`，Bun 从该配置指定的 npm 源读取公共依赖。
 同仓库非草稿 PR 的基础检查由 `PR preview tests` 调用一次；独立 `CI`
 保留 main、fork 与草稿的检查，避免同一 PR 重复构建 Web。
 
@@ -652,3 +661,8 @@ K3s graceful shutdown 后只清理无进程的特定空 cgroup；不要为释放
 仅在明确授权后于隔离环境运行，并记录目标环境的验证结果。
 
 离线 recipe/material/生态交付与 main Compose 启动 seed：参见 [离线交付说明](offline-delivery.md)，包括 readiness 屏障、服务身份、签名、公钥及失败重试。
+
+
+### 通知投递
+
+Server 在 PostgreSQL 中保存收件箱与投递队列。邮件通道需同时配置 `NOTIFICATION_SMTP_URL` 和 `NOTIFICATION_MAIL_FROM`，SMTP 凭据通过 Secret 注入。用户在个人中心开启邮件后，通知发往其登录邮箱。Webhook 只接受公开 HTTPS 端点，以用户设置的密钥对原始请求体计算 HMAC-SHA256，签名位于 `x-kq-signature`。接收端使用 `payload.id` 去重。每个通道重试最多 12 次，邮件重试复用 Message-ID。

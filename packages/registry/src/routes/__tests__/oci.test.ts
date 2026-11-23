@@ -117,6 +117,21 @@ describe("OCI v2 routes", () => {
     expect(patch1.status).toBe(202);
     expect(patch1.headers.get("Range")).toBe(`0-${chunk1.byteLength - 1}`);
 
+    const status = await app.request(`/v2/${repoPath}/blobs/uploads/${uploadId}`, {
+      headers: { "X-Test-Principal": principal("platform_admin") },
+    });
+    expect(status.status).toBe(204);
+    expect(status.headers.get("Range")).toBe(patch1.headers.get("Range"));
+    const stale = await app.request(`/v2/${repoPath}/blobs/uploads/${uploadId}`, {
+      method: "PATCH",
+      headers: {
+        "X-Test-Principal": principal("platform_admin"),
+        "Content-Range": `0-${chunk1.length - 1}`,
+      },
+      body: chunk1,
+    });
+    expect(stale.status).toBe(416);
+
     const patch2 = await app.request(`/v2/${repoPath}/blobs/uploads/${uploadId}`, {
       method: "PATCH",
       headers: { "X-Test-Principal": principal("platform_admin") },

@@ -187,8 +187,9 @@ Python install worker 在固定 SIF 中执行；`ready` 表示当前 site profil
 平台阻断未受管 install/buildcache 导入；安装须经过受管材料与隔离执行链路。
 Recipe 激活尚不自动应用到 Agent；静态诊断不等于实际 concretize 或安装成功。
 受控 HTTP/SOCKS 上游代理见[上游导入](spack-upstream-import.md)，额外读取限制见[材料可见策略](spack-material-visibility.md)。受限厂商安装包授权、大规模材料索引与物理删除不由这些入口提供；每个科学工作流仍须独立准备目标 Linux 材料、lock 和运行输入。
-源码镜像同步、buildcache 后台 worker、signed air-gap bundle 导入导出及完整在线
-`package.py` 编辑/构建执行器尚未全部具备，使用前需确认所需执行器已部署。
+自建包支持源码编辑和声明字段编辑，保存时验证编辑者权限与源码摘要。离线交付支持整份清单签名，接收端逐项校验并记录回执。[离线交付](offline-delivery.md)
+
+Server 按资产清单同步源文件和原生 buildcache，Registry 按上传回执及发布清单回收材料。操作入口见[软件治理](../packages/docs-site/src/operate/software-governance.md)。
 
 <a id="ecosystem"></a>
 ## 签名生态与数据
@@ -244,6 +245,8 @@ revision 可执行；禁止 raw command、日志/stdout 导出、普通 symlink 
 身份、签名、release、revision、source hash、grant、location 或 mount 不符均拒绝，
 禁止回退 SelfAccount 或普通 Job。
 
+联邦 `Script` 节点的 `licensedMaterials` 可指定 selector、requiredElements、targetPath。使用已发布的可信脚本修订和可续期作业租约。targetPath 为文件名或 `inputs/<文件名>`，脚本读取 `/kq/inputs/<文件名>`。Agent 在自己的材料根解析 selector 并核对摘要。计算节点的 wrapper 以映射账号重新核对来源的规范路径、root 所有权、只读权限及摘要，再交给 Apptainer 在作业内只读绑定。站点须已授权该 Unix 账号读取原材料；Agent 不调整来源的访问权限。脚本没有输出挂载，标准流指向 /dev/null，容器退出时内核释放绑定。撤权、失联和租约到期使用联邦作业的停止与恢复流程。
+
 受保护 delivery 的清理上下文会持久化，正常结束和重启恢复时均执行清理，
 清理失败必须记录并处理。
 
@@ -254,6 +257,30 @@ Workflow `Script` 使用受管 Python、Node.js 或 Bash runtime。
 镜像经扫描、签名并固定 OCI/SIF digest，运行时不允许 pip/npm 安装或外网下载。
 Slurm/PBS/Torque 使用 Apptainer，与宿主共享 kernel，不提供 microVM 级多租户隔离。
 Kubernetes 的网络边界见[下一节](#kubernetes)。
+
+### 从 Git 导入 Sandbox 脚本
+
+在已登录的 CLI 所在机器准备 `definition.json`。使用 `GET /api/sandbox/runtime-profiles` 查找语言匹配且状态为 `active` 的运行环境，将示例中的 `runtimeProfileId` 换为该环境的 ID。
+
+```json
+{
+  "name": "normalize",
+  "version": "1.0.0",
+  "language": "python",
+  "runtimeProfileId": "10000000-0000-4000-8000-000000000001",
+  "entrypoint": "normalize.py",
+  "inputs": { "raw": { "type": "Text" } },
+  "outputs": { "normalized": { "type": "Text" } }
+}
+```
+
+```sh
+kq software import-script https://git.example.org/team/tools.git "$COMMIT" scripts/normalize.py --definition definition.json
+```
+
+`COMMIT` 填写完整的 40 位或 64 位小写 Git 对象 ID。仓库参数也接受本地仓库目录，可用于离线导入或已经通过 SSH 获取的仓库。CLI 从提交树读取一个至多 1,000,000 字节的 UTF-8 普通文件。HTTPS 仓库使用本机 Git 凭据助手，URL 中不能包含凭据或查询参数。
+
+命令返回资产 ID、修订号和脚本内容的 SHA-256。加上 `--asset "$ASSET_ID"` 可向已有资产追加私有草稿修订。Server 校验上传字节的 Git blob ID，保存 CLI 提供的提交、仓内路径及远端仓库 URL（如有）。发布与共享账号签署沿用脚本工作室流程。运行时读取该修订保存的脚本内容。
 
 ### DSL 与执行契约
 
@@ -348,24 +375,13 @@ Linux Agent 需要 util-linux `flock`；同一 root 的 `.attestation.lock` 持�
 
 每次 SelfAccount 作业执行均通过系统 Python 的 `-I` 模式读取 root 管理的检查器，
 核对权限与摘要后执行同一份已核验字节，使用已签名 CPU/内存和原生 Slurm Job ID。
-失败则在用户脚本启动前退出 126。新字段只在本地保存运行时事实，不改变 Sandbox manifest
-结构；运行时证明 ID 会变化，protobuf 能力新增 `attested_queue`。升级先排空/取消旧任务，
-再同步 Server/Agent 并重新探测；不以空队列兼容旧证明。旧 Agent 持久记录仍可恢复轮询/停止，
-但缺少检查器/队列证明时不可重新提交。
-`executionMode` 属于签名协议，升级需先 drain/暂停 Sandbox，再协调 Server/Agent 升级；
-混用版本会拒绝任务。
+检查失败时，作业在用户脚本启动前退出 126。运行时证明绑定队列和检查器，签名清单固定 `executionMode`。
 
 Sandbox 清单必须包含签名 `resources: { cpus, memoryMb }`，内存单位为 MiB。
 Server 取实际持久化 Job 的资源值；追加只读数据挂载及续签保留这些值。
 Agent 在消费 nonce、下载输入及清理重试目录前核对派发值，在 Slurm/PBS/Torque/Kubernetes
 提交入口再次核对实际调度参数。联邦续期还要求持久化 Job、原始 outbox 与签名资源一致，
 即使改动后仍低于政策上限也不接受。CPU 必须为正 int32，内存必须为正整数且换算字节不丢精度。
-
-升级须先停止新 Sandbox 提交，并排空或取消旧的待派发/运行任务，再同步 Server 与 Agent；
-旧清单不补默认资源，也不自动重新签名。Agent 仍可恢复旧运行记录以轮询、收尾或取消，
-但不能据此重新提交；联邦旧清单不能续期，仍按原租约到期停止。
-此约束证明资源需求没有被替换，尚不证明 HPC 节点的逐作业 CPU/内存 cgroup 已强制生效。
-需另行运行检查实际内核限额，不能使用 Agent 配置开关、cgroup 路径或整个 Pod 的限额代替。
 
 受限 HPC 任务使用 signed `executionProfile` 固定 Apptainer、SIF 和 trusted wrapper 的
 canonical path/SHA-256。compute node 的 root-owned
@@ -395,8 +411,7 @@ wrapper 在执行前使用 `/usr/bin/python3 -I` 调用固定摘要的检查器�
 用户脚本不会启动；`--check-profile` 不运行这项逐作业核验。详见
 [节点资源检查](../deploy/federation/sandbox-cgroup-lab.md)。
 
-升级须暂停受限派发，在 Agent 和计算节点部署新 wrapper/策略/检查器、配置原生逐作业 cgroup、更新配置中的 wrapper
-摘要及 `AGENT_RESTRICTED_EXECUTION_WRAPPER_SHA256`，再重启 Agent；不得省略策略恢复执行。
+每个受限执行节点均须配置原生逐作业 cgroup，并在 Agent 及节点上登记相同的 wrapper 摘要。
 本约束适用于带签名 `executionProfile` 的受限 HPC 任务。其他执行路径须按各自的 wrapper、seccomp 与运行时证明要求配置，不能只凭 `AGENT_SANDBOX_SECCOMP=true` 推断节点已具备隔离能力。
 
 相关 Agent 配置为 `AGENT_RESTRICTED_EXECUTION_PROFILE_ID`、
@@ -441,9 +456,9 @@ Kubernetes 文件输入或输出另配 `AGENT_SANDBOX_K8S_ARTIFACT_PVC`。PVC �
 
 每次准备在 PVC 中分配 `jobs/<jobId>/<随机准备ID>/`，该路径随原作业快照保存；业务 Pod 只挂载自己的输入和输出目录。输入经原摘要校验后复制，输出准备器只创建目录，不制造空的可选文件。产物收集到 Agent 本地后按原大小、摘要及类型规则检查，Text/JSON 从本地受管目录读取，File/FileBatch 通过产物服务发布，不读入普通日志。未生成的可选输出跳过；收集命令失败仍报错。准备器和收集器沿用禁网、非 root、只读根目录和固定节点要求，辅助 Pod 退出宽限为 5 秒。
 
-PVC 内的运行目录尚未接入自动回收，不能将 Agent 本地副本释放当作 PVC 字节已经删除。生产配置应为此卷设置容量与保留管理，清理前确认对应作业已终止且所需产物已发布。
+Agent 在准备卷数据前把 PVC UID、执行身份和本次准备目录记入 SQLite。Sandbox 执行器在产物登记完毕或收到失败、取消终态后，将回收请求写入 PostgreSQL。Agent 待本机作业停止后核对卷 UID，通过受限辅助 Pod 删除本次准备目录。断线或删除失败时保留记录，在后续心跳重试。
 任何 capability、签名、账号、隔离或 policy 不满足时拒绝，不降级普通 command。
-Git 固化导入与隐式 usecase pre/main/post 编排尚未完成，生产 GA 运行检查也未完成。
+用例节点可通过 `hooks.pre` 和 `hooks.post` 指定固定的 Sandbox 修订，输入与结果按 descriptor 衔接。[工作流钩子](workflow-schema/README.md#usecase-hooks)
 
 <a id="kubernetes"></a>
 ## Kubernetes 网络隔离

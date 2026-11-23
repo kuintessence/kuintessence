@@ -1,4 +1,10 @@
-import type { SpackMaterialBlob, SpackMaterialImport } from "@kuintessence/shared/browser";
+import {
+  type SpackMaterialBlob,
+  type SpackMaterialImport,
+  type SpackMaterialImportStatus,
+  type SpackMaterialPublish,
+  spackMaterialInputBlobs,
+} from "@kuintessence/shared/browser";
 import { describe, expect, test, vi } from "vitest";
 import {
   type MaterialImportProgress,
@@ -92,10 +98,12 @@ describe("browser material pack inputs", () => {
     ).toThrow();
   });
 
-  test("rejects missing, duplicate, extra, mismatched-size and unsafe selected paths", () => {
+  test("accepts subsets and rejects duplicate, extra, mismatched-size and unsafe selected paths", () => {
     const f = materialPackFixture();
+    expect(matchMaterialFiles(f.pack, [f.sourceFile], "files", "manifest.json")).toEqual(
+      new Map([[f.source.digest, f.sourceFile]]),
+    );
     for (const selected of [
-      [f.sourceFile],
       [f.sourceFile, f.sourceFile, f.lockFile],
       [f.sourceFile, f.lockFile, new File(["extra"], "extra")],
       [new File(["bad"], "source.tar.gz"), f.lockFile],
@@ -121,7 +129,19 @@ describe("browser material import queue", () => {
     const f = materialPackFixture();
     const controller = new AbortController();
     const progress: MaterialImportProgress[] = [];
-    const upload = vi.fn(async (_repository: string, blob: SpackMaterialBlob) => blob);
+    const received = new Set<string>();
+    const status = vi.fn(
+      async (release: SpackMaterialPublish): Promise<SpackMaterialImportStatus> => ({
+        state: "pending",
+        missing: spackMaterialInputBlobs(release)
+          .map((blob) => blob.digest)
+          .filter((digest) => !received.has(release.repository + digest)),
+      }),
+    );
+    const upload = vi.fn(async (repository: string, blob: SpackMaterialBlob) => {
+      received.add(repository + blob.digest);
+      return blob;
+    });
     const publish = vi.fn(async () => f.binding);
     const canWriteRepository = vi.fn(() => true);
     const options = {
@@ -132,12 +152,22 @@ describe("browser material import queue", () => {
       canWriteRepository,
       onProgress: (event: MaterialImportProgress) => progress.push(event),
     };
-    return { ...f, controller, progress, upload, publish, canWriteRepository, options };
+    return {
+      ...f,
+      controller,
+      progress,
+      received,
+      status,
+      upload,
+      publish,
+      canWriteRepository,
+      options,
+    };
   }
 
   test("uploads original Files sequentially, then publishes with the same signal", async () => {
     const f = setup();
-    await runMaterialImport(f.options, { upload: f.upload, publish: f.publish });
+    await runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish });
     expect(f.upload.mock.calls.map((call) => call[1])).toEqual([f.lock, f.source]);
     expect(f.upload).toHaveBeenNthCalledWith(
       1,
@@ -145,23 +175,110 @@ describe("browser material import queue", () => {
       f.lock,
       f.lockFile,
       f.controller.signal,
+      expect.any(Function),
     );
     expect(f.publish).toHaveBeenCalledWith(f.pack.releases[0], f.controller.signal);
     expect(f.progress.at(-1)).toMatchObject({ index: 0, status: "published", binding: f.binding });
   });
 
-  test("validates all files and pending destinations before any upload", async () => {
+  test("resumes missing files and recovers an already published release", async () => {
+    const f = setup();
+    f.status
+      .mockResolvedValueOnce({ state: "pending", missing: [f.source.digest] })
+      .mockResolvedValueOnce({ state: "published", binding: f.binding });
+    const client = { status: f.status, upload: f.upload, publish: f.publish };
+    f.files.delete(f.lock.digest);
+    await runMaterialImport(f.options, client);
+    f.files.clear();
+    await runMaterialImport(f.options, client);
+    expect(f.upload).toHaveBeenCalledTimes(1);
+    expect(f.upload.mock.calls[0]?.[1]).toEqual(f.source);
+    expect(f.publish).toHaveBeenCalledTimes(1);
+    expect(f.progress.at(-1)).toMatchObject({ status: "published", binding: f.binding });
+  });
+
+  test("validates selected files, missing inputs and pending destinations before any upload", async () => {
     const f = setup();
     f.canWriteRepository.mockReturnValue(false);
     await expect(
-      runMaterialImport(f.options, { upload: f.upload, publish: f.publish }),
+      runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish }),
     ).rejects.toThrow();
     f.canWriteRepository.mockReturnValue(true);
+    f.files.set(f.source.digest, new File(["short"], "source.tar.gz"));
+    await expect(runMaterialImport(f.options, f)).rejects.toMatchObject({ code: "invalidFiles" });
+    expect(f.status).not.toHaveBeenCalled();
     f.files.delete(f.source.digest);
     await expect(
-      runMaterialImport(f.options, { upload: f.upload, publish: f.publish }),
+      runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish }),
     ).rejects.toThrow();
     expect(f.upload).not.toHaveBeenCalled();
+  });
+
+  test("a receipt in one namespace cannot cover a missing local file in another", async () => {
+    const f = setup();
+    const first = f.pack.releases[0];
+    if (!first) throw new Error("Missing fixture");
+    f.pack.releases.push({ ...first, repository: "public/other" });
+    f.options.indices = [0, 1];
+    f.files.delete(f.lock.digest);
+    f.received.add(first.repository + f.lock.digest);
+    await expect(runMaterialImport(f.options, f)).rejects.toMatchObject({ paths: ["root.lock"] });
+    expect(f.status).toHaveBeenCalledTimes(2);
+    expect(f.upload).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  test("recovers a committed row even when another release still needs local files", async () => {
+    const f = setup();
+    const first = f.pack.releases[0];
+    if (!first) throw new Error("Missing fixture");
+    f.pack.releases.push({ ...first, spec: "other@1.0" });
+    f.options.indices = [0, 1];
+    f.files.clear();
+    f.status.mockResolvedValueOnce({ state: "published", binding: f.binding });
+    await expect(runMaterialImport(f.options, f)).rejects.toMatchObject({
+      paths: ["root.lock", "source.tar.gz"],
+    });
+    expect(f.progress).toEqual([
+      { index: 0, totalFiles: 2, verifiedFiles: 2, status: "published", binding: f.binding },
+    ]);
+    expect(f.upload).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  test("rechecks missing files after batch preflight before sending any bytes for a release", async () => {
+    const f = setup();
+    const first = f.pack.releases[0];
+    if (!first) throw new Error("Missing fixture");
+    f.pack.releases.push({ ...first, spec: "other@1.0" });
+    f.options.indices = [0, 1];
+    f.files.delete(f.source.digest);
+    f.status
+      .mockResolvedValueOnce({ state: "pending", missing: [f.lock.digest] })
+      .mockResolvedValueOnce({ state: "pending", missing: [] });
+    await expect(runMaterialImport(f.options, f)).rejects.toMatchObject({
+      paths: ["source.tar.gz"],
+    });
+    expect(f.status).toHaveBeenCalledTimes(3);
+    expect(f.upload).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  test("aborting a partial batch while checking receipts stops all writes", async () => {
+    const f = setup();
+    const first = f.pack.releases[0];
+    if (!first) throw new Error("Missing fixture");
+    f.pack.releases.push({ ...first, spec: "other@1.0" });
+    f.options.indices = [0, 1];
+    f.files.clear();
+    f.status.mockImplementationOnce(async () => {
+      f.controller.abort();
+      return { state: "published", binding: f.binding };
+    });
+    await expect(runMaterialImport(f.options, f)).rejects.toThrow();
+    expect(f.status).toHaveBeenCalledTimes(1);
+    expect(f.upload).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
   });
 
   test("continues after a rejected release and deduplicates only within each namespace", async () => {
@@ -171,7 +288,7 @@ describe("browser material import queue", () => {
     f.pack.releases.push({ ...first, spec: "other@1.0" }, { ...first, repository: "public/other" });
     f.options.indices = [0, 1, 2];
     f.publish.mockRejectedValueOnce({ status: 422 });
-    await runMaterialImport(f.options, { upload: f.upload, publish: f.publish });
+    await runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish });
     expect(f.upload).toHaveBeenCalledTimes(4);
     expect(
       f.progress
@@ -186,7 +303,7 @@ describe("browser material import queue", () => {
     if (!first) throw new Error("Missing fixture");
     f.pack.releases.push({ ...first, repository: "public/other" });
     f.options.indices = [1];
-    await runMaterialImport(f.options, { upload: f.upload, publish: f.publish });
+    await runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish });
     expect(f.upload).toHaveBeenCalledTimes(2);
     expect(f.upload.mock.calls.every((call) => call[0] === "public/other")).toBe(true);
     expect(f.publish).toHaveBeenCalledTimes(1);
@@ -199,7 +316,7 @@ describe("browser material import queue", () => {
       return blob;
     });
     await expect(
-      runMaterialImport(f.options, { upload: f.upload, publish: f.publish }),
+      runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish }),
     ).rejects.toThrow();
     expect(f.upload).toHaveBeenCalledTimes(1);
     expect(f.publish).not.toHaveBeenCalled();
@@ -213,12 +330,16 @@ describe("browser material import queue", () => {
       return f.binding;
     });
     await expect(
-      runMaterialImport(f.options, { upload: f.upload, publish: f.publish }),
+      runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish }),
     ).rejects.toThrow();
     expect(f.progress.at(-1)?.status).toBe("uncertain");
     const retry = setup();
     retry.publish.mockRejectedValueOnce({ status: 503 });
-    await runMaterialImport(retry.options, { upload: retry.upload, publish: retry.publish });
+    await runMaterialImport(retry.options, {
+      status: retry.status,
+      upload: retry.upload,
+      publish: retry.publish,
+    });
     expect(retry.progress.at(-1)?.status).toBe("uncertain");
   });
 
@@ -226,7 +347,7 @@ describe("browser material import queue", () => {
     const f = setup();
     f.upload.mockRejectedValueOnce({ status });
     await expect(
-      runMaterialImport(f.options, { upload: f.upload, publish: f.publish }),
+      runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish }),
     ).rejects.toThrow();
     expect(f.upload).toHaveBeenCalledTimes(1);
     expect(f.publish).not.toHaveBeenCalled();
@@ -239,7 +360,7 @@ describe("browser material import queue", () => {
       return blob;
     });
     await expect(
-      runMaterialImport(f.options, { upload: f.upload, publish: f.publish }),
+      runMaterialImport(f.options, { status: f.status, upload: f.upload, publish: f.publish }),
     ).rejects.toThrow();
     expect(f.upload).toHaveBeenCalledTimes(1);
     expect(f.publish).not.toHaveBeenCalled();

@@ -244,3 +244,49 @@ test("pinned ordinary installations reject missing delivery or a mismatched tick
   expect(rejected.status).toBe("rejected");
   expect(messages).toHaveLength(before);
 });
+
+test("installation estimates use completed matching installations, with explicit time and rate overrides", async () => {
+  const spec = "sample@estimated";
+  const startedAt = new Date("2026-01-01T00:00:00Z");
+  const row = (seconds: number) => ({
+    agentId,
+    spec,
+    action: "install",
+    status: "succeeded",
+    startedAt,
+    finishedAt: new Date(startedAt.getTime() + seconds * 1000),
+  });
+  await db
+    .insert(softwareOperations)
+    .values([
+      row(30),
+      row(90),
+      { ...row(900), status: "failed" },
+      { ...row(900), spec: "other@estimated" },
+      { ...row(900), idempotencyKey: "source-audit:test" },
+      { ...row(900), action: "load" },
+      row(0),
+    ]);
+  const input = { agentId, spec, cpus: 2, rate: 3 };
+  const estimate = await operations.estimateInstallation(input);
+  expect(estimate).toMatchObject({ samples: 2, seconds: 60, rate: 3 });
+  expect(estimate.cost).toBeCloseTo(0.1);
+  expect(await operations.estimateInstallation({ ...input, spec: "absent@estimated" })).toEqual({
+    samples: 0,
+    seconds: null,
+    cpuHours: null,
+    rate: 3,
+    cost: null,
+  });
+  expect(await operations.estimateInstallation({ ...input, minutes: 30, rate: 0 })).toMatchObject({
+    seconds: 1800,
+    cpuHours: 1,
+    rate: 0,
+    cost: 0,
+  });
+  expect(await operations.estimateInstallation({ ...input, rate: null })).toMatchObject({
+    seconds: 60,
+    rate: null,
+    cost: null,
+  });
+});

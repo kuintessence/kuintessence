@@ -35,6 +35,7 @@ vi.mock("../../lib/data-market-client", () => ({
   dataMarketClient: {
     createCpAsset: vi.fn(),
     createReplica: vi.fn(),
+    cancelReplica: vi.fn(),
     cpAccessRequests: vi.fn().mockResolvedValue({ requests: [] }),
     cpAccessRequest: vi.fn(),
     cpAssets: vi.fn().mockResolvedValue({ assets: [] }),
@@ -127,6 +128,58 @@ describe("CpDataPage", () => {
     activeOrganization.current = "org-a";
     vi.clearAllMocks();
     vi.useRealTimers();
+  });
+
+  test("queues a replica for the selected version and cancels a queued transfer", async () => {
+    client.cpAssets.mockResolvedValueOnce({
+      assets: [asset("asset-a", "Dataset A", "org-a")],
+      limit: 25,
+      offset: 0,
+      total: 1,
+    });
+    client.cpVersions.mockResolvedValueOnce({
+      versions: [{ ...versionRecord(), status: "ready" }],
+      limit: 25,
+      offset: 0,
+      total: 1,
+    });
+    client.cpReplicas
+      .mockResolvedValueOnce({ replicas: [], limit: 25, offset: 0, total: 0 })
+      .mockResolvedValueOnce({
+        replicas: [
+          {
+            id: "replica",
+            versionId: "version-a",
+            agentId: "agent-a",
+            providerOrgId: "org-a",
+            siteId: "site-a",
+            clusterId: "cluster-a",
+            locationKind: "cp-local",
+            status: "pending",
+            verifiedAt: null,
+          },
+        ],
+        limit: 25,
+        offset: 0,
+        total: 1,
+      });
+    render(<CpDataPage />, { wrapper });
+    fireEvent.click(await screen.findByTestId("cp-data-asset-asset-a"));
+    fireEvent.click(await screen.findByTestId("cp-data-version-version-a"));
+    fireEvent.change(await screen.findByLabelText("cp.data.replicaAgent"), {
+      target: { value: "agent-a" },
+    });
+    fireEvent.change(screen.getByLabelText("cp.data.replicaRoot"), { target: { value: "root-a" } });
+    fireEvent.click(screen.getByRole("button", { name: "cp.data.createReplica" }));
+    await waitFor(() =>
+      expect(client.createReplica).toHaveBeenCalledWith(
+        "version-a",
+        { agentId: "agent-a", managedRootId: "root-a", locationKind: "cp-local" },
+        expect.any(String),
+      ),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "cp.data.cancelReplica" }));
+    await waitFor(() => expect(client.cancelReplica).toHaveBeenCalledWith("version-a", "replica"));
   });
 
   test("uses an Agent to enabled-root cascade instead of internal ID inputs", () => {
@@ -388,6 +441,113 @@ describe("CpDataPage", () => {
     await waitFor(() => expect(notifications.error).toHaveBeenCalledWith("cp.data.importFailed"));
     expect(notifications.error).not.toHaveBeenCalledWith("Agent scan failed");
     expect(notifications.success).not.toHaveBeenCalled();
+  });
+
+  test("imports a committed platform object without a cluster selection", async () => {
+    client.cpAssets.mockResolvedValueOnce({
+      assets: [asset("asset-a", "Dataset A", "org-a")],
+      total: 1,
+      limit: 25,
+      offset: 0,
+    });
+    client.startCpImport.mockResolvedValueOnce({
+      version: versionRecord(),
+      dataImport: { ...importRecord("completed"), sourceKind: "platform-object" },
+      dispatchState: "completed",
+      replayed: false,
+    });
+    render(<CpDataPage />, { wrapper });
+    fireEvent.click(await screen.findByTestId("cp-data-asset-asset-a"));
+    fireEvent.change(nativeControl(screen.getByLabelText(/cp.data.importSource/)), {
+      target: { value: "platform-object" },
+    });
+    fireEvent.change(screen.getByLabelText("cp.data.committedSession"), {
+      target: { value: "session-a" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "cp.data.import" }));
+    await waitFor(() =>
+      expect(notifications.success).toHaveBeenCalledWith("cp.data.importAvailable"),
+    );
+    expect(client.startCpImport).toHaveBeenCalledWith(
+      "asset-a",
+      "v1",
+      {
+        kind: "platform-object",
+        uploadSessionId: "session-a",
+      },
+      expect.any(String),
+    );
+  });
+
+  test.each([
+    "retry",
+    "switch-organization",
+  ])("upload from this computer handles %s after selecting a file", async (action) => {
+    client.cpAssets.mockResolvedValueOnce({
+      assets: [asset("asset-a", "Dataset A", "org-a")],
+      total: 1,
+      limit: 25,
+      offset: 0,
+    });
+    const upload =
+      createDeferred<Awaited<ReturnType<typeof dataMarketClient.uploadAssetFileWithSession>>>();
+    client.uploadAssetFileWithSession.mockReturnValueOnce(upload.promise);
+    const page = render(<CpDataPage />, { wrapper });
+    fireEvent.click(await screen.findByTestId("cp-data-asset-asset-a"));
+    fireEvent.change(nativeControl(screen.getByLabelText(/cp.data.importSource/)), {
+      target: { value: "platform-object" },
+    });
+    const file = new File(["data"], "input.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("cp.data.platformFile"), { target: { files: [file] } });
+    const submit = screen.getByRole("button", { name: "cp.data.import" });
+    fireEvent.click(submit);
+    expect(client.uploadAssetFileWithSession).toHaveBeenCalledWith("asset-a", "v1", file);
+    if (action === "switch-organization") {
+      activeOrganization.current = "org-b";
+      page.rerender(<CpDataPage />);
+    }
+    client.startCpImport.mockRejectedValueOnce(new Error("temporary failure"));
+    await act(async () =>
+      upload.resolve({
+        session: {
+          id: "test-session",
+          assetId: "asset-a",
+          version: "v1",
+          locationKind: "platform-object",
+          objectKey: "test-key",
+          uploadUrl: "https://upload.example",
+          expiresAt: "2030-01-01T00:00:00Z",
+        },
+        version: versionRecord(),
+      }),
+    );
+    if (action === "switch-organization") {
+      expect(client.startCpImport).not.toHaveBeenCalled();
+      client.startCpImport.mockReset();
+      return;
+    }
+    await waitFor(() => expect(notifications.error).toHaveBeenCalled());
+    client.startCpImport.mockResolvedValueOnce({
+      dataImport: importRecord("completed"),
+      dispatchState: "completed",
+      replayed: true,
+      version: versionRecord(),
+    });
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(notifications.success).toHaveBeenCalledWith("cp.data.importAvailable"),
+    );
+    expect(client.uploadAssetFileWithSession).toHaveBeenCalledTimes(1);
+    expect(client.startCpImport).toHaveBeenCalledTimes(2);
+    expect(client.startCpImport).toHaveBeenLastCalledWith(
+      "asset-a",
+      "v1",
+      {
+        kind: "platform-object",
+        uploadSessionId: "test-session",
+      },
+      client.startCpImport.mock.calls[0]?.[3],
+    );
   });
 
   test("polls active imports until completion and labels completed imports as available", async () => {

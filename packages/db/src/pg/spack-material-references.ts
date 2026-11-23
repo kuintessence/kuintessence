@@ -91,12 +91,26 @@ export class SpackMaterialReferences {
     }
   }
 
-  async acquireOperation(input: SpackMaterialOperationReferenceInput): Promise<void> {
+  async acquireOperation(
+    input: SpackMaterialOperationReferenceInput,
+    recipes?: Array<{ repositoryId: string; commit: string }>,
+  ): Promise<void> {
     try {
       const value = parseOperation(input);
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
         await assertSpackMaterialRuntime(tx, this.epoch);
         await acquireOperationReference(tx, value);
+        if (recipes)
+          await tx
+            .update(softwareOperations)
+            .set({ recipeSnapshots: recipes })
+            .where(
+              and(
+                eq(softwareOperations.id, value.operationId),
+                eq(softwareOperations.agentId, value.agentId),
+                sql`${softwareOperations.recipeSnapshots} is null`,
+              ),
+            );
       });
     } catch {
       throw referenceError();

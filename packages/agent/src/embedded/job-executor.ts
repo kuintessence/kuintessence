@@ -347,7 +347,8 @@ export class JobRunner {
         ? undefined
         : validateCompletionSnapshot(completionSnapshot, spec, schedulerJobId, expectedOutputs)
             .result;
-    if (!completed) await this.deps.adapter.prepareResume?.(spec, schedulerJobId, schedulerUid);
+    if (!completed || spec.sandbox?.runtimeKind === "OCI")
+      await this.deps.adapter.prepareResume?.(spec, schedulerJobId, schedulerUid);
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Resuming scheduler job polling");
     await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, undefined, completed);
     return schedulerJobId;
@@ -382,7 +383,7 @@ export class JobRunner {
         continue;
       }
 
-      if (!completedResult && result.status === "completed" && !spec.sandbox) {
+      if (!completedResult && result.status === "completed") {
         if (this.deps.onSchedulerCompleted) {
           await this.deps.onSchedulerCompleted(spec, schedulerJobId, expectedOutputs, result);
         } else {

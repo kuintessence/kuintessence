@@ -13,7 +13,10 @@ import { parseWorkflowYaml } from "./parser";
 const logger = createLogger("workflow-runner");
 
 export interface WorkflowRunnerDeps extends UsecaseExecutorDeps {
+  runId?: string;
   journal?: RunWorkflowOptions["journal"];
+  publishGeneratedFiles?: RunWorkflowOptions["publishGeneratedFiles"];
+  readGenerateFile?: RunWorkflowOptions["readGenerateFile"];
   resolveWorkflowVersion?: RunWorkflowOptions["resolveWorkflowVersion"];
   /** Persist a finished run (audit/listing) and return its id. Receives the
    *  full per-node result plus the run's node/edge graph so the record can
@@ -38,6 +41,9 @@ export function createWorkflowRunner(
     const result = await runWorkflow(wf, executor, {
       resolveWorkflowVersion: deps.resolveWorkflowVersion,
       journal: deps.journal,
+      runId: deps.runId,
+      readGenerateFile: deps.readGenerateFile,
+      publishGeneratedFiles: deps.publishGeneratedFiles,
     });
     if (deps.persistRun) {
       // Best-effort audit: the run already executed, so a persistence failure

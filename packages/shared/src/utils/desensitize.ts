@@ -49,14 +49,7 @@ export function passthrough<T>(value: T): T {
   return value;
 }
 
-/**
- * Deterministic 12-hex-char SHA256 prefix.
- *
- * Collision strategy: 12 hex = 48 bits ≈ 1 in 2.8e14 pair-collision odds. For
- * the current scope (audit-log actor, sub-org leakage masking) this is
- * acceptable. Increase prefix length if a future field expects high-cardinality
- * uniqueness. Documented as a TODO above for follow-up.
- */
+/** The 48-bit prefix masks display values and can collide. */
 export function hash(value: unknown): string {
   return createHash("sha256").update(stringify(value)).digest("hex").slice(0, 12);
 }

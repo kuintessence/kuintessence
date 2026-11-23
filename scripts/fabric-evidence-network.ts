@@ -285,7 +285,7 @@ async function setup() {
       Domain: `${m.name.toLowerCase()}.kq.test`,
       EnableNodeOUs: true,
       Template: { Count: 1, SANS: ["localhost", "127.0.0.1"] },
-      Users: { Count: secondaryKind ? 2 : 1 },
+      Users: { Count: cases ? 3 : secondaryKind ? 2 : 1 },
     })),
   });
   await run("cryptogen", [
@@ -307,6 +307,7 @@ async function setup() {
     for (const [identity, role, ou] of [
       ["Admin", "trust-admin", "admin"],
       ["User1", market ? "market" : commercial ? "commercial" : "attestor", "client"],
+      ...(cases ? [["User3", "case-custodian", "client"]] : []),
       ...(secondaryKind
         ? [["User2", cases ? "case" : gate ? "market" : "attestor", "client"]]
         : []),
@@ -668,6 +669,7 @@ async function setup() {
       clientRootCAs: { files: tlsRoots },
     });
     section(section(config, "ledger"), "snapshots").rootDir = join(root, `${site.name}-snapshots`);
+    if (cases) section(section(config, "ledger"), "pvtdataStore").purgeInterval = 1;
     section(config, "operations").listenAddress = "127.0.0.1:0";
     section(config, "vm").endpoint = "";
     section(config, "chaincode").externalBuilders = [

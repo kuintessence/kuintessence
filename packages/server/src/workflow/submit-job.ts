@@ -30,9 +30,9 @@ export async function submitWorkflowJob(input: {
     ...(spec.dataInputs ? { dataInputs: spec.dataInputs } : {}),
     command: spec.command,
     resources: {
+      ...spec.resources,
       cpus: spec.resources?.cpus ?? 1,
       memoryMb: spec.resources?.memoryMb ?? 1024,
-      ...(spec.resources?.wallTimeSec != null ? { wallTimeSec: spec.resources.wallTimeSec } : {}),
     },
     envVars: spec.envVars,
     ...(spec.licensedMaterials ? { licensedMaterials: spec.licensedMaterials } : {}),

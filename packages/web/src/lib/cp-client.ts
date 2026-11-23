@@ -489,13 +489,35 @@ export async function previewSoftwareAvailability(
   return post<SoftwareAvailabilityPreview>("/software/availability-preview", payload);
 }
 
+export function estimateInstallation(
+  agentId: string,
+  spec: string,
+  cpus: number,
+  minutes?: number,
+) {
+  const query = new URLSearchParams({ agentId, spec, cpus: String(cpus) });
+  if (minutes !== undefined) query.set("minutes", String(minutes));
+  return get<{
+    samples: number;
+    seconds: number | null;
+    cpuHours: number | null;
+    rate: number | null;
+    cost: number | null;
+  }>(`/software/install-estimate?${query}`);
+}
+
 export async function listSoftwareOperations(q: {
+  recipe?: { repositoryId: string; commit: string };
   agentId?: string;
   action?: SoftwareOperationAction;
   limit?: number;
   status?: SoftwareOperationStatus;
 }): Promise<SoftwareOperation[]> {
   const params = new URLSearchParams();
+  if (q.recipe) {
+    params.set("recipeRepositoryId", q.recipe.repositoryId);
+    params.set("recipeCommit", q.recipe.commit);
+  }
   if (q.agentId != null && q.agentId !== "") params.set("agentId", q.agentId);
   if (q.action != null) params.set("action", q.action);
   if (q.limit != null) params.set("limit", String(q.limit));

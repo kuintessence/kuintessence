@@ -3,6 +3,8 @@ import {
   type OfflineDelivery,
   type OfflineDeliveryReport,
   OfflineDeliverySchema,
+  type SignedOfflineDelivery,
+  SignedOfflineDeliverySchema,
 } from "@kuintessence/shared/browser";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -23,6 +25,7 @@ export function OfflineDeliveryImport({
   const { t } = useTranslation();
   const id = useId();
   const [plan, setPlan] = useState<OfflineDelivery | null>(null);
+  const [signed, setSigned] = useState<SignedOfflineDelivery | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [report, setReport] = useState<OfflineDeliveryReport | null>(null);
   const [history, setHistory] = useState<unknown>(null);
@@ -41,6 +44,8 @@ export function OfflineDeliveryImport({
   async function select(file?: File) {
     const revision = ++selection.current;
     setPlan(null);
+    setSigned(null);
+    setFiles([]);
     setReport(null);
     setHistory(null);
     setError("");
@@ -48,8 +53,16 @@ export function OfflineDeliveryImport({
     try {
       if (file.size > OFFLINE_DELIVERY_MAX_BYTES)
         throw new Error(t("materials.offline.invalidPlan"));
-      const parsed = OfflineDeliverySchema.parse(JSON.parse(await file.text()));
-      if (revision === selection.current && isCurrent()) setPlan(parsed);
+      const input: unknown = JSON.parse(await file.text());
+      const envelope =
+        input && typeof input === "object" && "format" in input
+          ? SignedOfflineDeliverySchema.parse(input)
+          : null;
+      const parsed = OfflineDeliverySchema.parse(envelope ? JSON.parse(envelope.payload) : input);
+      if (revision === selection.current && isCurrent()) {
+        setPlan(parsed);
+        setSigned(envelope);
+      }
     } catch {
       if (revision === selection.current && isCurrent())
         setError(t("materials.offline.invalidPlan"));
@@ -70,6 +83,13 @@ export function OfflineDeliveryImport({
     try {
       check();
       if (action === "preflight" && files.length) {
+        await requestSoftwareJson("/offline-deliveries/verify", {
+          method: "POST",
+          headers: softwareWriteHeaders(),
+          body: JSON.stringify(signed ?? plan),
+          signal: controller.signal,
+        });
+        check();
         const selected = new Map(
           files.map((file) => [
             file.webkitRelativePath
@@ -85,7 +105,7 @@ export function OfflineDeliveryImport({
           check();
           const file = selected.get(entry.path);
           if (!file) throw new Error(t("materials.offline.missingFile", { path: entry.path }));
-          await uploadSpackMaterial(plan.repository, entry.blob, file, controller.signal);
+          await uploadSpackMaterial(plan.repository, entry.blob, file, controller.signal, check);
         }
       }
       check();
@@ -94,7 +114,7 @@ export function OfflineDeliveryImport({
         {
           method: "POST",
           headers: softwareWriteHeaders(),
-          body: JSON.stringify(plan),
+          body: JSON.stringify(signed ?? plan),
           signal: controller.signal,
         },
       );
@@ -197,6 +217,9 @@ export function OfflineDeliveryImport({
               <details className="min-w-0 text-xs text-muted-foreground">
                 <summary className="cursor-pointer">{t("materials.offline.digest")}</summary>
                 <code className="mt-2 block break-all">{report.digest}</code>
+                {report.signature && (
+                  <p>{t("materials.offline.verifiedSigner", { id: report.signature.keyId })}</p>
+                )}
               </details>
             </div>
             <ul className="divide-y divide-border border-border">

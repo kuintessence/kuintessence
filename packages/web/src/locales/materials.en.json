@@ -54,6 +54,7 @@
     "catalogEmpty": "No materials found",
     "catalogSourceCount": "Sources",
     "catalogTotalBytes": "Total bytes",
+    "catalogPage": "Page {{page}}",
     "catalogPrevious": "Previous materials",
     "catalogNext": "Next materials",
     "managementTitle": "Maintainer material catalog",
@@ -76,6 +77,7 @@
     "directory": "Material directory",
     "reading": "Validating manifest",
     "invalidManifest": "Invalid material manifest or exceeds 2 MiB",
+    "missingFiles": "Select the files still missing from the repository:\n{{paths}}",
     "invalidFiles": "Files do not match manifest paths and sizes",
     "accessChanged": "Publishing access unavailable for this batch",
     "packSummary": "{{releases}} releases, {{files}} required files, {{selected}} selected",
@@ -210,6 +212,7 @@
       "result": "Import results",
       "digest": "Manifest digest",
       "receipt": "Receipt",
+      "verifiedSigner": "Verified delivery signing key {{id}}",
       "invalidPlan": "Choose an offline-delivery v1 JSON manifest up to 2 MiB. Export Forge archives with kq-bundles first.",
       "sessionChanged": "Your management session has changed.",
       "missingFile": "Missing file or size mismatch: {{path}}",
@@ -226,6 +229,9 @@
         "partial": "Partially imported"
       },
       "kind": {
+        "vendor-binary": "Vendor installer",
+        "vendor-local": "Provider-local installer",
+        "buildcache": "Spack buildcache",
         "recipe": "Recipe",
         "material": "Material",
         "binding": "Installation binding",

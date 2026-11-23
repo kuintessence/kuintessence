@@ -65,7 +65,7 @@ export class MeteringWebhookEmitter {
    * raw query is both correct and the cheapest option.
    */
   async emitDailySummary(dayStart: Date, dayEnd: Date): Promise<EmitReport> {
-    return this.emit(USAGE_DAILY, (orgId) =>
+    return this.emit(USAGE_DAILY, dayEnd, (orgId) =>
       this.query.query(
         { kind: "orgs", orgIds: [orgId] },
         {
@@ -88,7 +88,9 @@ export class MeteringWebhookEmitter {
    * {@link queryAllTiers}).
    */
   async emitMonthlySummary(monthStart: Date, monthEnd: Date): Promise<EmitReport> {
-    return this.emit(USAGE_MONTHLY, (orgId) => this.queryAllTiers(orgId, monthStart, monthEnd));
+    return this.emit(USAGE_MONTHLY, monthEnd, (orgId) =>
+      this.queryAllTiers(orgId, monthStart, monthEnd),
+    );
   }
 
   /**
@@ -99,6 +101,7 @@ export class MeteringWebhookEmitter {
    */
   private async emit(
     event: string,
+    periodEnd: Date,
     queryOrg: (orgId: string) => Promise<QueryResult>,
   ): Promise<EmitReport> {
     const webhooks = await this.repo.listEnabledForEvent(event);
@@ -120,6 +123,7 @@ export class MeteringWebhookEmitter {
         const result = await queryOrg(orgId);
         const evt: WebhookEvent = {
           event,
+          summaryId: [event, orgId, periodEnd.toISOString()].join("/"),
           orgId,
           payload: result,
           occurredAt: this.now(),

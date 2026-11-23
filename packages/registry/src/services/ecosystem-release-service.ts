@@ -45,6 +45,7 @@ import type { EcosystemOciReader, EcosystemOciReference } from "./ecosystem-oci-
 
 export type EcosystemAssetKind =
   | "data-product"
+  | "site-runtime"
   | "spack-package"
   | "usecase"
   | "workflow-template"
@@ -81,7 +82,14 @@ export interface SignedEcosystemBundle {
 
 const EcosystemBundleAssetEnvelopeSchema = z.strictObject({
   ecosystemKey: z.string().min(1).max(255),
-  kind: z.enum(["data-product", "spack-package", "usecase", "workflow-template", "sandbox-script"]),
+  kind: z.enum([
+    "data-product",
+    "site-runtime",
+    "spack-package",
+    "usecase",
+    "workflow-template",
+    "sandbox-script",
+  ]),
   name: z.string().min(1).max(255),
   version: z.string().min(1).max(100),
   payload: z.record(z.string(), z.unknown()),
@@ -93,7 +101,7 @@ const EcosystemBundleAssetEnvelopeSchema = z.strictObject({
     .optional(),
 });
 
-const EcosystemManifestEnvelopeSchema = z.strictObject({
+export const EcosystemManifestEnvelopeSchema = z.strictObject({
   schemaVersion: z.literal(1),
   releaseKey: z.string().min(1).max(255),
   version: z.string().min(1).max(100),
@@ -294,7 +302,7 @@ export function manifestEntryDigest(asset: EcosystemBundleAsset): string {
   return `sha256:${createHash("sha256").update(canonicalJson(asset)).digest("hex")}`;
 }
 
-function usecaseSpecDigest(spec: Record<string, unknown>): string {
+export function usecaseSpecDigest(spec: Record<string, unknown>): string {
   return `sha256:${createHash("sha256").update(canonicalJson(spec)).digest("hex")}`;
 }
 
@@ -426,6 +434,7 @@ export function validateScientificEcosystemManifest(
   const validated = alreadyValidated ?? manifest.assets.map((asset) => validateBundleAsset(asset));
   const counts = countByKind(manifest.assets);
   if (
+    counts["site-runtime"] !== 0 ||
     counts["spack-package"] !== 21 ||
     counts.usecase !== 79 ||
     counts["sandbox-script"] !== 12 ||
@@ -1887,12 +1896,27 @@ function assertMetadataOnly(value: unknown, ecosystemKey: string): void {
 function validateNamedReferences(assets: ValidatedBundleAsset[]): void {
   for (const item of assets) {
     if (item.usecase) {
-      resolveNamedSelector(
+      const software = resolveNamedSelector(
         assets,
-        "spack-package",
+        item.usecase.software.kind === "Spack" ? "spack-package" : "site-runtime",
         item.usecase.softwareRef,
         item.asset.ecosystemKey,
       );
+      if (software.payload.kind === "site-runtime") {
+        try {
+          usecase.assertSiteRuntimeMatches(
+            item.usecase.software,
+            item.usecase.usecase.commandFile,
+            software.payload.runtime,
+          );
+        } catch {
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            `Usecase ${item.asset.ecosystemKey} differs from its site runtime`,
+            422,
+          );
+        }
+      }
       for (const dataRequirement of item.usecase.dataRequirements) {
         resolveDataProductSelector(assets, dataRequirement.asset, item.asset.ecosystemKey);
       }
@@ -1955,7 +1979,8 @@ function validateWorkflowNamedReferences(
   spec: workflowDsl.WorkflowSpec,
   ownerKey: string,
 ): void {
-  for (const node of spec.nodeDrafts) {
+  for (const draft of spec.nodeDrafts) {
+    const node = workflowDsl.commandExecutionNode(draft) ?? draft;
     if (node.type === "SoftwareUsecaseComputing") {
       if (!node.usecaseRef || !node.softwareRef) {
         throw new AppError(
@@ -1964,8 +1989,21 @@ function validateWorkflowNamedReferences(
           422,
         );
       }
-      resolveNamedSelector(assets, "usecase", node.usecaseRef, ownerKey);
-      resolveNamedSelector(assets, "spack-package", node.softwareRef, ownerKey);
+      const capability = resolveNamedSelector(assets, "usecase", node.usecaseRef, ownerKey);
+      const required = capability.usecase?.softwareRef;
+      if (
+        !required ||
+        node.softwareRef.source !== required.source ||
+        node.softwareRef.name !== required.name ||
+        node.softwareRef.version !== required.version ||
+        node.softwareRef.providerOrgId !== required.providerOrgId
+      ) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          `Workflow ${ownerKey} node ${node.id} softwareRef differs from the selected usecase`,
+          422,
+        );
+      }
     } else if (node.type === "Script") {
       if (!node.scriptRef || !node.runtimeContractRef) {
         throw new AppError(
@@ -1974,7 +2012,20 @@ function validateWorkflowNamedReferences(
           422,
         );
       }
-      resolveNamedSelector(assets, "sandbox-script", node.scriptRef, ownerKey);
+      const script = resolveNamedSelector(assets, "sandbox-script", node.scriptRef, ownerKey);
+      const contract =
+        script.payload.kind === "sandbox-script" ? script.payload.runtimeContractRef : undefined;
+      if (
+        !contract ||
+        contract.name !== node.runtimeContractRef.name ||
+        contract.version !== node.runtimeContractRef.version
+      ) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          `Workflow ${ownerKey} script ${node.id} runtime contract differs from the selected script`,
+          422,
+        );
+      }
       validateOfficialRuntimeReference(
         node.runtimeContractRef,
         node.runtimeProfileId,
@@ -2137,6 +2188,7 @@ function normalizeSoftwareName(name: string): string {
 
 function countByKind(assets: Array<{ kind: string }>): Record<EcosystemAssetKind, number> {
   return {
+    "site-runtime": assets.filter((asset) => asset.kind === "site-runtime").length,
     "data-product": assets.filter((asset) => asset.kind === "data-product").length,
     "spack-package": assets.filter((asset) => asset.kind === "spack-package").length,
     usecase: assets.filter((asset) => asset.kind === "usecase").length,
@@ -2148,6 +2200,7 @@ function countByKind(assets: Array<{ kind: string }>): Record<EcosystemAssetKind
 function isAssetKind(value: unknown): value is EcosystemAssetKind {
   return (
     value === "data-product" ||
+    value === "site-runtime" ||
     value === "spack-package" ||
     value === "usecase" ||
     value === "workflow-template" ||

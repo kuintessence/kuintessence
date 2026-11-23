@@ -10,8 +10,8 @@ import pino from "pino";
 import {
   type AggregatorPort,
   MeteringCron,
-  shouldRunDaily,
-  shouldRunMonthly,
+  type MeteringStage,
+  type MeteringWorkers,
 } from "../metering-cron";
 
 class FakeAggregator implements AggregatorPort {
@@ -39,10 +39,26 @@ class FakeAggregator implements AggregatorPort {
 
 const silentLogger = pino({ level: "silent" });
 
+function makeCron(
+  opts: MeteringWorkers & { now?: () => Date; logger: typeof silentLogger; intervalMs?: number },
+) {
+  const completed = new Map<MeteringStage, Date>();
+  return new MeteringCron({
+    captureStorage: async () => {},
+    ...opts,
+    summariesEnabled: Boolean(opts.webhookEmitter),
+    runPeriod: async (stage, start, work) => {
+      if ((completed.get(stage)?.getTime() ?? -Infinity) >= start.getTime()) return;
+      await work(opts);
+      completed.set(stage, start);
+    },
+  });
+}
+
 describe("MeteringCron", () => {
   it("ticks call hourly + daily + monthly on the first run", async () => {
     const agg = new FakeAggregator();
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       logger: silentLogger,
       now: () => new Date("2026-04-30T12:00:00Z"),
@@ -56,7 +72,7 @@ describe("MeteringCron", () => {
   it("daily/monthly only run again when their boundary crosses", async () => {
     const agg = new FakeAggregator();
     let now = new Date("2026-04-30T12:00:00Z");
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       logger: silentLogger,
       now: () => now,
@@ -88,7 +104,7 @@ describe("MeteringCron", () => {
 
   it("stop() prevents further ticks and awaits in-flight work", async () => {
     const agg = new FakeAggregator();
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       intervalMs: 60_000,
       logger: silentLogger,
@@ -105,7 +121,7 @@ describe("MeteringCron", () => {
   it("catches and logs aggregator errors without aborting subsequent stages", async () => {
     const agg = new FakeAggregator();
     agg.shouldThrowOn = "hourly";
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       logger: silentLogger,
       now: () => new Date("2026-04-30T12:00:00Z"),
@@ -135,7 +151,7 @@ describe("MeteringCron webhook emitter", () => {
   it("emits a [prevDay, day) summary on a day-boundary tick", async () => {
     const agg = new FakeAggregator();
     const emitter = new FakeEmitter();
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       webhookEmitter: emitter,
       logger: silentLogger,
@@ -151,7 +167,7 @@ describe("MeteringCron webhook emitter", () => {
     const agg = new FakeAggregator();
     const emitter = new FakeEmitter();
     let now = new Date("2026-04-30T12:00:00Z");
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       webhookEmitter: emitter,
       logger: silentLogger,
@@ -174,7 +190,7 @@ describe("MeteringCron webhook emitter", () => {
         throw new Error("emit boom monthly");
       },
     };
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       webhookEmitter: emitter,
       logger: silentLogger,
@@ -188,7 +204,7 @@ describe("MeteringCron webhook emitter", () => {
   it("emits a [prevMonth, month) summary on a month-boundary tick", async () => {
     const agg = new FakeAggregator();
     const emitter = new FakeEmitter();
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       webhookEmitter: emitter,
       logger: silentLogger,
@@ -203,7 +219,7 @@ describe("MeteringCron webhook emitter", () => {
   it("month-boundary window rolls the year back for a January tick", async () => {
     const agg = new FakeAggregator();
     const emitter = new FakeEmitter();
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       webhookEmitter: emitter,
       logger: silentLogger,
@@ -219,7 +235,7 @@ describe("MeteringCron webhook emitter", () => {
     const agg = new FakeAggregator();
     const emitter = new FakeEmitter();
     let now = new Date("2026-05-03T08:00:00Z");
-    const cron = new MeteringCron({
+    const cron = makeCron({
       aggregator: agg,
       webhookEmitter: emitter,
       logger: silentLogger,
@@ -230,24 +246,5 @@ describe("MeteringCron webhook emitter", () => {
     now = new Date("2026-05-20T08:00:00Z");
     await cron.tick();
     expect(emitter.monthlyCalls.length).toBe(1);
-  });
-});
-
-describe("shouldRunDaily / shouldRunMonthly", () => {
-  it("treat null as 'never run yet' — always true", () => {
-    expect(shouldRunDaily(null, new Date("2026-04-30T00:00:00Z"))).toBe(true);
-    expect(shouldRunMonthly(null, new Date("2026-04-30T00:00:00Z"))).toBe(true);
-  });
-
-  it("daily: false when same UTC day, true when day flips", () => {
-    const a = new Date("2026-04-30T01:00:00Z");
-    expect(shouldRunDaily(a, new Date("2026-04-30T23:59:00Z"))).toBe(false);
-    expect(shouldRunDaily(a, new Date("2026-05-01T00:00:00Z"))).toBe(true);
-  });
-
-  it("monthly: false when same UTC month, true when month flips", () => {
-    const a = new Date("2026-04-15T12:00:00Z");
-    expect(shouldRunMonthly(a, new Date("2026-04-30T23:59:00Z"))).toBe(false);
-    expect(shouldRunMonthly(a, new Date("2026-05-01T00:00:00Z"))).toBe(true);
   });
 });

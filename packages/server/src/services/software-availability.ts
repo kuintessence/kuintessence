@@ -29,6 +29,7 @@ import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import type { AuthzService } from "../authz/service";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import type { LicenseRuntimeGovernanceService } from "./license-runtime-governance";
+import { activeSoftwareReleaseRevision } from "./site-runtime";
 
 type AssetRow = typeof softwareAssets.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -63,6 +64,7 @@ export interface AvailabilityPolicyLayer {
 }
 
 export interface SoftwareAvailabilityRuntimeOptions {
+  trustedReleaseKeys?: Readonly<Record<string, string>>;
   onlineAgentIds?: () => string[];
   governance?: LicenseRuntimeGovernanceService;
   sourceAuditAvailable?: (agentId: string, spec: string) => Promise<boolean>;
@@ -84,6 +86,12 @@ export class SoftwareAvailabilityService {
     options: { requireInstallation?: boolean } = {},
   ) {
     const asset = await this.resolveAsset(input);
+    if (
+      input.assetRef?.kind === "site-runtime" ||
+      input.siteRuntimeRevisionId ||
+      asset?.kind === "site-runtime"
+    )
+      return this.resolveSiteRuntime(input, principal, asset, options.requireInstallation === true);
     const spec = this.resolveSpec(input, asset);
     if (!spec) {
       throw new AppError(
@@ -190,6 +198,85 @@ export class SoftwareAvailabilityService {
       explanations: [...explanations],
     };
     return response;
+  }
+
+  private async resolveSiteRuntime(
+    input: SoftwareAvailabilityRequest,
+    principal: BoundPrincipal,
+    asset: AssetRow | null,
+    installing: boolean,
+  ): Promise<SoftwareAvailabilityResponse> {
+    if (
+      !asset ||
+      (input.assetRef && input.assetRef.kind !== "site-runtime") ||
+      asset.kind !== "site-runtime" ||
+      asset.source !== "platform-fork" ||
+      asset.lifecycle !== "published" ||
+      !asset.trustedForGlobalUse ||
+      !this.runtime.governance
+    ) {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "Published site runtime and license policy are required",
+        403,
+      );
+    }
+    await this.assertAssetCapability(asset.id, principal, "use");
+    const spec = `${asset.name}@${asset.version}`;
+    const binding = await activeSoftwareReleaseRevision(
+      this.db,
+      asset.id,
+      "site-runtime",
+      this.runtime.trustedReleaseKeys ?? {},
+    );
+    if (
+      binding?.payload.kind !== "site-runtime" ||
+      (input.siteRuntimeRevisionId && binding.revisionId !== input.siteRuntimeRevisionId) ||
+      (input.rawSpec && input.rawSpec !== spec)
+    ) {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "Site runtime revision has no matching active signed release",
+        403,
+      );
+    }
+    const agents = await this.loadCandidateAgents(input);
+    const policies = await this.loadPolicies(agents);
+    const sessions = this.controlChannelOnlineByAgent(agents);
+    const result: SoftwareAvailabilityResponse = {
+      spec,
+      asset: rowToSummary(asset),
+      installedAvailable: [],
+      installableAvailable: [],
+      blocked: [],
+      explanations: [],
+    };
+    for (const agent of agents) {
+      const policy = policies.get(agent.agentId) ?? defaultPolicy();
+      const reasons = this.evaluateAgent({
+        agent,
+        asset,
+        spec,
+        policy,
+        accessAllowed: true,
+        installAllowed: false,
+        installRequested: false,
+        installedSpec: spec,
+        sourceAuditVerified: false,
+        usecaseRef: input.usecaseRef,
+        controlChannelOnline: sessions.get(agent.agentId) ?? null,
+      });
+      if (!agent.siteId || !binding.payload.siteIds.includes(agent.siteId))
+        reasons.push("Site is outside the signed runtime binding");
+      if (input.installable || installing)
+        reasons.push("Site runtimes require a preinstalled file");
+      const blocks = await this.evaluateLicense(asset, false, principal, spec, agent.providerOrgId);
+      reasons.push(...blocks.map((block) => block.code));
+      (reasons.length ? result.blocked : result.installedAvailable).push(
+        toAvailabilityNode(agent, reasons, policy.installMode, reasons.length ? undefined : spec),
+      );
+    }
+    return result;
   }
 
   /** Authorize a concrete asset reference without running placement discovery. */
@@ -480,7 +567,12 @@ export class SoftwareAvailabilityService {
           p.providerOrgId === agent.providerOrgId &&
           p.clusterId === agentClusterKey(agent),
       );
-      const agentOverlay = overlays.find((p) => p.scope === "agent" && p.agentId === agent.agentId);
+      const agentOverlay = overlays.find(
+        (p) =>
+          p.scope === "agent" &&
+          p.providerOrgId === agent.providerOrgId &&
+          p.agentId === agent.agentId,
+      );
       const legacyPolicy = legacy.find((p) => p.agentId === agent.agentId);
       result.set(
         agent.agentId,

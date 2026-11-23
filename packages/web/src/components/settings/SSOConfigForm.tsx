@@ -20,7 +20,7 @@ import { NativeSelect } from "../ui/native-select";
  * /api/admin/sso/config:
  *
  *   - enabled toggle
- *   - provider type (only `oidc` is supported)
+ *   - provider type (OIDC or a Dex LDAP/SAML connector)
  *   - issuer URL, client ID
  *   - client secret as password input; when an existing secret is set the
  *     placeholder reads "(unchanged — re-enter to rotate)" and the field
@@ -181,9 +181,7 @@ export function SSOConfigForm() {
     return (
       <Card data-testid="sso-config-form">
         <CardHeader>
-          <CardTitle>
-            {t("settings.sso.title", { defaultValue: "Single Sign-On (OIDC)" })}
-          </CardTitle>
+          <CardTitle>{t("settings.sso.title", { defaultValue: "Single Sign-On" })}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="text-sm text-status-failed" data-testid="sso-load-error">
@@ -201,9 +199,7 @@ export function SSOConfigForm() {
     return (
       <Card data-testid="sso-config-form">
         <CardHeader>
-          <CardTitle>
-            {t("settings.sso.title", { defaultValue: "Single Sign-On (OIDC)" })}
-          </CardTitle>
+          <CardTitle>{t("settings.sso.title", { defaultValue: "Single Sign-On" })}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -307,7 +303,7 @@ export function SSOConfigForm() {
   return (
     <Card data-testid="sso-config-form">
       <CardHeader>
-        <CardTitle>{t("settings.sso.title", { defaultValue: "Single Sign-On (OIDC)" })}</CardTitle>
+        <CardTitle>{t("settings.sso.title", { defaultValue: "Single Sign-On" })}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <form className="space-y-4" onSubmit={onSave}>
@@ -385,12 +381,16 @@ export function SSOConfigForm() {
                 className="w-full"
               >
                 {PROVIDER_TYPES.map((p) => (
-                  <option key={p} value={p} disabled={p !== "oidc"}>
-                    {p}
-                    {p !== "oidc" ? " (coming soon)" : ""}
+                  <option key={p} value={p}>
+                    {p.toUpperCase()}
                   </option>
                 ))}
               </NativeSelect>
+              {state.providerType !== "oidc" && (
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.sso.connectorHelp", { id: state.providerType })}
+                </p>
+              )}
             </div>
 
             {/* Issuer URL */}

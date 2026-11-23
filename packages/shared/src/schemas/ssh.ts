@@ -22,6 +22,11 @@ export const SshCredentialUpsertSchema = z.object({
   passphrase: z.string().optional(),
   /** Base64 SHA-256 of the expected host public key. Empty = no pin (unverified). */
   hostKeySha256: z.string().optional(),
+  jumpAgentIds: z
+    .array(z.string().min(1).max(255))
+    .max(4)
+    .refine((ids) => new Set(ids).size === ids.length)
+    .optional(),
 });
 export type SshCredentialUpsert = z.infer<typeof SshCredentialUpsertSchema>;
 
@@ -34,6 +39,7 @@ export interface SshCredentialView {
   hasSecret: boolean;
   /** Base64 SHA-256 host-key pin (not secret); "" when unpinned. */
   hostKeySha256: string;
+  jumpAgentIds?: string[];
   updatedAt: string | null;
   updatedBy: string | null;
 }

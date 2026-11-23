@@ -84,10 +84,8 @@ afterEach(() => {
 });
 
 describe("JobLogsTab", () => {
-  test("keeps the unavailable state compact when the logs endpoint is missing", async () => {
-    apiClient.api.get.mockRejectedValue(
-      new apiClient.ApiError(404, "NOT_FOUND", "Logs endpoint missing"),
-    );
+  test("keeps the unavailable state compact when the job is missing", async () => {
+    apiClient.api.get.mockRejectedValue(new apiClient.ApiError(404, "NOT_FOUND", "Job not found"));
 
     render(<JobLogsTab jobId="job-1" />, { wrapper: Wrapper });
 

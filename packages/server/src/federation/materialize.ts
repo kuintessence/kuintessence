@@ -389,12 +389,24 @@ export async function materializeFederationWorkflow(input: {
           break;
         }
         case "Milestone":
-          return fail(field, "Milestone execution is not supported by the existing executor");
-        case "Reduce":
-          if (node.reducer.kind === "Command")
-            return fail(field, "Command reducer is not supported by the existing executor");
-          nodes.push(base);
+          return fail(
+            field,
+            "Restricted federation workflows cannot send local milestone notifications",
+          );
+        case "Reduce": {
+          const leaf = workflowDsl.commandExecutionNode(node);
+          if (!leaf) {
+            nodes.push(base);
+            break;
+          }
+          const resolved = (await spec({ nodeDrafts: [leaf], nodeRelations: [] }, field, depth + 1))
+            .nodeDrafts[0];
+          const reducer = workflowDsl.boundCommandReducer(resolved);
+          if (!reducer)
+            return fail(field, "Command requires a bound executable revision and runtime");
+          nodes.push({ ...node, externalId: undefined, reducer });
           break;
+        }
         case "NoAction":
           nodes.push({
             ...node,

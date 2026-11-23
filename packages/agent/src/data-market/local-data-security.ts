@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { lstat, mkdir, open, readdir, realpath, rm } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
 export interface DatasetFileManifest {
@@ -148,6 +148,38 @@ export class AgentDataRoots {
     };
   }
 
+  async openReplicaSource(rootId: string, datasetPath: string, entryPath: string) {
+    const root = this.managedRoots.get(rootId);
+    if (!root || (await realpath(root)) !== root) throw new Error("Replica source root changed");
+    assertCanonicalManagedRootPath(datasetPath);
+    assertCanonicalManagedRootPath(entryPath);
+    const path = resolve(root, datasetPath, entryPath);
+    assertOrdinaryDatasetPath(relative(this.requireDatasetRoot(), path));
+    if (!inside(root, path) || path === root || (await realpath(path)) !== path)
+      throw new Error("Invalid replica source path");
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      // Bind the opened inode to the approved path even if an ancestor was replaced.
+      if (
+        !stat.isFile() ||
+        stat.nlink !== 1 ||
+        (await realpath(`/proc/self/fd/${file.fd}`)) !== path
+      )
+        throw new Error("Replica source file binding changed");
+      return file;
+    } catch (error) {
+      await file.close();
+      throw error;
+    }
+  }
+
+  async replicaDirectory(managedRootId: string): Promise<string> {
+    const root = this.managedRoots.get(managedRootId);
+    if (!root || (await realpath(root)) !== root) throw new Error("Replica root binding changed");
+    return ensurePrivateDirectory(resolve(root, ".kq-replicas"));
+  }
+
   async resolveManagedDataPath(managedRootId: string, relativePath: string): Promise<string> {
     this.requireDatasetRoot();
     const root = this.managedRoots.get(managedRootId);
@@ -241,7 +273,7 @@ export function merkleRoot(files: readonly DatasetFileManifest[]): string {
   return nodes[0] ?? sha256Text("");
 }
 
-async function ensurePrivateDirectory(path: string): Promise<string> {
+export async function ensurePrivateDirectory(path: string): Promise<string> {
   if (!isAbsolute(path)) throw new Error("Agent root must be absolute");
   await mkdir(path, { recursive: true, mode: 0o700 });
   if ((await lstat(path)).isSymbolicLink()) {
@@ -284,7 +316,7 @@ function resolveManagedDescendant(root: string, path: string, label: string): st
   return candidate;
 }
 
-async function scanFiles(root: string, directory: string): Promise<DatasetFileManifest[]> {
+export async function scanFiles(root: string, directory: string): Promise<DatasetFileManifest[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files: DatasetFileManifest[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -343,6 +375,8 @@ async function sha256File(path: string): Promise<string> {
 }
 
 function assertOrdinaryDatasetPath(path: string): void {
+  if (path.split(/[\\/]/).includes(".kq-replicas"))
+    throw new Error("Managed replicas cannot be imported as ordinary datasets");
   if (path.split(/[\\/]/).includes(".federation-media"))
     throw new Error(
       "Federation media requires source-authorized publication, not ordinary scanning",

@@ -56,7 +56,7 @@ export class TransferRunner {
   constructor(private readonly deps: TransferRunnerDeps) {}
 
   canHandle(data: TransferCreate): boolean {
-    if (this.deps.dispatcher.onlineAgentIds().length === 0) return false;
+    if (this.deps.dispatcher.interactionAgentIds().length === 0) return false;
     return data.direction === "cloud_to_cluster" || data.direction === "cluster_to_cloud";
   }
 
@@ -128,7 +128,11 @@ export class TransferRunner {
     if (ownerId && this.deps.sessionStore && !this.activeTransfers.has(transferId)) {
       const saved = await this.deps.sessionStore.load(ownerId, transferId);
       if (saved) {
-        const credential = await this.deps.netdriveService.restoreMultipartSession(ownerId, saved);
+        const credential = await this.deps.netdriveService.restoreMultipartSession(
+          ownerId,
+          saved,
+          false,
+        );
         await this.deps.netdriveService.abortMultipart(ownerId, credential);
         await this.deps.sessionStore.save(ownerId, transferId, null);
       }
@@ -203,7 +207,7 @@ export class TransferRunner {
       }
       onProgress(event);
     };
-    this.deps.transferRegistry.register(transferId, wrapped, TRANSFER_TIMEOUT_MS);
+    this.deps.transferRegistry.register(transferId, wrapped, TRANSFER_TIMEOUT_MS, active.agentId);
     const queued = this.deps.dispatcher.pushFileTransfer(active.agentId, transferId, {
       direction: "cloud_to_cluster",
       sourceUrl: downloadUrl,
@@ -383,7 +387,7 @@ export class TransferRunner {
       await wrapped({ ...session.completion, state: "succeeded" });
       return;
     }
-    this.deps.transferRegistry.register(transferId, wrapped, TRANSFER_TIMEOUT_MS);
+    this.deps.transferRegistry.register(transferId, wrapped, TRANSFER_TIMEOUT_MS, active.agentId);
     const queued = this.deps.dispatcher.pushFileTransfer(active.agentId, transferId, {
       direction: "cluster_to_cloud",
       sourcePath: data.source,
@@ -504,7 +508,7 @@ export class TransferRunner {
   }
 
   private async resolveAgentId(data: TransferCreate): Promise<string | null> {
-    const online = this.deps.dispatcher.onlineAgentIds();
+    const online = this.deps.dispatcher.interactionAgentIds();
     if (online.length === 0) return null;
     if (data.agentId) return online.includes(data.agentId) ? data.agentId : null;
     if (!data.siteId) return online[0] ?? null;

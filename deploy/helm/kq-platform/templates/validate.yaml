@@ -92,3 +92,18 @@
 {{- fail "preview requires three distinct bucket names" }}
 {{- end }}
 {{- end }}
+
+{{- if and (gt (int (include "kq.serverRelaySlots" .)) 1) (not .Values.server.relay.domain) }}
+{{- fail "multiple Server replicas require server.relay.domain" }}
+{{- end }}
+{{- if .Values.server.relay.domain }}
+{{- if not (and (.Values.server.relay.existingSecret) (or .Values.server.grpcTls.existingSecret .Values.secrets.existingSecret)) }}
+{{- fail "Server relay requires shared relay and CA Secret references" }}
+{{- end }}
+{{- if gt (int (include "kq.serverRelaySlots" .)) 128 }}
+{{- fail "Server relay supports up to 128 pod origins" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9-]+(\\.[a-z0-9-]+)+$" .Values.server.relay.domain) }}
+{{- fail "server.relay.domain must be a DNS suffix" }}
+{{- end }}
+{{- end }}

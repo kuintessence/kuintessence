@@ -522,7 +522,7 @@ describeIfPg("cp-bindings (PG)", () => {
     expect(overview.agents[0]?.runtimeStatus).toBe("offline");
   });
 
-  test("software overlays merge provider defaults with agent overrides and sync legacy policy", async () => {
+  test("software overlays merge provider defaults with agent overrides and send the current effective policy", async () => {
     const scope = {
       orgIds: [ORG_A],
       isPlatformWide: false,
@@ -578,15 +578,29 @@ describeIfPg("cp-bindings (PG)", () => {
     ]);
     expect(agent?.effectivePolicy.preinstallList).toEqual(["gromacs@2024.1", "openmpi@4.1.6"]);
 
-    const [legacy] = await db
-      .select()
-      .from(softwarePolicies)
-      .where(eq(softwarePolicies.agentId, AGENT_X))
-      .limit(1);
-    expect(legacy?.allowList).toEqual(["gromacs", "openmpi"]);
-    expect(legacy?.denyList).toEqual(["blocked-agent", "blocked-provider"]);
-    expect(legacy?.lockEnabled).toBe(true);
-    expect(legacy?.mirrors.map((mirror) => mirror.name)).toEqual(["agent-local", "official"]);
+    const store = new PolicyStore(db);
+    expect(await store.getForAgent(AGENT_X)).toBeNull();
+    const effective = await store.effectiveForAgent(AGENT_X);
+    expect(effective?.allowList).toEqual(["gromacs", "openmpi"]);
+    expect(effective?.denyList).toEqual(["blocked-agent", "blocked-provider"]);
+    expect(effective?.lockEnabled).toBe(true);
+    expect(effective?.mirrors.map((mirror) => mirror.name)).toEqual(["agent-local", "official"]);
+    const provider = overview.providerPolicy;
+    if (!provider) throw new Error("Missing provider policy");
+    await bindings.software.saveProviderPolicy(scope, {
+      ...provider,
+      providerOrgId: ORG_A,
+      denyList: [],
+      mirrors: [],
+      preinstallList: [],
+    });
+    const updated = await store.effectiveForAgent(AGENT_X);
+    expect(updated?.denyList).toEqual(["blocked-agent"]);
+    expect(updated?.mirrors.find((m) => m.name === "official")?.url).toBe(
+      "https://agent.example/override",
+    );
+    expect(updated?.preinstallList).toEqual(["gromacs@2024.1"]);
+    expect(await store.effectiveForAgent(AGENT_Y)).toBeNull();
   });
 
   test("software overlays merge provider defaults with cluster overrides", async () => {
@@ -645,14 +659,12 @@ describeIfPg("cp-bindings (PG)", () => {
     ]);
     expect(agent?.effectivePolicy.preinstallList).toEqual(["gromacs@2024.1", "openmpi@4.1.6"]);
 
-    const [legacy] = await db
-      .select()
-      .from(softwarePolicies)
-      .where(eq(softwarePolicies.agentId, AGENT_X))
-      .limit(1);
-    expect(legacy?.allowList).toEqual(["gromacs", "openmpi"]);
-    expect(legacy?.denyList).toEqual(["blocked-cluster", "blocked-provider"]);
-    expect(legacy?.lockEnabled).toBe(true);
+    const store = new PolicyStore(db);
+    expect(await store.getForAgent(AGENT_X)).toBeNull();
+    const effective = await store.effectiveForAgent(AGENT_X);
+    expect(effective?.allowList).toEqual(["gromacs", "openmpi"]);
+    expect(effective?.denyList).toEqual(["blocked-cluster", "blocked-provider"]);
+    expect(effective?.lockEnabled).toBe(true);
   });
 
   test("users.listInOrgs preserves the configured display name", async () => {

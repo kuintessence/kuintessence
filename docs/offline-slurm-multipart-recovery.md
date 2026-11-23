@@ -4,11 +4,11 @@ Server 在调用对象存储 complete 前，将 Agent 的最终 size、sha256、
 
 会话保存通过传输行的 `SELECT FOR UPDATE` 串行化：绑定字段不可变化，completion 只能首次写入或原样重试；旧进程保存不含 completion 的会话时保留既有完成回执，并将合并结果返回 dispatcher，直接进入完成重放。显式取消才会清空会话；已取消行拒绝后续写回。
 
-最终提交按 storageKey 获取 PostgreSQL 事务锁。已提交记录必须匹配 owner、path、size、sha256、contentType 且未删除，才返回原 file id；不会重复创建记录或授权 outbox。新记录与替换记录的授权变更在同一事务中提交，授权失败回滚元数据。
+最终提交按 storageKey 获取 PostgreSQL 事务锁。已提交记录必须匹配 owner、path、size、sha256、contentType 且未删除，才返回原 file id；不会重复创建记录或授权 outbox。新文件、被替换文件的状态、授权变更和上传流量在同一事务中提交。授权或记账失败会回滚元数据，重放成功的提交只计一次上传量。
 
 对象 complete 已成功但响应丢失或数据库事务回滚时，恢复通过 head 和流式 sha256 校验对象，再提交元数据；仅 size 相同不足以认定成功。提交成功仍保留 completion，覆盖传输最终状态落库前崩溃的窗口。sha256 不匹配、绑定变化会明确失败；底层 SDK/数据库异常向用户返回 `MULTIPART_FINALIZATION_RETRY_REQUIRED`，不会显示底层 URL。
 
-不保证 best-effort 流量审计在进程崩溃时必达。已有旧 multipart token 未绑定 path，需经授权恢复换发新 token。部署前须完成数据库迁移，并保留对象存储的未完成分片会话；恢复仍会重新检查授权和原内容绑定。
+部署前须完成数据库迁移并保留对象存储的未完成分片会话。恢复时，Server 复查授权与原内容绑定后签发提交凭证。
 
 ## 登录节点对象下载恢复
 
@@ -26,13 +26,14 @@ Server 对 NetDrive 下载下发已授权文件的真实大小和 `expected_sha2
 发布前再次核对目录和部分文件的 inode、设备、大小与权限，拒绝下载期间被替换的路径。
 这沿用单用户信任边界，不隔离同一 Unix 账号下的恶意进程。
 
-此增强适用于带可信内容绑定的主机下载。旧发送端未提供摘要时及 Docker 容器分支保留原有curl行为，
-不能据此宣称这些兼容路径已有跨重启断点和整件摘要运行检查。失败部分文件尚无自动GC，确认没有在途操作后再人工清理。
+主机 Agent 为带可信摘要的下载登记它创建的部分文件。Agent 启动时和随后每小时从本地 SQLite 检查最多 64 条超过七天未使用的记录。续传和中断会刷新保留期。回收前复核父目录、文件身份、权限和独占锁；正在写入、已替换或在中断后被修改的文件会保留。未登记的同名文件留在原处。若文件系统没有提供创建时间，Agent 在写入时异常退出后可能无法确认文件身份，此时保留文件。没有可用的 `flock` 命令时，下载仍可续传，这些文件留给人工清理。
+
+部分文件回收后再次恢复同一下载，会从头获取内容并核对完整摘要。容器下载在临时目录校验 Server 下发的大小和摘要后发布，跨重启的 Range 恢复适用于主机上有内容绑定的下载。
 
 工作流输入的两条路径也传递已授权 NetDrive 文件的 SHA-256 与大小：Server 直接触发的 `createFileStager`，
 以及 Agent 管理工作目录时的 `InputStaging.total_bytes/expected_sha256`。主机 Agent 使用同一下载器保留摘要绑定部分文件、
 按 Range 恢复并在整文件校验后发布；任务输入下载使用 Agent 生命周期取消信号，退出时保留部分文件。
-授权仍先于下载 URL 和内容绑定下发。旧消息、未提供可信摘要的特殊输入，以及容器下载继续走兼容路径。
+Server 在下发下载 URL 和内容绑定前复查授权。只有提供可信摘要的主机下载才登记可回收的部分文件。
 
 容器来源的 multipart 上传现在与主机上传使用相同的持久 checkpoint（需配置 Agent 的 transfer state 目录），
 绑定 requestId/uploadId、对象大小、partSize 和每个完成 part 的 SHA-256/ETag。
@@ -43,15 +44,13 @@ part PUT 每次尝试有 5 分钟总期限，网络停滞或取消后保留已�
 该期限不是随进度刷新的空闲期限；低于完成一整个 part 所需带宽的链路仍可能失败。Server 默认
 `NETDRIVE_MULTIPART_PART_SIZE_MB=64`，每片须在期限内传完；较慢站点可由部署方降低该值（S3 最低为 5 MiB），
 对新建上传生效。已有会话固定 partSize，须另建传输才能采用新值；同时保持总片数不超过 10000。
-未配置持久 state 目录时仍不承诺跨重启恢复；legacy single PUT 保留整件重传行为，checkpoint 尚无自动 GC。
+配置持久 state 目录后，Agent 通过在线心跳每批核对最多 64 个本地上传断点文件。Server 查询 PostgreSQL 中属于该 Agent 的传输，只对已成功或已取消的上传确认回收。Agent 核对心跳序号、文件身份和本地写入状态后删除对应断点及遗留的临时记录。断线、等待重试、Server 缺少归属记录或确认丢失时保留断点，每轮目录扫描结束后一小时再复查。
 
 每次 multipart part URL 申请现在独立生成 `correlation_id`，同时提交固定 `upload_id`；
 `request_id` 继续表示 Server 管理的 transfer，不能由关联 ID 替代。
 Server 核对登录 Agent、当前 pending uploadId 后回显关联 ID 和 uploadId，Agent 仅接受三者均匹配的当前请求的响应。
 同一 transfer 超时重试、URL 续签或重派后的迟到响应不会消费新 pending；超时和取消只清理自身请求及监听器。
-Server 仍兼容未提供新增字段的旧 Agent，按原有 transfer 查表授权；旧 Agent 不具备此响应隔离保证。
-新 Agent 连接未支持回显字段的旧 Server 时会拒绝不带关联 ID 的响应并超时失败，升级时应先部署 Server，
-不能通过降级接收旧响应来跨 uploadId 使用票据。
+Agent 会丢弃缺少关联 ID 的响应，等待本次请求的有效响应直至超时。
 
 Sandbox artifact 持久化与普通工作流结果发布现在共用持久传输等待逻辑：先创建并核对 `file_transfers` 行，
 再启动上传，使 `PgTransferSessionStore` 能保存 multipart session。Sandbox 使用 artifact/replica 派生的独立稳定

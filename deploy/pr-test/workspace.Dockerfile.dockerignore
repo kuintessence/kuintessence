@@ -1,6 +1,7 @@
 **
 !package.json
 !bun.lock
+!.npmrc
 !tsconfig.base.json
 !biome.json
 !packages

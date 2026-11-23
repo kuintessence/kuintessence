@@ -494,7 +494,7 @@ describe("recipe repository writes and validation", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ...REPO, activeCommit: COMMIT });
-    expect(store.activate).toHaveBeenCalledWith(REPO.id, COMMIT, expected, OWNER.sub);
+    expect(store.activate).toHaveBeenCalledWith(REPO.id, COMMIT, expected, OWNER.sub, false);
   });
 
   test("deactivation preserves CAS and returns history without deleting it", async () => {
@@ -506,7 +506,7 @@ describe("recipe repository writes and validation", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(REPO);
-    expect(store.deactivate).toHaveBeenCalledWith(REPO.id, COMMIT, OWNER.sub);
+    expect(store.deactivate).toHaveBeenCalledWith(REPO.id, COMMIT, OWNER.sub, false);
   });
 
   test.each(["PUT", "DELETE"])("%s preserves store CAS conflicts as 409", async (method) => {

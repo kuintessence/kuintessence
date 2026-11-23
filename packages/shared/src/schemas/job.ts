@@ -1,21 +1,68 @@
 import { z } from "zod";
 import { DataInputRefSchema, DataRequirementsSchema } from "../data-market";
 
+export const EnvironmentNameSchema = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Invalid environment variable name");
+
+export const JobSchedulerLimitsSchema = z.strictObject({
+  nodeCount: z.number().int().positive().max(2_147_483_647).optional(),
+  maxCpuTime: z.number().int().positive().max(2_147_483_647).optional(),
+  stopTime: z.number().int().positive().max(253402300799).optional(),
+});
+export type JobSchedulerLimits = z.infer<typeof JobSchedulerLimitsSchema>;
+
 export const ResourceRequestSchema = z.object({
   cpus: z.number().int().positive(),
   memoryMb: z.number().int().positive(),
   gpus: z.number().int().nonnegative().optional(),
   wallTimeSec: z.number().int().positive().optional(),
+  schedulerLimits: JobSchedulerLimitsSchema.optional(),
 });
 
-export const SoftwareReqSchema = z.object({
-  assetId: z.string().uuid().optional(),
-  spec: z.string().min(1).max(500).optional(),
-  name: z.string().min(1),
-  version: z.string().optional(),
-  /** If true, user is requesting that this software be installed on the agent. */
-  installable: z.boolean().optional().default(false),
-});
+/** CPU, memory and GPU requests are job totals; native multi-node chunks must fit exactly. */
+export function schedulerLimitRejection(
+  scheduler: string,
+  resources: {
+    cpus: number;
+    memoryMb: number;
+    gpus?: number;
+    wallTimeSec?: number;
+    schedulerLimits?: JobSchedulerLimits;
+  },
+): string | undefined {
+  const limits = resources.schedulerLimits;
+  if (!limits) return;
+  const nodes = limits.nodeCount ?? 1;
+  if (nodes > 1) {
+    if (!["slurm", "pbs-pro", "torque"].includes(scheduler))
+      return "Multi-node allocations require an HPC scheduler";
+    if (resources.cpus % nodes || resources.memoryMb % nodes || (resources.gpus ?? 0) % nodes)
+      return "Job CPU, memory and GPU totals must divide evenly across nodes";
+  }
+  if (limits.maxCpuTime !== undefined && scheduler !== "pbs-pro" && scheduler !== "torque")
+    return "Aggregate CPU time limits require PBS Pro or Torque";
+  if (limits.stopTime !== undefined) {
+    if (limits.stopTime <= Math.floor(Date.now() / 1000)) return "Job stop time has passed";
+    if (scheduler !== "slurm" || !resources.wallTimeSec)
+      return "An absolute deadline requires Slurm and a wall time";
+  }
+}
+
+export const SoftwareReqSchema = z
+  .object({
+    siteRuntimeRevisionId: z.string().uuid().optional(),
+    assetId: z.string().uuid().optional(),
+    spec: z.string().min(1).max(500).optional(),
+    name: z.string().min(1),
+    version: z.string().optional(),
+    /** If true, user is requesting that this software be installed on the agent. */
+    installable: z.boolean().optional().default(false),
+  })
+  .refine(
+    (req) => !req.siteRuntimeRevisionId || (!!req.assetId && !!req.version && !req.installable),
+    "Site runtime revisions require a preinstalled, versioned software asset",
+  );
 
 export const JobUsecaseFileValueSchema = z.object({
   fileMetadataId: z.string().min(1),
@@ -72,7 +119,7 @@ export const JobSubmitSchema = z.object({
     })
     .optional(),
   workingDir: z.string().optional(),
-  envVars: z.record(z.string(), z.string()).optional(),
+  envVars: z.record(EnvironmentNameSchema, z.string()).optional(),
   tags: z.array(z.string()).optional(),
   softwareRequirements: z.array(SoftwareReqSchema).optional(),
   usecasePackageId: z.string().uuid().optional(),

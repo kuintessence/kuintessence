@@ -1,20 +1,3 @@
-// Metering rollup cron driver.
-//
-// Wraps {@link MeteringAggregator} with a `setInterval`-based ticker so the
-// production Server keeps the rollup pipeline (raw → hourly → daily → monthly)
-// running without an external scheduler.
-//
-// Tick policy:
-//   - Hourly rollup: every tick (default interval 1h).
-//   - Daily rollup: only when the UTC day has changed since `lastDailyRunAt`.
-//   - Monthly rollup: only when the UTC month has changed since
-//     `lastMonthlyRunAt`.
-//
-// The cron logs every tick and never throws — exceptions are caught and
-// logged so a transient DB hiccup doesn't kill the cron loop. `start()`
-// runs an immediate tick before scheduling, `stop()` clears the interval
-// and awaits any in-flight tick before returning.
-
 import { createLogger } from "@kuintessence/shared";
 import type { Logger } from "pino";
 
@@ -29,158 +12,109 @@ export interface WebhookEmitterPort {
   emitMonthlySummary(from: Date, to: Date): Promise<unknown>;
 }
 
-export interface MeteringCronOptions {
+export type MeteringStage =
+  | "hourly"
+  | "daily"
+  | "monthly"
+  | "daily-summary"
+  | "monthly-summary"
+  | "storage-daily";
+export interface MeteringWorkers {
   aggregator: AggregatorPort;
-  /**
-   * Optional daily usage-summary emitter. When present, a day-boundary tick
-   * fires a `usage.daily` webhook for the previous UTC day after the daily
-   * rollup. Best-effort — a failure here never aborts the tick.
-   */
   webhookEmitter?: WebhookEmitterPort;
-  /** Tick interval in ms. Defaults to 1 hour. */
+}
+
+export interface MeteringCronOptions {
+  runPeriod: (
+    stage: MeteringStage,
+    periodStart: Date,
+    work: (workers: MeteringWorkers) => Promise<void>,
+  ) => Promise<void>;
+  captureStorage: () => Promise<void>;
+  summariesEnabled: boolean;
   intervalMs?: number;
-  /** Logger override — defaults to pino('metering-cron'). */
   logger?: Logger;
-  /** Injectable clock for tests. */
   now?: () => Date;
 }
 
 export class MeteringCron {
-  private readonly aggregator: AggregatorPort;
-  private readonly webhookEmitter: WebhookEmitterPort | null;
-  private readonly intervalMs: number;
-  private readonly logger: Logger;
-  private readonly now: () => Date;
-
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private inFlight: Promise<void> | null = null;
-  private lastDailyRunAt: Date | null = null;
-  private lastMonthlyRunAt: Date | null = null;
+  private timer?: ReturnType<typeof setInterval>;
+  private inFlight?: Promise<void>;
   private stopped = false;
+  private readonly logger: Logger;
 
-  constructor(opts: MeteringCronOptions) {
-    this.aggregator = opts.aggregator;
-    this.webhookEmitter = opts.webhookEmitter ?? null;
-    this.intervalMs = opts.intervalMs ?? 60 * 60 * 1000;
+  constructor(private readonly opts: MeteringCronOptions) {
     this.logger = opts.logger ?? createLogger("metering-cron");
-    this.now = opts.now ?? (() => new Date());
   }
 
-  /**
-   * Run an immediate tick, then schedule periodic ticks. Safe to call
-   * twice — the second call is a no-op.
-   */
-  async start(): Promise<void> {
+  async start() {
     if (this.timer) return;
     this.stopped = false;
-    // Kick off the first tick immediately so a freshly-started Server does not
-    // wait a full interval before any rollup work happens.
-    this.inFlight = this.tick();
-    await this.inFlight.catch(() => undefined);
-    this.timer = setInterval(() => {
-      // Each scheduled tick reuses `inFlight` so `stop()` can await it.
-      this.inFlight = this.tick().catch((err: unknown) => {
-        this.logger.error({ err }, "metering-cron: scheduled tick failed");
-      });
-    }, this.intervalMs);
-    // Bun and Node both expose `unref` on the interval handle so it doesn't
-    // keep the process alive after a graceful shutdown signal.
-    const handle = this.timer as unknown as { unref?: () => void };
-    if (typeof handle.unref === "function") handle.unref();
+    this.timer = setInterval(() => void this.tick(), this.opts.intervalMs ?? 3_600_000);
+    this.timer.unref();
+    await this.tick();
   }
 
-  /**
-   * Stop the cron. Clears the interval and awaits any in-flight tick.
-   */
-  async stop(): Promise<void> {
+  async stop() {
     this.stopped = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (this.inFlight) {
-      await this.inFlight.catch(() => undefined);
-      this.inFlight = null;
-    }
+    clearInterval(this.timer);
+    this.timer = undefined;
+    await this.inFlight;
   }
 
-  /**
-   * Public entry-point for tests so they can drive a tick deterministically
-   * without spinning the real interval.
-   */
-  async tick(): Promise<void> {
+  async tick() {
     if (this.stopped) return;
-    const now = this.now();
+    this.inFlight ??= this.runTick().finally(() => {
+      this.inFlight = undefined;
+    });
+    await this.inFlight;
+  }
+
+  private async runTick() {
+    const now = this.opts.now?.() ?? new Date();
+    const hour = new Date(now);
+    hour.setUTCMinutes(0, 0, 0);
+    const day = utcMidnight(now);
+    const month = utcMonthStart(now);
+    const run = async (
+      stage: MeteringStage,
+      start: Date,
+      work: (workers: MeteringWorkers) => Promise<void>,
+    ) => {
+      try {
+        await this.opts.runPeriod(stage, start, work);
+      } catch (err) {
+        this.logger.error({ err, stage }, "Metering period failed");
+      }
+    };
+    await run("hourly", hour, async ({ aggregator }) => {
+      await aggregator.runHourlyRollup();
+    });
+    await run("daily", day, async ({ aggregator }) => {
+      await aggregator.runDailyRollup();
+    });
+    await run("monthly", month, async ({ aggregator }) => {
+      await aggregator.runMonthlyRollup();
+    });
     try {
-      const hourly = await this.aggregator.runHourlyRollup();
-      this.logger.info(
-        { stage: "hourly", buckets: hourly.bucketsWritten, deleted: hourly.sourceRowsDeleted },
-        "metering-cron: hourly rollup",
-      );
+      await this.opts.captureStorage();
     } catch (err) {
-      this.logger.error({ err, stage: "hourly" }, "metering-cron: hourly rollup failed");
+      this.logger.error({ err, stage: "storage-daily" }, "Metering period failed");
     }
-
-    if (shouldRunDaily(this.lastDailyRunAt, now)) {
-      try {
-        const daily = await this.aggregator.runDailyRollup();
-        this.lastDailyRunAt = now;
-        this.logger.info(
-          { stage: "daily", buckets: daily.bucketsWritten, deleted: daily.sourceRowsDeleted },
-          "metering-cron: daily rollup",
-        );
-      } catch (err) {
-        this.logger.error({ err, stage: "daily" }, "metering-cron: daily rollup failed");
-      }
-
-      if (this.webhookEmitter) {
-        const dayEnd = utcMidnight(now);
-        const dayStart = new Date(dayEnd.getTime() - 24 * 60 * 60 * 1000);
-        try {
-          await this.webhookEmitter.emitDailySummary(dayStart, dayEnd);
-        } catch (err) {
-          this.logger.error({ err, stage: "daily-webhook" }, "metering-cron: daily webhook failed");
-        }
-      }
-    }
-
-    if (shouldRunMonthly(this.lastMonthlyRunAt, now)) {
-      try {
-        const monthly = await this.aggregator.runMonthlyRollup();
-        this.lastMonthlyRunAt = now;
-        this.logger.info(
-          {
-            stage: "monthly",
-            buckets: monthly.bucketsWritten,
-            deleted: monthly.sourceRowsDeleted,
-          },
-          "metering-cron: monthly rollup",
-        );
-      } catch (err) {
-        this.logger.error({ err, stage: "monthly" }, "metering-cron: monthly rollup failed");
-      }
-
-      if (this.webhookEmitter) {
-        const monthEnd = utcMonthStart(now);
-        const monthStart = new Date(
-          Date.UTC(monthEnd.getUTCFullYear(), monthEnd.getUTCMonth() - 1, 1),
-        );
-        try {
-          await this.webhookEmitter.emitMonthlySummary(monthStart, monthEnd);
-        } catch (err) {
-          this.logger.error(
-            { err, stage: "monthly-webhook" },
-            "metering-cron: monthly webhook failed",
-          );
-        }
-      }
-    }
+    if (!this.opts.summariesEnabled) return;
+    await run("daily-summary", day, async ({ webhookEmitter }) => {
+      if (!webhookEmitter) throw new Error("Missing metering webhook emitter");
+      await webhookEmitter.emitDailySummary(new Date(day.getTime() - 86_400_000), day);
+    });
+    await run("monthly-summary", month, async ({ webhookEmitter }) => {
+      if (!webhookEmitter) throw new Error("Missing metering webhook emitter");
+      await webhookEmitter.emitMonthlySummary(
+        new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() - 1, 1)),
+        month,
+      );
+    });
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pure boundary-detection helpers — exported for testability.
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** Floor a timestamp to 00:00:00.000 UTC of the same calendar day. */
 export function utcMidnight(d: Date): Date {
@@ -190,21 +124,4 @@ export function utcMidnight(d: Date): Date {
 /** Floor a timestamp to 00:00:00.000 UTC of the 1st of the same calendar month. */
 export function utcMonthStart(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
-
-export function shouldRunDaily(lastRunAt: Date | null, now: Date): boolean {
-  if (!lastRunAt) return true;
-  return (
-    lastRunAt.getUTCFullYear() !== now.getUTCFullYear() ||
-    lastRunAt.getUTCMonth() !== now.getUTCMonth() ||
-    lastRunAt.getUTCDate() !== now.getUTCDate()
-  );
-}
-
-export function shouldRunMonthly(lastRunAt: Date | null, now: Date): boolean {
-  if (!lastRunAt) return true;
-  return (
-    lastRunAt.getUTCFullYear() !== now.getUTCFullYear() ||
-    lastRunAt.getUTCMonth() !== now.getUTCMonth()
-  );
 }
