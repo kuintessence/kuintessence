@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdir, open, opendir, realpath, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, opendir, realpath, rename, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -39,6 +39,15 @@ async function remove(path: string) {
   await unlink(path).catch((err: NodeJS.ErrnoException) => {
     if (err.code !== "ENOENT") throw err;
   });
+}
+// Resync checks metadata in the request; the worker hashes changed files under the digest lock.
+async function objectStamp(dir: string, digest: string) {
+  const file = await lstat(join(dir, digest), { bigint: true }).catch(
+    (err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT") throw err;
+    },
+  );
+  return file?.isFile() ? [file.ino, file.size, file.ctimeNs, file.mtimeNs].join("/") : null;
 }
 function fileUrl(asset: string, path: string) {
   return `/api/software/mirror-cache/${asset}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
@@ -111,10 +120,24 @@ export class SoftwareMirrorWorker {
             "A different mirror inventory is already bound to this asset",
             409,
           );
-        await tx
-          .update(cache)
-          .set({ status: "syncing", error: null, updatedAt: new Date() })
-          .where(and(managed, eq(cache.assetId, assetId), eq(cache.status, "failed")));
+        const dir = await this.directory();
+        const retry = [];
+        for (const row of prior) {
+          if (row.status === "syncing") continue;
+          const f = byPath.get(String(row.provenance.path));
+          if (!f) throw invalid("Mirror inventory changed");
+          if (
+            row.status !== "cached" ||
+            !row.provenance.verifiedStamp ||
+            row.provenance.verifiedStamp !== (await objectStamp(dir, f.sha256))
+          )
+            retry.push(row.id);
+        }
+        if (retry.length)
+          await tx
+            .update(cache)
+            .set({ status: "syncing", error: null, updatedAt: new Date() })
+            .where(inArray(cache.id, retry));
       } else {
         for (let i = 0; i < files.length; i += 500)
           await tx.insert(cache).values(
@@ -151,31 +174,33 @@ export class SoftwareMirrorWorker {
       throw new Error("Mirror object directory must be private");
     return dir;
   }
-  private async fetchFile(dir: string, f: Entry) {
-    this.validateSource(f.sourceUrl);
-    const dest = join(dir, f.sha256),
-      temp = dest + ".partial";
+  private async validObject(dir: string, f: Entry) {
     const existing = await open(
-      dest,
+      join(dir, f.sha256),
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     ).catch((e: NodeJS.ErrnoException) => {
       if (e.code !== "ENOENT") throw e;
       return null;
     });
-    if (existing)
-      try {
-        if (!(await existing.stat()).isFile()) throw new Error("Invalid mirror object");
-        const h = createHash("sha256");
-        let n = 0;
-        for await (const chunk of existing.createReadStream({ autoClose: false })) {
-          n += chunk.length;
-          h.update(chunk);
-        }
-        if (n === f.sizeBytes && h.digest("hex") === f.sha256) return;
-        throw new Error("Stored mirror digest mismatch");
-      } finally {
-        await existing.close();
+    if (!existing) return false;
+    try {
+      if (!(await existing.stat()).isFile()) throw new Error("Invalid mirror object");
+      const h = createHash("sha256");
+      let n = 0;
+      for await (const chunk of existing.createReadStream({ autoClose: false })) {
+        n += chunk.length;
+        h.update(chunk);
       }
+      return n === f.sizeBytes && h.digest("hex") === f.sha256;
+    } finally {
+      await existing.close();
+    }
+  }
+  private async fetchFile(dir: string, f: Entry) {
+    this.validateSource(f.sourceUrl);
+    const dest = join(dir, f.sha256),
+      temp = dest + ".partial";
+    if (await this.validObject(dir, f)) return;
     await remove(temp);
     const out = await open(temp, "wx", 0o600);
     try {
@@ -199,7 +224,7 @@ export class SoftwareMirrorWorker {
       if (n !== f.sizeBytes || h.digest("hex") !== f.sha256)
         throw new Error("Mirror digest or size mismatch");
       await out.sync();
-      await link(temp, dest);
+      await rename(temp, dest);
       const directory = await open(dir, "r");
       try {
         await directory.sync();
@@ -230,8 +255,11 @@ export class SoftwareMirrorWorker {
         sourceUrl: row.sourceUrl,
       });
       await lock(tx, f.sha256);
+      let verifiedStamp: string | null;
       try {
         await this.fetchFile(dir, f);
+        verifiedStamp = await objectStamp(dir, f.sha256);
+        if (!verifiedStamp) throw new Error("Verified mirror object missing");
       } catch {
         await tx
           .update(cache)
@@ -247,6 +275,7 @@ export class SoftwareMirrorWorker {
         .update(cache)
         .set({
           status: "cached",
+          provenance: { ...row.provenance, verifiedStamp },
           localUrl: fileUrl(row.assetId ?? "", f.path),
           cachedAt: new Date(),
           error: null,

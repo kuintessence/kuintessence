@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPgDb, softwareAssets, softwareMirrorCache } from "@kuintessence/db";
@@ -75,6 +75,15 @@ test("mirror sources and native binaries publish as one inventory and shared byt
     const prior = calls;
     await b.tick();
     expect(calls).toBe(prior);
+    const objects = join(root, "kq-mirror-objects");
+    await unlink(join(objects, hash(src)));
+    await writeFile(join(objects, hash(binary)), "broke!");
+    await a.enqueue(ids[0], inventory);
+    await a.tick();
+    await a.tick();
+    expect(await (await b.openFile(ids[0], files[0].path)).text()).toBe(src);
+    expect(await (await b.openFile(ids[0], files[1].path)).text()).toBe(binary);
+    expect(calls).toBe(prior + 2);
     await a.release(ids[0]);
     await a.tick();
     expect(await readdir(join(root, "kq-mirror-objects"))).toEqual([hash(src)]);
