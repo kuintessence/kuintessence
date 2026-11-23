@@ -157,7 +157,7 @@ bun run compose -- aio up --build --attach
 这些都是公开的测试值。Compose 仅发布本机回环地址上的 `8080`、`9000`、`9001`，
 不通过公网代理或 Tunnel 暴露。存储密钥可用 `KQ_DATA_MARKET_COMMITTER_SECRET_KEY` 覆盖。
 用户、数据库、RustFS 数据和 Registry 文件保存在 `kq-aio-data` 卷中。
-计量汇总按 UTC 小时、日期和月份在 PostgreSQL 中领取。周期记录与汇总表更新同事务提交。日、月 Webhook 使用单独的周期记录，接收方可按签名正文中的 `summaryId` 去重；请求的 `Idempotency-Key` 头使用同一个值。
+作业用量分批进入同一小时、日或月时按增量相加，归档与清除对应明细在同一事务完成。日报、月报中断后从上一次已提交的周期逐期补发。首次启用从最近一个已结束的周期开始。Webhook 汇总以作业完成时间归入 UTC 周期。计量汇总按 UTC 小时、日期和月份在 PostgreSQL 中领取。周期记录与汇总表更新同事务提交。日、月 Webhook 使用单独的周期记录，接收方可按签名正文中的 `summaryId` 去重；请求的 `Idempotency-Key` 头使用同一个值。
 
 Registry 上传进度由 PostgreSQL 保存。多个 Registry 进程需要访问同一个支持跨进程 flock 和原子 rename 的 POSIX 文件目录；切换后，OCI 客户端可 GET 上传 Location 查询 Range，再通过带 Content-Range 的 PATCH 或 PUT 接续。同一偏移的并发写入只有一次成功，已完成 PUT 在会话保留期内可按相同摘要重放。Spack buildcache 与 OCI 按摘要协调写入和回收。多副本应关闭 recipe Git，跨节点挂载同一支持上述语义的 ReadWriteMany 卷。启用 recipe Git 时使用单写者和 Recreate。
 

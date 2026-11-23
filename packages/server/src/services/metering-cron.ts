@@ -7,9 +7,11 @@ export interface AggregatorPort {
   runMonthlyRollup(): Promise<{ bucketsWritten: number; sourceRowsDeleted: number }>;
 }
 
+export class IncompleteMeteringSummary extends Error {}
+
 export interface WebhookEmitterPort {
-  emitDailySummary(from: Date, to: Date): Promise<unknown>;
-  emitMonthlySummary(from: Date, to: Date): Promise<unknown>;
+  emitDailySummary(from: Date, to: Date): Promise<{ failed: number }>;
+  emitMonthlySummary(from: Date, to: Date): Promise<{ failed: number }>;
 }
 
 export type MeteringStage =
@@ -28,7 +30,7 @@ export interface MeteringCronOptions {
   runPeriod: (
     stage: MeteringStage,
     periodStart: Date,
-    work: (workers: MeteringWorkers) => Promise<void>,
+    work: (workers: MeteringWorkers, end: Date) => Promise<void>,
   ) => Promise<void>;
   captureStorage: () => Promise<void>;
   summariesEnabled: boolean;
@@ -79,7 +81,7 @@ export class MeteringCron {
     const run = async (
       stage: MeteringStage,
       start: Date,
-      work: (workers: MeteringWorkers) => Promise<void>,
+      work: (workers: MeteringWorkers, end: Date) => Promise<void>,
     ) => {
       try {
         await this.opts.runPeriod(stage, start, work);
@@ -93,25 +95,32 @@ export class MeteringCron {
     await run("daily", day, async ({ aggregator }) => {
       await aggregator.runDailyRollup();
     });
-    await run("monthly", month, async ({ aggregator }) => {
-      await aggregator.runMonthlyRollup();
-    });
     try {
       await this.opts.captureStorage();
     } catch (err) {
       this.logger.error({ err, stage: "storage-daily" }, "Metering period failed");
     }
-    if (!this.opts.summariesEnabled) return;
-    await run("daily-summary", day, async ({ webhookEmitter }) => {
-      if (!webhookEmitter) throw new Error("Missing metering webhook emitter");
-      await webhookEmitter.emitDailySummary(new Date(day.getTime() - 86_400_000), day);
-    });
-    await run("monthly-summary", month, async ({ webhookEmitter }) => {
-      if (!webhookEmitter) throw new Error("Missing metering webhook emitter");
-      await webhookEmitter.emitMonthlySummary(
-        new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() - 1, 1)),
-        month,
-      );
+    if (this.opts.summariesEnabled) {
+      await run("daily-summary", day, async ({ webhookEmitter }, end) => {
+        if (!webhookEmitter) throw new Error("Missing metering webhook emitter");
+        const report = await webhookEmitter.emitDailySummary(
+          new Date(end.getTime() - 86_400_000),
+          end,
+        );
+        if (report.failed) throw new IncompleteMeteringSummary("Daily summary delivery incomplete");
+      });
+      await run("monthly-summary", month, async ({ webhookEmitter }, end) => {
+        if (!webhookEmitter) throw new Error("Missing metering webhook emitter");
+        const report = await webhookEmitter.emitMonthlySummary(
+          new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 1, 1)),
+          end,
+        );
+        if (report.failed)
+          throw new IncompleteMeteringSummary("Monthly summary delivery incomplete");
+      });
+    }
+    await run("monthly", month, async ({ aggregator }) => {
+      await aggregator.runMonthlyRollup();
     });
   }
 }

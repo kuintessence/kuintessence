@@ -49,7 +49,7 @@ function makeCron(
     summariesEnabled: Boolean(opts.webhookEmitter),
     runPeriod: async (stage, start, work) => {
       if ((completed.get(stage)?.getTime() ?? -Infinity) >= start.getTime()) return;
-      await work(opts);
+      await work(opts, start);
       completed.set(stage, start);
     },
   });
@@ -137,11 +137,17 @@ describe("MeteringCron", () => {
 class FakeEmitter {
   calls: Array<{ from: Date; to: Date }> = [];
   monthlyCalls: Array<{ from: Date; to: Date }> = [];
-  async emitDailySummary(from: Date, to: Date): Promise<unknown> {
+  async emitDailySummary(
+    from: Date,
+    to: Date,
+  ): Promise<{ orgs: number; sent: number; failed: number }> {
     this.calls.push({ from, to });
     return { orgs: 0, sent: 0, failed: 0 };
   }
-  async emitMonthlySummary(from: Date, to: Date): Promise<unknown> {
+  async emitMonthlySummary(
+    from: Date,
+    to: Date,
+  ): Promise<{ orgs: number; sent: number; failed: number }> {
     this.monthlyCalls.push({ from, to });
     return { orgs: 0, sent: 0, failed: 0 };
   }
@@ -183,10 +189,10 @@ describe("MeteringCron webhook emitter", () => {
   it("a throwing emitter never aborts the tick", async () => {
     const agg = new FakeAggregator();
     const emitter = {
-      async emitDailySummary(): Promise<unknown> {
+      async emitDailySummary(): Promise<{ orgs: number; sent: number; failed: number }> {
         throw new Error("emit boom");
       },
-      async emitMonthlySummary(): Promise<unknown> {
+      async emitMonthlySummary(): Promise<{ orgs: number; sent: number; failed: number }> {
         throw new Error("emit boom monthly");
       },
     };

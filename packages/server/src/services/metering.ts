@@ -106,10 +106,11 @@ export interface QueryResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface RawQueryFilter {
+  timeColumn?: "startedAt" | "finishedAt";
   scope: TenantScope;
-  /** Lower bound on `started_at` (inclusive). Omit for an open lower bound. */
+  /** Lower bound on the selected timestamp (inclusive). Omit for an open lower bound. */
   from?: Date;
-  /** Upper bound on `started_at` (inclusive). Omit for an open upper bound —
+  /** Upper bound on the selected timestamp (inclusive). Omit for an open upper bound —
    *  the aggregator does this; a sentinel like the JS max date overflows
    *  Postgres timestamptz. */
   to?: Date;
@@ -123,6 +124,7 @@ export interface RollupBucket {
 }
 
 export interface MeteringRepository {
+  withRollupTransaction?<T>(work: (repo: MeteringRepository) => Promise<T>): Promise<T>;
   streamGroups?(scope: TenantScope, req: ExportRequest): AsyncIterable<QueryResult>;
   /** Insert a raw usage row. Returns null when a row for the same jobId already exists (idempotent skip). */
   insertRaw(row: JobUsageRecord, recordedAt: Date): Promise<UsageRawRow | null>;
@@ -134,7 +136,11 @@ export interface MeteringRepository {
     filter: { scope: TenantScope; from: Date; to: Date },
   ): Promise<UsageBucketRow[]>;
   /** Upsert rollup rows by (period, bucketStart, orgId, userId, clusterName). */
-  upsertBuckets(period: Exclude<Period, "raw">, rows: UsageBucketRow[]): Promise<void>;
+  upsertBuckets(
+    period: Exclude<Period, "raw">,
+    rows: UsageBucketRow[],
+    add?: boolean,
+  ): Promise<void>;
   /** Delete raw rows older than the given timestamp (returns deleted count). */
   deleteRawOlderThan(cutoff: Date): Promise<number>;
   /** Delete hourly rollups older than the given timestamp (returns deleted count). */
@@ -181,6 +187,7 @@ export class MeteringService {
   async query(
     scope: TenantScope,
     req: Omit<QueryRequest, "limit"> & { limit?: number },
+    rawTime: "startedAt" | "finishedAt" = "startedAt",
   ): Promise<QueryResult> {
     const from = parseIso(req.from, "from");
     const to = parseIso(req.to, "to");
@@ -190,7 +197,12 @@ export class MeteringService {
     const effectiveScope = narrowScope(scope, req.orgIds);
 
     if (req.period === "raw") {
-      const rows = await this.repo.selectRaw({ scope: effectiveScope, from, to });
+      const rows = await this.repo.selectRaw({
+        scope: effectiveScope,
+        from,
+        to,
+        timeColumn: rawTime,
+      });
       return groupRawRows(rows, req.grouping, req.limit, req.offset);
     }
     const buckets = await this.repo.selectBuckets(req.period, {
@@ -403,8 +415,9 @@ export class InMemoryMeteringRepository implements MeteringRepository {
   async selectRaw(filter: RawQueryFilter): Promise<UsageRawRow[]> {
     return this.raw.filter((r) => {
       if (!matchesScope(r.orgId, filter.scope)) return false;
-      if (filter.from && r.startedAt < filter.from) return false;
-      if (filter.to && r.startedAt > filter.to) return false;
+      const time = r[filter.timeColumn ?? "startedAt"];
+      if (filter.from && time < filter.from) return false;
+      if (filter.to && time > filter.to) return false;
       if (filter.finishedBefore && r.finishedAt >= filter.finishedBefore) return false;
       return true;
     });
@@ -423,7 +436,11 @@ export class InMemoryMeteringRepository implements MeteringRepository {
     });
   }
 
-  async upsertBuckets(period: Exclude<Period, "raw">, rows: UsageBucketRow[]): Promise<void> {
+  async upsertBuckets(
+    period: Exclude<Period, "raw">,
+    rows: UsageBucketRow[],
+    add = false,
+  ): Promise<void> {
     const src = this.bucketStore(period);
     for (const incoming of rows) {
       const idx = src.findIndex(
@@ -434,7 +451,20 @@ export class InMemoryMeteringRepository implements MeteringRepository {
           r.clusterName === incoming.clusterName,
       );
       if (idx >= 0) {
-        src[idx] = { ...incoming };
+        const previous = src[idx];
+        const merged = { ...incoming };
+        if (add && previous) {
+          for (const key of [
+            "cpuCoreSeconds",
+            "gpuSeconds",
+            "memoryMbSeconds",
+            "storageMbSeconds",
+            "networkEgressMb",
+            "jobCount",
+          ] as const)
+            merged[key] += previous[key];
+        }
+        src[idx] = merged;
       } else {
         src.push({ ...incoming });
       }

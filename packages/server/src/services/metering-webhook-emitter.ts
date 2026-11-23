@@ -22,7 +22,7 @@ const USAGE_MONTHLY = "usage.monthly";
 const ALL_TIERS = ["raw", "hourly", "daily", "monthly"] as const;
 
 export interface MeteringQueryPort {
-  query(scope: TenantScope, req: QueryRequest): Promise<QueryResult>;
+  query(scope: TenantScope, req: QueryRequest, rawTime: "finishedAt"): Promise<QueryResult>;
 }
 
 export interface WebhookEmitterRepository {
@@ -59,24 +59,9 @@ export class MeteringWebhookEmitter {
     this.now = deps.now ?? (() => new Date());
   }
 
-  /**
-   * Emit a `usage.daily` summary for the window `[dayStart, dayEnd)` to each
-   * subscribed org. Yesterday is always still in the `raw` tier, so a single
-   * raw query is both correct and the cheapest option.
-   */
   async emitDailySummary(dayStart: Date, dayEnd: Date): Promise<EmitReport> {
     return this.emit(USAGE_DAILY, dayEnd, (orgId) =>
-      this.query.query(
-        { kind: "orgs", orgIds: [orgId] },
-        {
-          from: dayStart.toISOString(),
-          to: dayEnd.toISOString(),
-          period: "raw",
-          grouping: "org",
-          limit: 1000,
-          offset: 0,
-        },
-      ),
+      this.queryAllTiers(orgId, dayStart, dayEnd, ["raw", "hourly", "daily"]),
     );
   }
 
@@ -135,6 +120,7 @@ export class MeteringWebhookEmitter {
           else failed += 1;
         }
       } catch (err) {
+        failed++;
         this.logger.warn({ err, orgId }, "metering-webhook-emitter: org summary failed");
       }
     }
@@ -147,19 +133,25 @@ export class MeteringWebhookEmitter {
    * summing per groupKey. A given timestamp lives in exactly one tier (the
    * rollup deletes the source on promotion), so the sum is double-count-free.
    */
-  private async queryAllTiers(orgId: string, from: Date, to: Date): Promise<QueryResult> {
+  private async queryAllTiers(
+    orgId: string,
+    from: Date,
+    to: Date,
+    tiers: readonly QueryRequest["period"][] = ALL_TIERS,
+  ): Promise<QueryResult> {
     const merged = new Map<string, QueryResultRow>();
-    for (const period of ALL_TIERS) {
+    for (const period of tiers) {
       const r = await this.query.query(
         { kind: "orgs", orgIds: [orgId] },
         {
           from: from.toISOString(),
-          to: to.toISOString(),
+          to: new Date(to.getTime() - 1).toISOString(),
           period,
           grouping: "org",
           limit: 1000,
           offset: 0,
         },
+        "finishedAt",
       );
       for (const row of r.rows) {
         const cur = merged.get(row.groupKey);

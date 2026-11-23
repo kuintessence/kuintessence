@@ -29,7 +29,7 @@ import {
 import { eq } from "drizzle-orm";
 import { parquetReadObjects } from "hyparquet";
 import { DrizzleWebhookRepository } from "../../routes/metering";
-import type { JobUsageRecord, UsageBucketRow } from "../metering";
+import { type JobUsageRecord, MeteringService, type UsageBucketRow } from "../metering";
 import { MeteringAggregator } from "../metering-aggregator";
 import { exportChunks } from "../metering-export";
 import { DrizzleMeteringRepository } from "../metering-repository-drizzle";
@@ -279,6 +279,47 @@ describeIfPg("DrizzleMeteringRepository", () => {
     const agg = new MeteringAggregator({ repo, now: () => new Date("2026-05-29T00:00:00Z") });
     const result = await agg.runHourlyRollup();
     expect(result.bucketsWritten).toBeGreaterThanOrEqual(1);
+  });
+
+  test("successive promotions of one hour preserve both jobs and replay once", async () => {
+    let now = new Date("2026-05-08T12:30:00Z");
+    for (const time of ["12:10", "12:40"])
+      await repo.insertRaw(
+        makeJobUsage({
+          startedAt: new Date("2026-04-30T23:00:00Z"),
+          clusterName: "rollup-regression",
+          finishedAt: new Date(`2026-05-01T${time}:00Z`),
+          cpuCoreSeconds: 100,
+        }),
+        now,
+      );
+    const service = new MeteringService({ repo });
+    const summary = (period: "raw" | "hourly") =>
+      service.query(
+        { kind: "orgs", orgIds: [TEST_ORG_A] },
+        {
+          from: "2026-05-01T00:00:00Z",
+          to: "2026-05-01T23:59:59.999Z",
+          period,
+          grouping: "cluster",
+          offset: 0,
+        },
+        "finishedAt",
+      );
+    expect(
+      (await summary("raw")).rows.find((r) => r.groupKey === "rollup-regression")?.jobCount,
+    ).toBe(2);
+    const aggregator = new MeteringAggregator({ repo, now: () => now });
+    await aggregator.runHourlyRollup();
+    now = new Date("2026-05-08T13:30:00Z");
+    await aggregator.runHourlyRollup();
+    await aggregator.runHourlyRollup();
+    const row = await db
+      .select()
+      .from(meteringUsageHourly)
+      .where(eq(meteringUsageHourly.clusterName, "rollup-regression"));
+    expect(row).toHaveLength(1);
+    expect(row[0]).toMatchObject({ jobCount: 2, cpuCoreSeconds: 200 });
   });
 
   test("upsertBuckets inserts new rows and updates on conflict (composite PK)", async () => {

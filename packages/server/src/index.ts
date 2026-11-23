@@ -4,6 +4,7 @@ import {
   agentCerts,
   createPgDb,
   fileTransfers,
+  meteringCronPeriods,
   type PgDb,
   SpackMaterialReferences,
   userOrgMemberships,
@@ -299,7 +300,7 @@ import { MeteringService } from "./services/metering";
 import { MeteringAggregator } from "./services/metering-aggregator";
 import { createMeteringBundle } from "./services/metering-binding";
 import { MeteringCron } from "./services/metering-cron";
-import { runMeteringPeriod } from "./services/metering-cron-period";
+import { runDueMeteringPeriods } from "./services/metering-cron-period";
 import { DrizzleMeteringRepository } from "./services/metering-repository-drizzle";
 import { WebhookDispatcher } from "./services/metering-webhook";
 import { MeteringWebhookEmitter } from "./services/metering-webhook-emitter";
@@ -576,16 +577,26 @@ const meteringCron = new MeteringCron({
   captureStorage: () => captureDailyStorage(db),
   summariesEnabled: config.METERING_WEBHOOK_ENABLED,
   runPeriod: (stage, start, work) =>
-    runMeteringPeriod(db, stage, start, async (tx) => {
+    runDueMeteringPeriods(db, stage, start, async (tx, end) => {
       const repo = new DrizzleMeteringRepository(db, tx);
-      await work({
-        aggregator: new MeteringAggregator({ repo }),
-        webhookEmitter: new MeteringWebhookEmitter({
-          query: new MeteringService({ repo }),
-          repo: new DrizzleWebhookRepository(tx),
-          dispatcher: new WebhookDispatcher(),
-        }),
-      });
+      const [dailyCursor] =
+        stage === "monthly" && config.METERING_WEBHOOK_ENABLED
+          ? await tx
+              .select({ end: meteringCronPeriods.periodStart })
+              .from(meteringCronPeriods)
+              .where(eq(meteringCronPeriods.stage, "daily-summary"))
+          : [];
+      await work(
+        {
+          aggregator: new MeteringAggregator({ repo, preserveDailyFrom: dailyCursor?.end }),
+          webhookEmitter: new MeteringWebhookEmitter({
+            query: new MeteringService({ repo }),
+            repo: new DrizzleWebhookRepository(tx),
+            dispatcher: new WebhookDispatcher(),
+          }),
+        },
+        end,
+      );
     }),
 });
 
