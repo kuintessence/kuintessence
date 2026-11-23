@@ -37,6 +37,12 @@ async function seedUser(db: PgDb, id: string, email: string): Promise<void> {
     .onConflictDoNothing();
 }
 
+function partUploadId(url: string): string {
+  const id = new URL(url).searchParams.get("uploadId");
+  if (!id) throw new Error("Missing presigned upload ID");
+  return id;
+}
+
 function bytesOf(s: string): Buffer {
   return Buffer.from(s);
 }
@@ -225,7 +231,7 @@ describe("NetDriveService", () => {
       size: 12,
       contentType: "text/plain",
     });
-    expect(minted.uploadUrl).toContain("/upload/");
+    expect(new URL(minted.uploadUrl).searchParams.get("partNumber")).toBe("1");
     expect(minted.storageKey).toMatch(/^netdrive\/objects\/[a-f0-9-]{36}$/);
     expect(minted.storageKey).not.toContain(OWNER_ID);
     expect(minted.commitToken.split(".")).toHaveLength(3); // JWS format
@@ -291,20 +297,27 @@ describe("NetDriveService", () => {
       contentType: "application/octet-stream",
     });
     // Simulate the client uploading via the presigned URL.
-    await fake.putBlob(minted.storageKey, body, "application/octet-stream");
+    const { etag } = await fake.putUploadedPart(
+      minted.storageKey,
+      partUploadId(minted.uploadUrl),
+      1,
+      body,
+    );
 
     const file = await svc.commitFile(OWNER_ID, {
       path: "data/r.bin",
       size: body.length,
       contentType: "application/octet-stream",
       sha256: sha,
+      etag,
       storageKey: minted.storageKey,
       commitToken: minted.commitToken,
     });
     expect(file.path).toBe("data/r.bin");
     expect(file.size).toBe(body.length);
     expect(file.sha256).toBe(sha);
-    expect(file.etag).toBeDefined();
+    expect(file.etag).toBe((await fake.head(file.storageKey))?.etag);
+    expect(file.etag).not.toBe(etag);
   });
 
   test("recordReplica upserts replica status and records mirror transfer when available", async () => {
@@ -740,6 +753,122 @@ describe("NetDriveService", () => {
     expect((await quota.getSummary(OWNER_ID)).reservedBytes).toBe(0);
   });
 
+  test("reclaims abandoned PUTs, retries assembled bytes, and preserves resumable transfers", async () => {
+    let now = Date.now();
+    const backend = new FakeMinioBackend();
+    const service = new NetDriveService(db, backend, {
+      commitSecret: COMMIT_SECRET,
+      now: () => now,
+      uploadTtlSec: 5,
+      multipartTtlSec: 5,
+    });
+    const abandoned = await service.mintUploadUrl(OWNER_ID, { path: "a", size: 3 });
+    const uploadId = partUploadId(abandoned.uploadUrl);
+    await backend.putUploadedPart(abandoned.storageKey, uploadId, 1, bytesOf("abc"));
+    const assembled = await service.mintUploadUrl(OWNER_ID, { path: "b", size: 3 });
+    const assembledId = partUploadId(assembled.uploadUrl);
+    const part = await backend.putUploadedPart(
+      assembled.storageKey,
+      assembledId,
+      1,
+      bytesOf("abc"),
+    );
+    await backend.completeMultipartUpload(assembled.storageKey, assembledId, [
+      { partNumber: 1, ...part },
+    ]);
+    const resume = await service.initiateMultipart(OWNER_ID, { path: "c", size: 3 });
+    await backend.putUploadedPart(resume.storageKey, resume.uploadId, 1, bytesOf("abc"));
+    const [transfer] = await db
+      .insert(fileTransfers)
+      .values({
+        userId: OWNER_ID,
+        direction: "cluster_to_cloud",
+        source: "/c",
+        target: "c",
+        state: "failed",
+        resumeSession: { storageKey: resume.storageKey },
+      })
+      .returning();
+    if (!transfer) throw new Error("Missing resumable transfer");
+    try {
+      now += 6000;
+      const remove = backend.delete.bind(backend);
+      backend.delete = async () => {
+        throw new Error("storage unavailable");
+      };
+      await service.pruneExpiredReservations();
+      expect(
+        await db
+          .select()
+          .from(netdriveUploadReservations)
+          .where(eq(netdriveUploadReservations.ownerId, OWNER_ID)),
+      ).toHaveLength(2);
+      await expect(
+        backend.putUploadedPart(abandoned.storageKey, uploadId, 1, bytesOf("late")),
+      ).rejects.toThrow("NoSuchUpload");
+      backend.delete = remove;
+      await service.pruneExpiredReservations();
+      expect(await backend.head(assembled.storageKey)).toBeNull();
+      expect(await backend.listUploadParts(resume.storageKey, resume.uploadId)).toHaveLength(1);
+    } finally {
+      await db.delete(fileTransfers).where(eq(fileTransfers.id, transfer.id));
+    }
+  });
+
+  test("expiry cannot reclaim bytes while a verified upload is committing", async () => {
+    let now = Date.now();
+    const backend = new FakeMinioBackend();
+    const service = new NetDriveService(db, backend, {
+      commitSecret: COMMIT_SECRET,
+      now: () => now,
+      uploadTtlSec: 5,
+    });
+    const minted = await service.mintUploadUrl(OWNER_ID, { path: "slow", size: 3 });
+    await backend.putUploadedPart(
+      minted.storageKey,
+      partUploadId(minted.uploadUrl),
+      1,
+      bytesOf("abc"),
+    );
+    const verified = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const hash = backend.sha256.bind(backend);
+    backend.sha256 = async (key, version) => {
+      verified.resolve();
+      await resume.promise;
+      return hash(key, version);
+    };
+    const commit = service.commitFile(OWNER_ID, {
+      ...minted,
+      path: "slow",
+      size: 3,
+      sha256: await sha256Hex("abc"),
+    });
+    await Promise.race([
+      verified.promise,
+      commit.then(() => {
+        throw new Error("Expected verification");
+      }),
+    ]);
+    now += 6000;
+    const sweep = service.pruneExpiredReservations();
+    try {
+      let waiting = false;
+      for (let i = 0; i < 200 && !waiting; i++) {
+        const [lock] =
+          await db.$client`select exists(select 1 from pg_locks where locktype = 'advisory'
+            and not granted and objid = (hashtextextended(${minted.storageKey}, 0) & 4294967295)::oid) as waiting`;
+        waiting = lock?.waiting === true;
+        if (!waiting) await Bun.sleep(5);
+      }
+      expect(waiting).toBe(true);
+    } finally {
+      resume.resolve();
+    }
+    const [file] = await Promise.all([commit, sweep]);
+    expect((await backend.head(file.storageKey))?.versionId).toBe(file.storageVersionId);
+  });
+
   test("replays a committed upload once and retries a failed delete against its exact version", async () => {
     let now = Date.now();
     const backend = new FakeMinioBackend();
@@ -783,9 +912,14 @@ describe("NetDriveService", () => {
       expect(version).toBe(first.storageVersionId ?? undefined);
       await remove(key, version);
     };
+    await backend.putBlob(first.storageKey, bytesOf("newer bytes"), "text/plain");
+    const otherVersion = await backend.head(first.storageKey);
+    expect(otherVersion?.versionId).not.toBe(first.storageVersionId);
     now += 61_000;
     await service.cleanDeletedVersions();
-    expect(await backend.head(first.storageKey)).toBeNull();
+    expect(await backend.head(first.storageKey)).toEqual(otherVersion);
+    const [cleaned] = await db.select().from(netdriveFiles).where(eq(netdriveFiles.id, first.id));
+    expect(cleaned?.cleanupAfter).toBeNull();
   });
 
   test("mintPartUrls returns one presigned URL per requested part", async () => {

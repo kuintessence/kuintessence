@@ -128,6 +128,7 @@ export interface MinioBackend {
     uploadId: string,
     parts: UploadPartRef[],
   ): Promise<{ etag: string; versionId?: string }>;
+  abortIncompleteNetDriveUploads(key: string): Promise<void>;
   /** Discard an in-flight multipart upload and its staged parts. */
   abortMultipartUpload(key: string, uploadId: string): Promise<void>;
 }
@@ -393,6 +394,14 @@ export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<M
         .map((p) => ({ part: p.partNumber, etag: p.etag }));
       const result = await client.completeMultipartUpload(cfg.bucket, key, uploadId, etags);
       return { etag: stripQuotes(result.etag ?? ""), versionId: copyResultVersionId(result) };
+    },
+
+    async abortIncompleteNetDriveUploads(key) {
+      if (!/^netdrive\/objects\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(key))
+        throw new Error("Invalid NetDrive upload key");
+      for await (const upload of client.listIncompleteUploads(cfg.bucket, key, true)) {
+        if (upload.key === key) await client.abortMultipartUpload(cfg.bucket, key, upload.uploadId);
+      }
     },
 
     async abortMultipartUpload(key, uploadId) {

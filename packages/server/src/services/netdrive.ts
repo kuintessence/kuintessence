@@ -31,7 +31,7 @@ import {
   type NetDrivePartUrlsResponse,
   type NetDriveUploadUrlRequest,
 } from "@kuintessence/shared";
-import { and, asc, desc, eq, inArray, isNull, like, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, lte, sql } from "drizzle-orm";
 import * as jose from "jose";
 import type { Logger } from "pino";
 import type { MinioBackend } from "../storage/minio-client";
@@ -209,45 +209,80 @@ export class NetDriveService {
 
   async pruneExpiredReservations(): Promise<void> {
     const holds = netdriveUploadReservations;
-    const expired = lte(holds.expiresAt, new Date(this.now()));
-    await this.db.delete(holds).where(and(expired, eq(holds.generated, false)));
-    const candidates = await this.db
-      .select()
-      .from(holds)
-      .where(and(expired, eq(holds.generated, true)))
-      .orderBy(asc(holds.expiresAt))
-      .limit(25);
-    for (const candidate of candidates) {
-      try {
-        await this.db.transaction(async (tx) => {
-          await lockCloudWrites(tx, candidate.ownerId);
-          const where = and(
-            eq(holds.storageKey, candidate.storageKey),
-            expired,
-            eq(holds.generated, true),
+    const expired = and(
+      lte(holds.expiresAt, new Date(this.now())),
+      sql`not exists (select 1 from ${fileTransfers} where ${fileTransfers.userId} = ${holds.ownerId}
+        and ${fileTransfers.state} not in ('succeeded', 'cancelled')
+        and ${fileTransfers.resumeSession}->>'storageKey' = ${holds.storageKey})`,
+    );
+    let after: string | undefined;
+    for (;;) {
+      const candidates = await this.db
+        .select({ storageKey: holds.storageKey, ownerId: holds.ownerId })
+        .from(holds)
+        .where(and(expired, after ? gt(holds.storageKey, after) : undefined))
+        .orderBy(asc(holds.storageKey))
+        .limit(25);
+      if (!candidates.length) return;
+      for (const candidate of candidates) {
+        after = candidate.storageKey;
+        try {
+          await this.db.transaction(async (tx) => {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(hashtextextended(${candidate.storageKey}, 0))`,
+            );
+            await lockCloudWrites(tx, candidate.ownerId);
+            const where = and(eq(holds.storageKey, candidate.storageKey), expired);
+            const [hold] = await tx.select().from(holds).where(where).for("update");
+            if (!hold) return;
+            const [receipt] = await tx
+              .select({ id: netdriveFiles.id })
+              .from(netdriveFiles)
+              .where(eq(netdriveFiles.storageKey, hold.storageKey))
+              .limit(1);
+            if (!receipt) {
+              if (!hold.generated) await this.minio.abortIncompleteNetDriveUploads(hold.storageKey);
+              let stat = await this.minio.head(hold.storageKey);
+              while (stat) {
+                if (!stat.versionId || stat.versionId === "null")
+                  throw new Error("Upload has no storage version");
+                await this.minio.delete(hold.storageKey, stat.versionId);
+                const removed = stat.versionId;
+                stat = await this.minio.head(hold.storageKey);
+                if (stat?.versionId === removed) throw new Error("Upload version still visible");
+              }
+            }
+            await tx.delete(holds).where(where);
+          });
+        } catch (err) {
+          this.logger.warn(
+            { err, storageKey: candidate.storageKey },
+            "Expired upload cleanup will retry",
           );
-          const [hold] = await tx.select().from(holds).where(where).for("update");
-          if (!hold) return;
-          const [receipt] = await tx
-            .select({ id: netdriveFiles.id })
-            .from(netdriveFiles)
-            .where(eq(netdriveFiles.storageKey, hold.storageKey))
-            .limit(1);
-          if (!receipt) {
-            const stat = await this.minio.head(hold.storageKey);
-            if (stat?.versionId && stat.versionId !== "null")
-              await this.minio.delete(hold.storageKey, stat.versionId);
-            else if (stat) throw new Error("Generated object has no storage version");
-          }
-          await tx.delete(holds).where(where);
-        });
-      } catch (err) {
-        this.logger.warn(
-          { err, storageKey: candidate.storageKey },
-          "Generated upload cleanup will retry",
-        );
+        }
       }
     }
+  }
+
+  private async beginReservedUpload(
+    ownerId: string,
+    path: string,
+    size: number,
+    key: string,
+    expiresAt: string,
+    contentType: string,
+  ) {
+    await this.reserveUpload(ownerId, path, size, key, expiresAt);
+    // Keep the reservation after an uncertain CreateMultipartUpload response.
+    return this.db.transaction(async (tx) => {
+      const [hold] = await tx
+        .select({ key: netdriveUploadReservations.storageKey })
+        .from(netdriveUploadReservations)
+        .where(eq(netdriveUploadReservations.storageKey, key))
+        .for("update");
+      if (!hold) throw new AppError(ErrorCode.VALIDATION_ERROR, "Upload reservation expired", 409);
+      return this.minio.createMultipartUpload(key, contentType);
+    });
   }
 
   /** Mint a presigned PUT URL + commit token. */
@@ -264,21 +299,35 @@ export class NetDriveService {
     // Presigned URLs can cross institutions; object keys must not contain the owner identity.
     const storageKey = `${STORAGE_PREFIX}/objects/${crypto.randomUUID()}`;
     const contentType = req.contentType ?? "application/octet-stream";
-    const uploadUrl = await this.minio.presignUpload(storageKey, this.uploadTtlSec, contentType);
     const expiresAt = new Date(this.now() + this.uploadTtlSec * 1000).toISOString();
 
-    await this.reserveUpload(ownerId, req.path, req.size, storageKey, expiresAt);
+    const { uploadId } = await this.beginReservedUpload(
+      ownerId,
+      req.path,
+      req.size,
+      storageKey,
+      expiresAt,
+      contentType,
+    );
+    // An expired or completed uploadId cannot write a late version of the published file.
+    const uploadUrl = await this.minio.presignUploadPart(
+      storageKey,
+      uploadId,
+      1,
+      this.uploadTtlSec,
+    );
     const tokenPayload: CommitTokenPayload = {
       path: req.path,
       ownerId,
       storageKey,
       intendedSize: req.size,
+      uploadId,
     };
     if (req.sha256) tokenPayload.sha256 = req.sha256;
     const commitToken = await new jose.SignJWT(tokenPayload)
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime(Math.floor(this.now() / 1000) + this.uploadTtlSec)
+      .setExpirationTime(Math.floor(Date.parse(expiresAt) / 1000))
       .sign(this.commitSecret);
 
     return { uploadUrl, storageKey, commitToken, expiresAt };
@@ -302,16 +351,14 @@ export class NetDriveService {
     const contentType = req.contentType ?? "application/octet-stream";
     const expiresAt = new Date(this.now() + this.multipartTtlSec * 1000).toISOString();
 
-    await this.reserveUpload(ownerId, req.path, req.size, storageKey, expiresAt);
-    let uploadId: string;
-    try {
-      ({ uploadId } = await this.minio.createMultipartUpload(storageKey, contentType));
-    } catch (error) {
-      await this.db
-        .delete(netdriveUploadReservations)
-        .where(eq(netdriveUploadReservations.storageKey, storageKey));
-      throw error;
-    }
+    const { uploadId } = await this.beginReservedUpload(
+      ownerId,
+      req.path,
+      req.size,
+      storageKey,
+      expiresAt,
+      contentType,
+    );
 
     const tokenPayload: CommitTokenPayload = {
       kind: "multipart",
@@ -325,7 +372,7 @@ export class NetDriveService {
     const commitToken = await new jose.SignJWT(tokenPayload)
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime(Math.floor(this.now() / 1000) + this.multipartTtlSec)
+      .setExpirationTime(Math.floor(Date.parse(expiresAt) / 1000))
       .sign(this.commitSecret);
 
     return { storageKey, uploadId, commitToken, partSize: this.multipartPartSize, expiresAt };
@@ -427,45 +474,7 @@ export class NetDriveService {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Commit token sha256 mismatch", 400);
     }
 
-    // Verify the blob actually landed in MinIO before we commit metadata.
-    // Without this a malicious client could record a path it never uploaded.
-    const stat = await this.minio.head(req.storageKey);
-    if (!stat) {
-      throw new AppError(
-        ErrorCode.NOT_FOUND,
-        "Blob not found in object store — upload before commit",
-        404,
-      );
-    }
-    if (stat.size !== req.size) {
-      throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        `Blob size ${stat.size} does not match committed size ${req.size}`,
-        400,
-      );
-    }
-
-    const digest = await this.minio.sha256(req.storageKey, stat.versionId);
-    if (!digest || digest.toLowerCase() !== req.sha256.toLowerCase()) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, "Uploaded object sha256 mismatch", 400);
-    }
-    const contentType = req.contentType ?? "application/octet-stream";
-    return this.persistCommittedFile(
-      ownerId,
-      {
-        path: req.path,
-        size: req.size,
-        sha256: req.sha256,
-        contentType,
-        etag: req.etag ?? stat.etag,
-        storageKey: req.storageKey,
-        storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
-      },
-      context,
-      this.db,
-      true,
-      onCommit,
-    );
+    return this.finalizeUpload(ownerId, req, payload.uploadId, context, onCommit);
   }
 
   /**
@@ -1051,6 +1060,16 @@ export class NetDriveService {
     if (!/^[a-f0-9]{64}$/i.test(req.sha256) || (token.sha256 && token.sha256 !== req.sha256)) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Invalid multipart sha256", 400);
     }
+    return this.finalizeUpload(ownerId, req, req.uploadId, context, onCommit);
+  }
+
+  private async finalizeUpload(
+    ownerId: string,
+    req: NetDriveCommitRequest | NetDriveMultipartCompleteRequest,
+    uploadId: string | undefined,
+    context?: NetDriveTransferContext,
+    onCommit?: (result: NetDriveCommitResult, db: NetDriveCommitDb) => Promise<void>,
+  ): Promise<NetDriveCommitResult> {
     const contentType = req.contentType ?? "application/octet-stream";
     return this.db.transaction(async (tx) => {
       // Serializes retries across Server processes; rolled-back commits leave no receipt or grants.
@@ -1069,19 +1088,40 @@ export class NetDriveService {
           existing.contentType !== contentType ||
           existing.deletedAt
         ) {
-          throw new AppError(ErrorCode.VALIDATION_ERROR, "Multipart commit binding changed", 400);
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Committed upload binding changed",
+            "parts" in req ? 400 : 409,
+          );
         }
         return { file: rowToFile(existing), replacedFiles: [] };
+      }
+      if (uploadId) {
+        const [hold] = await tx
+          .select({ key: netdriveUploadReservations.storageKey })
+          .from(netdriveUploadReservations)
+          .where(
+            and(
+              eq(netdriveUploadReservations.storageKey, req.storageKey),
+              eq(netdriveUploadReservations.ownerId, ownerId),
+              gt(netdriveUploadReservations.expiresAt, new Date(this.now())),
+            ),
+          );
+        if (!hold)
+          throw new AppError(ErrorCode.VALIDATION_ERROR, "Upload reservation expired", 409);
       }
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`${ownerId}/${req.path}`}, 0))`,
       );
-      await this.quotaGuard?.(ownerId, req.path, req.size);
+      if ("parts" in req) await this.quotaGuard?.(ownerId, req.path, req.size);
       // Complete may have succeeded before the response was lost or this transaction rolled back.
       let stat = await this.minio.head(req.storageKey);
-      if (!stat) {
+      if (!stat && uploadId) {
+        const parts =
+          "parts" in req ? req.parts : await this.minio.listUploadParts(req.storageKey, uploadId);
+        if (!parts.length) throw new AppError(ErrorCode.NOT_FOUND, "Upload bytes not found", 404);
         try {
-          await this.minio.completeMultipartUpload(req.storageKey, req.uploadId, req.parts);
+          await this.minio.completeMultipartUpload(req.storageKey, uploadId, parts);
         } catch (err) {
           stat = await this.minio.head(req.storageKey);
           if (!stat) throw err;
@@ -1125,15 +1165,24 @@ export class NetDriveService {
   /** Cancel an in-flight multipart upload (client gave up / restart). */
   async abortMultipart(ownerId: string, req: NetDriveMultipartAbortRequest): Promise<void> {
     await this.verifyMultipartToken(ownerId, req.commitToken, req.storageKey, req.uploadId);
-    await this.minio.abortMultipartUpload(req.storageKey, req.uploadId);
-    await this.db
-      .delete(netdriveUploadReservations)
-      .where(
-        and(
-          eq(netdriveUploadReservations.storageKey, req.storageKey),
-          eq(netdriveUploadReservations.ownerId, ownerId),
-        ),
-      );
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${req.storageKey}, 0))`);
+      try {
+        await this.minio.abortMultipartUpload(req.storageKey, req.uploadId);
+      } catch (err) {
+        if ((err as { code?: string }).code !== "NoSuchUpload") throw err;
+      }
+      // A lost completion response can leave assembled bytes even after the multipart ID is gone.
+      await tx
+        .update(netdriveUploadReservations)
+        .set({ expiresAt: new Date(this.now()) })
+        .where(
+          and(
+            eq(netdriveUploadReservations.storageKey, req.storageKey),
+            eq(netdriveUploadReservations.ownerId, ownerId),
+          ),
+        );
+    });
   }
 
   private async requireOwnedFile(ownerId: string, fileId: string): Promise<NetDriveFile> {

@@ -307,6 +307,12 @@ export class FakeMinioBackend implements MinioBackend {
     return { etag };
   }
 
+  async abortIncompleteNetDriveUploads(key: string) {
+    for (const [id, upload] of this.uploads) {
+      if (upload.key === key) await this.abortMultipartUpload(key, id);
+    }
+  }
+
   async abortMultipartUpload(key: string, uploadId: string): Promise<void> {
     const up = this.uploads.get(uploadId);
     if (up && up.key === key) this.uploads.delete(uploadId);

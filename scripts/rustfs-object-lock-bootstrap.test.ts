@@ -190,7 +190,7 @@ describe("RustFS Object Lock bootstrap wiring", () => {
   });
 });
 
-test("result recovery IAM lists only its prefix and cannot delete ordinary NetDrive versions", async () => {
+test("recovery IAM scopes listings and version deletes to the owning prefixes", async () => {
   const script = await read("deploy/rustfs/bootstrap-object-lock.sh");
   const policyText = script.split(`cat >"\${work_dir}/policy.json" <<EOF\n`)[1]?.split("\nEOF")[0];
   if (!policyText) throw new Error("Missing generated IAM policy");
@@ -203,6 +203,18 @@ test("result recovery IAM lists only its prefix and cannot delete ordinary NetDr
       Condition?: unknown;
     }>;
   };
+  expect(policy.Statement.find((s) => s.Sid === "DeleteNetDriveObjectVersions")).toEqual({
+    Sid: "DeleteNetDriveObjectVersions",
+    Effect: "Allow",
+    Action: "s3:DeleteObjectVersion",
+    Resource: `arn:aws:s3:::\${netdrive_bucket}/netdrive/objects/*`,
+  });
+  expect(policy.Statement.find((s) => s.Sid === "ListNetDrivePendingUploads")).toMatchObject({
+    Effect: "Allow",
+    Action: "s3:ListBucketMultipartUploads",
+    Resource: `arn:aws:s3:::\${netdrive_bucket}`,
+    Condition: { StringLike: { "s3:prefix": "netdrive/objects/*" } },
+  });
   expect(
     policy.Statement.find((statement) => statement.Sid === "ListFederationResultResidue"),
   ).toMatchObject({
