@@ -378,12 +378,20 @@ test("real artifact import through the application", async ({ page }) => {
         const before = { ...writes };
         await selectMaterialPack(page, join(fixture.materialPack, "manifest.json"), directory);
         const panel = page.getByTestId("spack-materials-panel");
-        await expect(
-          panel.getByRole("alert").filter({ hasText: materialLabels.invalidFiles }),
-        ).toBeVisible();
-        await expect(
-          panel.getByRole("button", { name: materialLabels.import, exact: true }),
-        ).toBeDisabled();
+        const submit = panel.getByRole("button", { name: materialLabels.import, exact: true });
+        const alert = panel.getByRole("alert");
+        if (kind === "missing-file") {
+          // A partial pack is valid when the repository already holds the omitted blobs.
+          await submit.click();
+          const omitted = fixture.pack.files[0];
+          assert(omitted);
+          await expect(alert).toHaveText(
+            materialLabels.missingFiles.replace("{{paths}}", omitted.path),
+          );
+        } else {
+          await expect(alert.filter({ hasText: materialLabels.invalidFiles })).toBeVisible();
+          await expect(submit).toBeDisabled();
+        }
         await assertEmpty(page, fixture.release.repository);
         assert.deepEqual(writes, before);
       });

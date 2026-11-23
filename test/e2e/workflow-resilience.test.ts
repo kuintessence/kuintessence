@@ -70,8 +70,8 @@ describe("e2e: workflow cancellation through CLI + Server + Agent + Slurm", () =
     expect(status.stdout).toContain("Status: cancelled");
   }, 240_000);
 
-  test("marks a running workflow interrupted after Server restart", async () => {
-    const yamlPath = writeWorkflowYaml(sleepWorkflow());
+  test("resumes the original running scheduler job after Server restart", async () => {
+    const yamlPath = writeWorkflowYaml(sleepWorkflow("sleep 30"));
 
     const submit = await runCli(["workflow", "submit", yamlPath]);
     expect(submit.stderr).toBe("");
@@ -80,14 +80,15 @@ describe("e2e: workflow cancellation through CLI + Server + Agent + Slurm", () =
 
     try {
       await stack.restartServer();
-      const final = await pollWorkflow(runId, "failed", 90_000);
+      const final = await pollWorkflow(runId, "completed", 120_000);
 
-      expect(final.status).toBe("failed");
-      expect(final.errorCode).toBe("WORKFLOW_INTERRUPTED");
+      expect(final.status).toBe("completed");
+      const completedJob = await api<JobDetail>(`/api/jobs/${job.id}`, { method: "GET" });
+      expect(completedJob.schedulerJobId).toBe(job.schedulerJobId);
       expect(final.stepJobs.sleepy).toBe(job.id);
 
       const status = await runCli(["workflow", "status", runId]);
-      expect(status.stdout).toContain("Status: failed");
+      expect(status.stdout).toContain("Status: completed");
     } finally {
       if (job.schedulerJobId) {
         await stack.slurm.exec(["scancel", job.schedulerJobId]);

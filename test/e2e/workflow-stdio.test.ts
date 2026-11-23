@@ -289,10 +289,7 @@ function stdoutRegexMissWorkflow(): string {
 }
 
 function celString(value: string): string {
-  if (value.includes("'")) {
-    throw new Error("test CEL strings must not contain single quotes");
-  }
-  return `'${value}'`;
+  return JSON.stringify(value);
 }
 
 function writeWorkflowYaml(content: string): string {

@@ -4095,7 +4095,32 @@ describe("AgentStream", () => {
     const db = createSqliteDb(":memory:");
     const intents = new JobCleanupIntents(db);
     let released = false;
-    const { client } = makeMockClient([]);
+    const { client, sent } = makeMockClient(
+      [
+        create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, { accepted: true }),
+          },
+        }),
+        create(ServerMessageSchema, {
+          payload: {
+            case: "dispatchJob",
+            value: create(DispatchJobSchema, {
+              jobId: "prepare-failure",
+              name: "failure",
+              command: "true",
+              cpus: 1,
+              memoryMb: 64n,
+              wallTimeSec: 60n,
+              workingDir: "/agent/jobs/prepare-failure",
+              dataDeliveries: [create(DataDeliveryBindingSchema, {})],
+            }),
+          },
+        }),
+      ],
+      20,
+    );
     const stream = new AgentStream({
       client,
       adapter: makeAdapter(),
@@ -4120,36 +4145,22 @@ describe("AgentStream", () => {
         },
       },
     });
-    const dispatch = create(DispatchJobSchema, {
-      jobId: "prepare-failure",
-      dataDeliveries: [create(DataDeliveryBindingSchema, {})],
-    });
-    const harness = stream as unknown as {
-      submitWithLicensedMaterials: (
-        message: typeof dispatch,
-        spec: JobSpec,
-        expectedOutputs: [],
-      ) => Promise<void>;
-    };
-
-    await expect(
-      harness.submitWithLicensedMaterials(
-        dispatch,
-        {
-          jobId: "prepare-failure",
-          name: "failure",
-          command: "true",
-          cpus: 1,
-          memoryMb: 64,
-          gpus: 0,
-          wallTimeSec: 60,
-          workingDir: "/agent/jobs/prepare-failure",
-          envVars: {},
-        },
-        [],
-      ),
-    ).rejects.toThrow("prepare failed");
-
+    activeStreams.push(stream);
+    const run = stream.start();
+    await settle(20);
+    stream.stop();
+    await run;
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          case: "jobStatus",
+          value: expect.objectContaining({
+            jobId: "prepare-failure",
+            message: expect.stringContaining("prepare failed"),
+          }),
+        }),
+      }),
+    );
     expect(released).toBe(true);
     expect(await intents.list()).toEqual([]);
   });

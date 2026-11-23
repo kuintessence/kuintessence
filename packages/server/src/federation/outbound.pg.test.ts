@@ -3407,20 +3407,23 @@ test.each([
     const service = new NetDriveService(db, backend, {
       commitSecret: "result-quota-test-commit-secret-for-isolated-fixture",
     });
-    const path = `result-quota/${crypto.randomUUID()}`;
-    const minted = await service.mintUploadUrl(actor.userId, { path, size: 3 });
-    await backend.putBlob(minted.storageKey, Buffer.from("abc"), "text/plain");
+    const upload = async () => {
+      const path = `result-quota/${crypto.randomUUID()}`;
+      const minted = await service.mintUploadUrl(actor.userId, { path, size: 3 });
+      await backend.putBlob(minted.storageKey, Buffer.from("abc"), "text/plain");
+      return service.commitFile(actor.userId, {
+        path,
+        size: 3,
+        sha256: new Bun.CryptoHasher("sha256").update("abc").digest("hex"),
+        storageKey: minted.storageKey,
+        commitToken: minted.commitToken,
+      });
+    };
     const results = await Promise.allSettled([
       first.imports.enqueue(actor, first.imported.operationId, firstId),
       competitor === "import"
         ? second.imports.enqueue(actor, second.imported.operationId, secondId)
-        : service.commitFile(actor.userId, {
-            path,
-            size: 3,
-            sha256: new Bun.CryptoHasher("sha256").update("abc").digest("hex"),
-            storageKey: minted.storageKey,
-            commitToken: minted.commitToken,
-          }),
+        : upload(),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const rejected = results.find((result) => result.status === "rejected");
