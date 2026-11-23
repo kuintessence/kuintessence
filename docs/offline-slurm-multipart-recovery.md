@@ -35,6 +35,8 @@ Server 对 NetDrive 下载下发已授权文件的真实大小和 `expected_sha2
 按 Range 恢复并在整文件校验后发布；任务输入下载使用 Agent 生命周期取消信号，退出时保留部分文件。
 Server 在下发下载 URL 和内容绑定前复查授权。只有提供可信摘要的主机下载才登记可回收的部分文件。
 
+容器模式使用提交调度作业的账号创建工作目录和暂存输入文件，作业可直接读取自己的输入。
+
 容器来源的 multipart 上传现在与主机上传使用相同的持久 checkpoint（需配置 Agent 的 transfer state 目录），
 绑定稳定的 transfer_id、upload_id、对象大小、partSize 和每个完成 part 的 SHA-256/ETag。
 Agent 重启或重派后仍须重新读取容器并生成独立 spool，再逐片重算哈希；只有记录匹配的 part 才跳过上传，

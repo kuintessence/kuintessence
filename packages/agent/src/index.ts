@@ -151,8 +151,7 @@ async function main() {
     }
     spawner = new ContainerSpawner(containerId);
     const containerLogDir = "/var/tmp/kq-slurm-shared";
-    const makeContainerDirectory = makeContainerMkdir(containerId);
-    await makeContainerDirectory(containerLogDir);
+    await makeContainerMkdir(containerId, true)(containerLogDir);
     slurmDeps = {
       logDir: containerLogDir,
       terminalStatusBackend: "scontrol",
@@ -171,7 +170,7 @@ async function main() {
     };
     outputReader = makeContainerReadOutput(containerId);
     globScanner = makeContainerGlobScanner(containerId);
-    ensureWorkingDir = makeContainerDirectory;
+    ensureWorkingDir = makeContainerMkdir(containerId);
   } else {
     spawner = realSpawner;
     const logDir = dataRoots.schedulerLogDir();

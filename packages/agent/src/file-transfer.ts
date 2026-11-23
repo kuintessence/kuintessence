@@ -109,6 +109,7 @@ export function buildCloudToClusterArgv(
   connectTo = "",
   content?: { sha256: string; size: number },
   confirm = false,
+  purpose: "transfer" | "job-input" = "transfer",
 ): string[] {
   if (readSiteTransport())
     throw new Error("Site transport requires host staging before container execution");
@@ -116,8 +117,7 @@ export function buildCloudToClusterArgv(
     "docker",
     "exec",
     ...(confirm ? ["-i"] : []),
-    "-u",
-    "root",
+    ...(purpose === "transfer" ? ["-u", "root"] : []),
     containerId,
     "sh",
     "-c",

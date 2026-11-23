@@ -74,6 +74,21 @@ describe("buildCloudToClusterArgv", () => {
     expect(argv.slice(0, 5)).toEqual(["docker", "exec", "-u", "root", "my-container"]);
   });
 
+  test("workflow inputs are staged as the scheduler's container user", () => {
+    const argv = buildCloudToClusterArgv(
+      "cid",
+      "http://x/input",
+      "/run/job/input",
+      3,
+      2,
+      "",
+      undefined,
+      true,
+      "job-input",
+    );
+    expect(argv.slice(0, 5)).toEqual(["docker", "exec", "-i", "cid", "sh"]);
+  });
+
   test("appends maxRetries + backoffSec as the last two positional args", () => {
     const argv = buildCloudToClusterArgv("cid", "http://x/url", "out/path", 5, 3);
     expect(argv.slice(-3, -1)).toEqual(["5", "3"]);

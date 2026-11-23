@@ -137,18 +137,20 @@ export function makeContainerGlobScanner(containerId: string): GlobScanner {
 }
 
 /** Build a `mkdir -p` that creates a run directory inside a container. */
-export function makeContainerMkdir(containerId: string): (path: string) => Promise<void> {
+export function makeContainerMkdir(
+  containerId: string,
+  sharedLogDir = false,
+): (path: string) => Promise<void> {
   return async (path: string): Promise<void> => {
     const proc = Bun.spawn(
       [
         "docker",
         "exec",
-        "-u",
-        "root",
+        ...(sharedLogDir ? ["-u", "root"] : []),
         containerId,
         "sh",
         "-c",
-        'mkdir -p "$1" && chmod 1777 "$1"',
+        sharedLogDir ? 'mkdir -p -- "$1" && chmod 1777 -- "$1"' : 'umask 077; mkdir -p -- "$1"',
         "_",
         path,
       ],
