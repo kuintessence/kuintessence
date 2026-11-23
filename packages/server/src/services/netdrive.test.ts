@@ -316,7 +316,9 @@ describe("NetDriveService", () => {
     expect(file.path).toBe("data/r.bin");
     expect(file.size).toBe(body.length);
     expect(file.sha256).toBe(sha);
-    expect(file.etag).toBe((await fake.head(file.storageKey))?.etag);
+    const stored = await fake.head(file.storageKey);
+    if (!stored) throw new Error("Missing assembled object");
+    expect(file.etag).toBe(stored.etag);
     expect(file.etag).not.toBe(etag);
   });
 
@@ -866,7 +868,9 @@ describe("NetDriveService", () => {
       resume.resolve();
     }
     const [file] = await Promise.all([commit, sweep]);
-    expect((await backend.head(file.storageKey))?.versionId).toBe(file.storageVersionId);
+    const stored = await backend.head(file.storageKey);
+    if (!stored?.versionId) throw new Error("Missing committed version after sweep");
+    expect(file.storageVersionId).toBe(stored.versionId);
   });
 
   test("replays a committed upload once and retries a failed delete against its exact version", async () => {
