@@ -57,6 +57,9 @@ concurrency:
 
 jobs:
   export-and-import:
+    permissions:
+      contents: read
+      packages: read
     name: export-and-import
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -101,7 +104,7 @@ jobs:
       - name: Install isolated browser
         working-directory: packages/web
         run: bun run e2e:install
-      - uses: docker/setup-buildx-action@v3
+      - uses: ./.github/actions/registry-build-cache
       - name: Export once and validate bootstrap and real Web import
         env:
           MATERIAL_CASE: ${{ inputs.case }}

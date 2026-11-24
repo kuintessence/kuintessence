@@ -166,11 +166,30 @@ jobs:
           overwrite: true
           if-no-files-found: error
           retention-days: 1
+      - name: Select Ubuntu package cache
+        id: apt-key
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore screenshot test packages
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ui-apt/*.deb
+          key: ui-apt-24.04-${{ runner.arch }}-${{ steps.apt-key.outputs.week }}-${{ hashFiles('bun.lock') }}
       - name: Install Chromium and screenshot fonts
         working-directory: packages/web
         run: |
+          mkdir -p "$RUNNER_TEMP/ui-apt"
+          apt_config=/etc/apt/apt.conf.d/99-kq-ui-archives
+          trap 'sudo rm -f "$apt_config"' EXIT
+          printf 'Dir::Cache::archives "%s";\nBinary::apt-get::APT::Keep-Downloaded-Packages "true";\n' "$RUNNER_TEMP/ui-apt" | sudo tee "$apt_config" >/dev/null
           bunx --no-install patchright install --with-deps chromium
           sudo apt-get install -y fonts-noto-cjk fonts-liberation
+      - name: Save screenshot test packages for subsequent runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ui-apt/*.deb
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       - name: Verify shared UI and key page screenshots
         working-directory: packages/web
         run: bunx --no-install patchright test --config=e2e/ui-components.config.ts
@@ -272,6 +291,9 @@ jobs:
         run: bun run test
 
   spack-artifact-imports:
+    permissions:
+      contents: read
+      packages: read
     name: Spack artifact imports (${{ matrix.case }})
     if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     strategy:

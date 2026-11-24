@@ -110,6 +110,9 @@ jobs:
             core.info(`Required suites: spack=${scope.spack}, schedulers=${scope.schedulers}, workflows=${workflows}`);
 
   ci:
+    permissions:
+      contents: read
+      packages: read
     name: ci
     needs: resolve
     uses: ./.github/workflows/ci.yml
@@ -120,6 +123,9 @@ jobs:
       run_schedulers: ${{ needs.resolve.outputs.schedulers == 'true' }}
 
   schedulers:
+    permissions:
+      contents: read
+      packages: read
     name: schedulers
     needs: resolve
     if: needs.resolve.outputs.spack == 'true' || needs.resolve.outputs.schedulers == 'true'
@@ -130,6 +136,9 @@ jobs:
       run_schedulers: ${{ needs.resolve.outputs.schedulers == 'true' }}
 
   workflows:
+    permissions:
+      contents: read
+      packages: read
     name: workflows
     needs: resolve
     if: needs.resolve.outputs.workflows != 'none'

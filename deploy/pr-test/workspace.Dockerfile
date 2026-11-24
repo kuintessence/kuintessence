@@ -1,4 +1,4 @@
-FROM scheduler-base
+FROM scheduler-base AS deps
 
 WORKDIR /workspace
 COPY package.json bun.lock tsconfig.base.json biome.json ./
@@ -17,6 +17,7 @@ COPY contracts/fabric/commercial/package.json ./contracts/fabric/commercial/
 COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 RUN --mount=type=bind,source=.npmrc,target=/workspace/.npmrc bun install --frozen-lockfile --ignore-scripts
 
+FROM deps
 COPY packages ./packages
 COPY contracts ./contracts
 COPY authz ./authz
