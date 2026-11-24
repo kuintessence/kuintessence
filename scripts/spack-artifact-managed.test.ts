@@ -437,7 +437,10 @@ describe("managed artifact overlay and workflow contracts", () => {
         item.strategy?.matrix.include?.some((entry) => entry.flag === flag),
       );
       expect(job).toBeDefined();
-      expect(job?.permissions ?? workflow.permissions).toEqual({ contents: "read" });
+      expect(job?.permissions ?? workflow.permissions).toEqual({
+        contents: "read",
+        packages: "read",
+      });
       expect(job?.strategy?.["fail-fast"]).toBe(false);
       expect(job?.if).toBe("inputs.run_spack");
       const steps = job?.steps ?? [];

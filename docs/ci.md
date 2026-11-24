@@ -29,6 +29,14 @@ PR 的检查围绕同一提交运行，部署始终等待所选检查全部成�
 
 发布记录必须来自成功的默认分支 `Preview` 控制器，匹配同一测试 run、attempt、PR、SHA、控制器版本和原始镜像发布身份。镜像使用不可变 digest。记录不存在或已过期时重新构建；记录内容不匹配时拒绝复用。重试部署保留原始发布 run/attempt，不重新解释镜像身份。
 
+## 构建缓存
+
+生产镜像按组件从 GHCR 的 `<owner>/<repo>-buildcache:production-<component>` 读取 BuildKit 层。main 构建更新缓存，release、Server Agent bundle 和 Federation 镜像验证都可以复用。预览构建也读取对应组件和 Slurm 的共享层，继续使用自己的构建参数和标签。首次构建填充新缓存，历史 Actions 缓存按 GitHub 的过期策略回收。
+
+调度器验收复用同一 GHCR 包中的 `scheduler-base`、`runtime-slurm`、`runtime-pbs` 和 `workspace-deps`。main 上的 `Warm scheduler build cache` 在构建输入变动时预热，也可在 main 手动运行。工作区缓存截至 Bun 依赖安装层，PR 的源码、protobuf 生成和验收仍按本次提交执行。PR job 使用仓库 token 读取缓存，缺少对应缓存时 BuildKit 从 Dockerfile 构建。本地运行 `deploy/pr-test/run.sh` 默认使用本地 BuildKit 缓存。
+
+截图测试在 Ubuntu 24.04 runner 上复用 APT 安装包。main 按周、runner 架构和 Bun 锁文件保存下载的 `.deb`，每次安装时 APT 仍根据当前软件源解析所需版本。
+
 ## main 镜像传输
 
 默认 `relay` 模式在 runner 启动临时 Docker Registry，先将已核对的生产镜像推入仓库，再通过 SSH 反向转发提供给目标 Docker。两端使用回环地址，目标机只访问隧道，不下载国外代码或依赖。Docker 根据本地层缓存只请求缺少的内容；首次交付仍可能传输全部层。

@@ -32,8 +32,11 @@ exporter="$COMPOSE_PROJECT_NAME-export"
 compose=(docker compose --project-directory "$repo_root" --env-file /dev/null
   -p "$COMPOSE_PROJECT_NAME"
   -f "$repo_root/deploy/compose/docker-compose.pr-test.yml"
-  -f "$repo_root/deploy/compose/docker-compose.pr-spack-artifacts.yml"
-  --profile images)
+  -f "$repo_root/deploy/compose/docker-compose.pr-spack-artifacts.yml")
+if [[ -n "${KQ_CI_BUILD_CACHE:-}" ]]; then
+  compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-cache.yml")
+fi
+compose+=(--profile images)
 
 cleanup() {
   local result=$?

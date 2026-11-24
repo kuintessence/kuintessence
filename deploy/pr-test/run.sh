@@ -76,6 +76,9 @@ if "$spack_file_workflow"; then
 fi
 compose=(docker compose --project-directory "$repo_root" --env-file /dev/null
   -p "$COMPOSE_PROJECT_NAME" -f "$repo_root/deploy/compose/docker-compose.pr-test.yml")
+if [[ -n "${KQ_CI_BUILD_CACHE:-}" ]]; then
+  compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-cache.yml")
+fi
 if "$spack_case"; then
   compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-case.yml")
 fi

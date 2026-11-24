@@ -1,0 +1,13 @@
+services:
+  scheduler-base:
+    build:
+      cache_from:
+        - type=registry,ref=${KQ_CI_BUILD_CACHE:?required}:scheduler-base
+  scheduler-runtime:
+    build:
+      cache_from:
+        - type=registry,ref=${KQ_CI_BUILD_CACHE:?required}:runtime-${KQ_PR_SCHEDULER:?required}
+  test-workspace:
+    build:
+      cache_from:
+        - type=registry,ref=${KQ_CI_BUILD_CACHE:?required}:workspace-deps

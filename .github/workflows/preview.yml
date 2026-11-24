@@ -136,6 +136,7 @@ jobs:
           REVISION: ${{ needs.gate.outputs.sha }}
           IMAGE_TAG: pr-${{ needs.gate.outputs.pr }}-sha-${{ needs.gate.outputs.sha }}-run-${{ github.run_id }}-${{ github.run_attempt }}
         run: >-
+          BUILD_CACHE="ghcr.io/${GITHUB_REPOSITORY,,}-buildcache"
           docker buildx bake --file ../tooling/deploy/preview/images.hcl
           --provenance=false --sbom=false
           --push --metadata-file "$RUNNER_TEMP/kq-images-metadata.json"
