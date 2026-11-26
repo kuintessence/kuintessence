@@ -65,8 +65,8 @@
     "fields": [],
     "sections": [
       {
-        "line": 72,
-        "component": "Card"
+        "line": 169,
+        "component": "DialogContent"
       }
     ],
     "violations": []
@@ -80,6 +80,27 @@
   {
     "file": "packages/web/src/components/agents/AgentSoftwarePage.tsx",
     "fields": [],
+    "sections": [],
+    "violations": []
+  },
+  {
+    "file": "packages/web/src/components/agents/AgentUpdates.tsx",
+    "fields": [
+      {
+        "line": 108,
+        "component": "Input",
+        "field": "{`${id}-release`}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 120,
+        "component": "textarea",
+        "field": "{`${id}-message`}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      }
+    ],
     "sections": [],
     "violations": []
   },
@@ -160,21 +181,21 @@
     "file": "packages/web/src/components/cp/AuditSearchPanel.tsx",
     "fields": [
       {
-        "line": 198,
+        "line": 200,
         "component": "Input",
         "field": "\"cp-audit-from\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 210,
+        "line": 212,
         "component": "Input",
         "field": "\"cp-audit-to\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 222,
+        "line": 224,
         "component": "Input",
         "field": "\"cp-audit-text\"",
         "status": "保留",
@@ -186,14 +207,32 @@
   },
   {
     "file": "packages/web/src/components/cp/CpAccountsPage.tsx",
-    "fields": [],
-    "sections": [
+    "fields": [
       {
-        "line": 128,
-        "component": "Card"
+        "line": 224,
+        "component": "Input",
+        "field": "{t(\"cp.accounts.search\")}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 228,
+        "line": 232,
+        "component": "NativeSelect",
+        "field": "{t(\"cp.accounts.backend\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 242,
+        "component": "NativeSelect",
+        "field": "{t(\"operations.users.status\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      }
+    ],
+    "sections": [
+      {
+        "line": 278,
         "component": "DialogContent"
       }
     ],
@@ -222,15 +261,15 @@
     "fields": [],
     "sections": [
       {
-        "line": 136,
+        "line": 166,
         "component": "Card"
       },
       {
-        "line": 171,
+        "line": 201,
         "component": "Card"
       },
       {
-        "line": 197,
+        "line": 229,
         "component": "Card"
       }
     ],
@@ -240,44 +279,79 @@
     "file": "packages/web/src/components/cp/CpDataPage.tsx",
     "fields": [
       {
-        "line": 236,
+        "line": 310,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 267,
+        "line": 342,
         "component": "Input",
         "field": "{version}",
         "status": "保留",
         "reason": "发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。"
       },
       {
-        "line": 275,
+        "line": 353,
+        "component": "NativeSelect",
+        "field": "{sourceKind}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 385,
+        "component": "Input",
+        "field": "Input",
+        "status": "保留",
+        "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
+      },
+      {
+        "line": 397,
+        "component": "Input",
+        "field": "{uploadSessionId}",
+        "status": "保留",
+        "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
+      },
+      {
+        "line": 408,
         "component": "ResourceSelectField",
         "field": "\"cp-data-agent-select\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 300,
+        "line": 433,
         "component": "ResourceSelectField",
         "field": "\"cp-data-root-select\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 320,
+        "line": 457,
         "component": "Input",
         "field": "{relativePath}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 720,
+        "component": "NativeSelect",
+        "field": "{t(\"cp.data.replicaAgent\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 736,
+        "component": "NativeSelect",
+        "field": "{t(\"cp.data.replicaRoot\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       }
     ],
     "sections": [
       {
-        "line": 223,
+        "line": 296,
         "component": "PageShell"
       }
     ],
@@ -305,112 +379,119 @@
     "file": "packages/web/src/components/cp/CpQueuesPage.tsx",
     "fields": [
       {
-        "line": 957,
+        "line": 940,
         "component": "Input",
         "field": "\"cp-queues-search\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 965,
+        "line": 949,
         "component": "ResourceSelectField",
         "field": "\"cp-queues-agent-filter\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 981,
+        "line": 965,
+        "component": "NativeSelect",
+        "field": "{t(\"cp.queues.col.publication\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 977,
         "component": "input",
         "field": "input",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1082,
+        "line": 1057,
         "component": "Input",
         "field": "\"cp-queue-field-queue-id\"",
         "status": "保留",
         "reason": "创建或登记调度器队列的外部标识/QoS/标签；不是选择现有平台队列，没有权威枚举来源。"
       },
       {
-        "line": 1092,
+        "line": 1067,
         "component": "Input",
         "field": "\"cp-queue-field-name\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1105,
+        "line": 1080,
         "component": "ResourceSelectField",
         "field": "\"cp-queue-field-provider-org-id\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1124,
+        "line": 1098,
         "component": "input",
         "field": "\"cp-queue-field-provider-org-id\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1131,
+        "line": 1105,
         "component": "ResourceSelectField",
         "field": "\"cp-queue-field-agent-id\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1176,
+        "line": 1152,
         "component": "input",
         "field": "\"cp-queue-target-default\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1187,
+        "line": 1163,
         "component": "input",
         "field": "\"cp-queue-target-named\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1225,
+        "line": 1201,
         "component": "ResourceSelectField",
         "field": "\"cp-queue-field-queue-name\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1274,
+        "line": 1251,
         "component": "Input",
         "field": "\"cp-queue-field-qos\"",
         "status": "保留",
         "reason": "创建或登记调度器队列的外部标识/QoS/标签；不是选择现有平台队列，没有权威枚举来源。"
       },
       {
-        "line": 1282,
+        "line": 1259,
         "component": "input",
         "field": "\"cp-queue-field-enabled\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1301,
+        "line": 1278,
         "component": "input",
         "field": "\"cp-queue-field-visible-org-ids\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1317,
+        "line": 1294,
         "component": "input",
         "field": "input",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1338,
+        "line": 1315,
         "component": "Input",
         "field": "\"cp-queue-field-policy-tags\"",
         "status": "保留",
@@ -419,7 +500,7 @@
     ],
     "sections": [
       {
-        "line": 1074,
+        "line": 1049,
         "component": "DialogContent"
       }
     ],
@@ -429,14 +510,14 @@
     "file": "packages/web/src/components/cp/DataDisclosurePolicyPanel.tsx",
     "fields": [
       {
-        "line": 203,
+        "line": 202,
         "component": "Input",
         "field": "{`${formId}-expiry`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 217,
+        "line": 216,
         "component": "Input",
         "field": "{`${formId}-reason`}",
         "status": "保留",
@@ -507,28 +588,35 @@
     "file": "packages/web/src/components/cp/MeteringPage.tsx",
     "fields": [
       {
-        "line": 152,
+        "line": 206,
+        "component": "NativeSelect",
+        "field": "{t(\"cp.metering.exportFormat\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 246,
         "component": "NativeSelect",
         "field": "\"metering-period\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 169,
+        "line": 263,
         "component": "NativeSelect",
         "field": "\"metering-grouping\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 186,
+        "line": 280,
         "component": "Input",
         "field": "\"metering-from\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 198,
+        "line": 292,
         "component": "Input",
         "field": "\"metering-to\"",
         "status": "保留",
@@ -537,7 +625,7 @@
     ],
     "sections": [
       {
-        "line": 117,
+        "line": 200,
         "component": "PageShell"
       }
     ],
@@ -594,7 +682,7 @@
     "file": "packages/web/src/components/cp/ProviderOrganizationSelector.tsx",
     "fields": [
       {
-        "line": 78,
+        "line": 74,
         "component": "ResourceSelectField",
         "field": "{t(\"cp.organizationSelector.ariaLabel\")}",
         "status": "已替换",
@@ -674,37 +762,51 @@
     "file": "packages/web/src/components/cp/SoftwarePolicyAgentDetailSheet.tsx",
     "fields": [
       {
-        "line": 549,
+        "line": 550,
         "component": "NativeSelect",
         "field": "\"cp-software-operation-action\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 562,
+        "line": 563,
         "component": "Input",
         "field": "\"cp-software-operation-spec\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 616,
+        "line": 624,
         "component": "NativeSelect",
         "field": "\"cp-software-batch-action\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 629,
+        "line": 637,
         "component": "Textarea",
         "field": "\"cp-software-batch-specs\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 1010,
+        "component": "Input",
+        "field": "{cores}",
+        "status": "保留",
+        "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
+      },
+      {
+        "line": 1021,
+        "component": "Input",
+        "field": "{minutes}",
+        "status": "保留",
+        "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       }
     ],
     "sections": [
       {
-        "line": 494,
+        "line": 495,
         "component": "SheetContent"
       }
     ],
@@ -720,63 +822,63 @@
     "file": "packages/web/src/components/cp/SoftwarePolicyTable.tsx",
     "fields": [
       {
-        "line": 646,
+        "line": 657,
         "component": "Input",
         "field": "\"cp-software-preview-spec\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 658,
+        "line": 669,
         "component": "Input",
         "field": "\"cp-software-preview-usecase\"",
         "status": "保留",
         "reason": "策略预览接受用例或版本标识/匹配模式；当前目录不能完整枚举策略对象，保留原查询契约。"
       },
       {
-        "line": 670,
+        "line": 681,
         "component": "Input",
         "field": "\"cp-software-preview-usecase-version\"",
         "status": "保留",
         "reason": "策略预览接受用例或版本标识/匹配模式；当前目录不能完整枚举策略对象，保留原查询契约。"
       },
       {
-        "line": 812,
+        "line": 823,
         "component": "ResourceSelectField",
         "field": "{draft.providerOrgId}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 828,
+        "line": 839,
         "component": "NativeSelect",
         "field": "{draft.installMode}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 843,
+        "line": 854,
         "component": "input",
         "field": "input",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 851,
+        "line": 862,
         "component": "input",
         "field": "input",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 893,
+        "line": 904,
         "component": "input",
         "field": "input",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 979,
+        "line": 990,
         "component": "Textarea",
         "field": "{id}",
         "status": "保留",
@@ -785,19 +887,19 @@
     ],
     "sections": [
       {
-        "line": 219,
+        "line": 220,
         "component": "PageShell"
       },
       {
-        "line": 358,
+        "line": 369,
         "component": "Card"
       },
       {
-        "line": 630,
+        "line": 641,
         "component": "Card"
       },
       {
-        "line": 796,
+        "line": 807,
         "component": "SheetContent"
       }
     ],
@@ -807,28 +909,28 @@
     "file": "packages/web/src/components/cp/SpackCatalogPickerDialog.tsx",
     "fields": [
       {
-        "line": 287,
+        "line": 292,
         "component": "ResourceSelectField",
         "field": "\"cp-spack-catalog-version\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 332,
+        "line": 337,
         "component": "NativeSelect",
         "field": "{variantInputId}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 353,
+        "line": 358,
         "component": "Input",
         "field": "{variantInputId}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 393,
+        "line": 398,
         "component": "Input",
         "field": "\"cp-spack-catalog-spec\"",
         "status": "保留",
@@ -847,14 +949,14 @@
     "file": "packages/web/src/components/cp/UsersTable.tsx",
     "fields": [
       {
-        "line": 90,
+        "line": 97,
         "component": "Input",
         "field": "\"cp-users-search\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 104,
+        "line": 111,
         "component": "input",
         "field": "input",
         "status": "保留",
@@ -886,7 +988,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 114,
+        "line": 115,
         "component": "PageShell"
       }
     ],
@@ -930,49 +1032,49 @@
     "file": "packages/web/src/components/data-market/DataMarketPage.tsx",
     "fields": [
       {
-        "line": 139,
+        "line": 141,
         "component": "Input",
         "field": "{t(\"dataMarket.search\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 184,
+        "line": 186,
         "component": "Input",
         "field": "\"private-data-name\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 193,
+        "line": 195,
         "component": "Input",
         "field": "\"private-data-version\"",
         "status": "保留",
         "reason": "发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。"
       },
       {
-        "line": 202,
+        "line": 204,
         "component": "NativeSelect",
         "field": "{privateKind}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 215,
+        "line": 217,
         "component": "Input",
         "field": "{t(\"dataMarket.elements\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 223,
+        "line": 225,
         "component": "Input",
         "field": "{t(\"dataMarket.privateFile\")}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 333,
+        "line": 335,
         "component": "Input",
         "field": "{t(\"dataMarket.ownerEntitlementReason\")}",
         "status": "保留",
@@ -981,11 +1083,11 @@
     ],
     "sections": [
       {
-        "line": 102,
+        "line": 104,
         "component": "PageShell"
       },
       {
-        "line": 291,
+        "line": 293,
         "component": "Card"
       }
     ],
@@ -1004,31 +1106,59 @@
     "violations": []
   },
   {
+    "file": "packages/web/src/components/federation/AgreementFields.tsx",
+    "fields": [
+      {
+        "line": 126,
+        "component": "NativeSelect",
+        "field": "{String(value)}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 144,
+        "component": "Input",
+        "field": "{path}",
+        "status": "保留",
+        "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
+      },
+      {
+        "line": 186,
+        "component": "input",
+        "field": "input",
+        "status": "保留",
+        "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
+      }
+    ],
+    "sections": [],
+    "violations": []
+  },
+  {
     "file": "packages/web/src/components/federation/AgreementImport.tsx",
     "fields": [
       {
-        "line": 97,
+        "line": 148,
         "component": "Input",
         "field": "{`${fieldId}-file`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 125,
+        "line": 176,
         "component": "Textarea",
         "field": "{`${fieldId}-json`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 169,
+        "line": 222,
         "component": "Input",
         "field": "{t(\"federation.agreements.accountSearch\")}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 193,
+        "line": 246,
         "component": "input",
         "field": "{`${fieldId}-account`}",
         "status": "保留",
@@ -1042,21 +1172,21 @@
     "file": "packages/web/src/components/federation/AgreementPanel.tsx",
     "fields": [
       {
-        "line": 451,
+        "line": 454,
         "component": "Textarea",
         "field": "{t(\"federation.agreements.localSignature\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 470,
+        "line": 473,
         "component": "Textarea",
         "field": "{t(\"federation.agreements.counterpartySignature\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 479,
+        "line": 482,
         "component": "Textarea",
         "field": "{t(\"federation.agreements.counterpartySignature\")}",
         "status": "保留",
@@ -1065,11 +1195,11 @@
     ],
     "sections": [
       {
-        "line": 308,
+        "line": 311,
         "component": "DialogContent"
       },
       {
-        "line": 380,
+        "line": 383,
         "component": "Card"
       }
     ],
@@ -1085,35 +1215,35 @@
     "file": "packages/web/src/components/federation/ArbitrationDecisionPanel.tsx",
     "fields": [
       {
-        "line": 463,
+        "line": 467,
         "component": "Input",
         "field": "{`${id}-domain`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 514,
+        "line": 518,
         "component": "NativeSelect",
         "field": "{`${id}-outcome`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 531,
+        "line": 535,
         "component": "NativeSelect",
         "field": "{`${id}-target`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 553,
+        "line": 557,
         "component": "Input",
         "field": "{`${id}-amount`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 565,
+        "line": 569,
         "component": "Textarea",
         "field": "{`${id}-reason`}",
         "status": "保留",
@@ -1122,7 +1252,7 @@
     ],
     "sections": [
       {
-        "line": 589,
+        "line": 593,
         "component": "DialogContent"
       }
     ],
@@ -1355,35 +1485,35 @@
     "file": "packages/web/src/components/federation/CommercialDisputePanel.tsx",
     "fields": [
       {
-        "line": 656,
+        "line": 655,
         "component": "Input",
         "field": "{`${id}-file`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 693,
+        "line": 692,
         "component": "select",
         "field": "{`${id}-mode`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 719,
+        "line": 718,
         "component": "select",
         "field": "{`${id}-record`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 743,
+        "line": 742,
         "component": "Input",
         "field": "{`${id}-amount`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 758,
+        "line": 757,
         "component": "Textarea",
         "field": "{`${id}-reason`}",
         "status": "保留",
@@ -1392,7 +1522,7 @@
     ],
     "sections": [
       {
-        "line": 949,
+        "line": 948,
         "component": "DialogContent"
       }
     ],
@@ -1408,7 +1538,7 @@
     "file": "packages/web/src/components/federation/CommercialEditor.tsx",
     "fields": [
       {
-        "line": 152,
+        "line": 153,
         "component": "input",
         "field": "{`${id}-source`}",
         "status": "保留",
@@ -1561,7 +1691,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 720,
+        "line": 773,
         "component": "DialogContent"
       }
     ],
@@ -1571,49 +1701,49 @@
     "file": "packages/web/src/components/federation/CommercialPaymentPanel.tsx",
     "fields": [
       {
-        "line": 448,
+        "line": 452,
         "component": "Input",
         "field": "{`${id}-bill`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 461,
+        "line": 465,
         "component": "Input",
         "field": "{`${id}-amount`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 476,
+        "line": 480,
         "component": "Input",
         "field": "{`${id}-time`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 489,
+        "line": 493,
         "component": "Input",
         "field": "{`${id}-evidence`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 502,
+        "line": 506,
         "component": "Textarea",
         "field": "{`${id}-reason`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 535,
+        "line": 539,
         "component": "Textarea",
         "field": "{`${id}-json`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 688,
+        "line": 692,
         "component": "Textarea",
         "field": "{`${id}-signature`}",
         "status": "保留",
@@ -1622,7 +1752,7 @@
     ],
     "sections": [
       {
-        "line": 791,
+        "line": 795,
         "component": "DialogContent"
       }
     ],
@@ -1729,28 +1859,28 @@
     "file": "packages/web/src/components/federation/CommercialUsagePanel.tsx",
     "fields": [
       {
-        "line": 437,
+        "line": 436,
         "component": "Input",
         "field": "{`${id}-${index}-quantity`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 456,
+        "line": 455,
         "component": "Input",
         "field": "{`${id}-${index}-digest`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 479,
+        "line": 478,
         "component": "Textarea",
         "field": "{`${id}-reason`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 625,
+        "line": 624,
         "component": "Textarea",
         "field": "{t(\"federation.usage.signature\")}",
         "status": "保留",
@@ -1759,7 +1889,7 @@
     ],
     "sections": [
       {
-        "line": 670,
+        "line": 669,
         "component": "DialogContent"
       }
     ],
@@ -1855,7 +1985,7 @@
     "file": "packages/web/src/components/federation/FederationEvidencePanel.tsx",
     "fields": [
       {
-        "line": 157,
+        "line": 160,
         "component": "Input",
         "field": "{`${id}-${key}`}",
         "status": "保留",
@@ -1876,7 +2006,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 821,
+        "line": 843,
         "component": "DialogContent"
       }
     ],
@@ -1886,7 +2016,7 @@
     "file": "packages/web/src/components/federation/FederationPage.tsx",
     "fields": [
       {
-        "line": 115,
+        "line": 118,
         "component": "select",
         "field": "\"federation-organization\"",
         "status": "保留",
@@ -1895,7 +2025,7 @@
     ],
     "sections": [
       {
-        "line": 40,
+        "line": 41,
         "component": "PageShell"
       }
     ],
@@ -1911,35 +2041,56 @@
     "file": "packages/web/src/components/federation/FederationTaskCreate.tsx",
     "fields": [
       {
-        "line": 168,
+        "line": 188,
         "component": "select",
         "field": "{`${id}-agreement`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 228,
+        "line": 249,
         "component": "select",
         "field": "{`${id}-template`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 258,
+        "line": 279,
         "component": "select",
         "field": "{`${id}-${kind}`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 308,
+        "line": 316,
+        "component": "Input",
+        "field": "{group.descriptor}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 322,
+        "component": "select",
+        "field": "{t(\"federation.tasks.inputType\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 339,
+        "component": "Input",
+        "field": "{t(\"federation.tasks.inputPath\")}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 434,
         "component": "Input",
         "field": "{`${id}-${field}`}",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 327,
+        "line": 453,
         "component": "Input",
         "field": "{`${id}-amount`}",
         "status": "保留",
@@ -2030,14 +2181,14 @@
     "file": "packages/web/src/components/federation/MarketClaimForm.tsx",
     "fields": [
       {
-        "line": 162,
+        "line": 163,
         "component": "select",
         "field": "{id}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 196,
+        "line": 197,
         "component": "select",
         "field": "{`${id}-request`}",
         "status": "保留",
@@ -2051,14 +2202,14 @@
     "file": "packages/web/src/components/federation/MarketDemandForm.tsx",
     "fields": [
       {
-        "line": 74,
+        "line": 82,
         "component": "Input",
         "field": "{`${id}-${field}`}",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 91,
+        "line": 108,
         "component": "textarea",
         "field": "{`${id}-description`}",
         "status": "保留",
@@ -2134,28 +2285,28 @@
     "file": "packages/web/src/components/federation/MediaDeliveryForm.tsx",
     "fields": [
       {
-        "line": 220,
+        "line": 221,
         "component": "Input",
         "field": "{`${id}-${name}`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 262,
+        "line": 263,
         "component": "select",
         "field": "{`${id}-subject`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 367,
+        "line": 368,
         "component": "Input",
         "field": "{`${id}-file`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 402,
+        "line": 403,
         "component": "Textarea",
         "field": "{`${id}-reason`}",
         "status": "保留",
@@ -2257,7 +2408,7 @@
     "file": "packages/web/src/components/federation/MediaOptionPicker.tsx",
     "fields": [
       {
-        "line": 125,
+        "line": 128,
         "component": "select",
         "field": "{id}",
         "status": "保留",
@@ -2271,21 +2422,21 @@
     "file": "packages/web/src/components/files/CloudPane.tsx",
     "fields": [
       {
-        "line": 178,
+        "line": 180,
         "component": "input",
         "field": "\"files-cloud-upload-input\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 221,
+        "line": 223,
         "component": "Input",
         "field": "\"files-cloud-search\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 229,
+        "line": 231,
         "component": "NativeSelect",
         "field": "\"files-cloud-sort\"",
         "status": "保留",
@@ -2352,7 +2503,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 434,
+        "line": 407,
         "component": "PageShell"
       }
     ],
@@ -2363,7 +2514,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 439,
+        "line": 436,
         "component": "SheetContent"
       }
     ],
@@ -2373,14 +2524,14 @@
     "file": "packages/web/src/components/files/PathPickerSheet.tsx",
     "fields": [
       {
-        "line": 834,
+        "line": 821,
         "component": "ResourceSelectField",
         "field": "\"path-picker-agent-select\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 857,
+        "line": 844,
         "component": "ResourceSelectField",
         "field": "\"path-picker-cluster-root-select\"",
         "status": "已替换",
@@ -2389,7 +2540,7 @@
     ],
     "sections": [
       {
-        "line": 412,
+        "line": 388,
         "component": "SheetContent"
       }
     ],
@@ -2399,21 +2550,21 @@
     "file": "packages/web/src/components/files/StorageQuotaRequestDialog.tsx",
     "fields": [
       {
-        "line": 165,
+        "line": 199,
         "component": "Input",
         "field": "\"storage-quota-gb\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 194,
+        "line": 242,
         "component": "Input",
         "field": "\"storage-quota-expires-at\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 204,
+        "line": 262,
         "component": "Textarea",
         "field": "\"storage-quota-reason\"",
         "status": "保留",
@@ -2422,7 +2573,7 @@
     ],
     "sections": [
       {
-        "line": 129,
+        "line": 152,
         "component": "DialogContent"
       }
     ],
@@ -2435,10 +2586,131 @@
     "violations": []
   },
   {
+    "file": "packages/web/src/components/function-maps/FunctionMapRegion.tsx",
+    "fields": [],
+    "sections": [],
+    "violations": []
+  },
+  {
+    "file": "packages/web/src/components/function-maps/FunctionMapView.tsx",
+    "fields": [],
+    "sections": [
+      {
+        "line": 373,
+        "component": "DialogContent"
+      }
+    ],
+    "violations": []
+  },
+  {
+    "file": "packages/web/src/components/function-maps/FunctionMaps.tsx",
+    "fields": [
+      {
+        "line": 187,
+        "component": "NativeSelect",
+        "field": "{model.id}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      }
+    ],
+    "sections": [],
+    "violations": []
+  },
+  {
+    "file": "packages/web/src/components/function-maps/MapPreferenceFields.tsx",
+    "fields": [
+      {
+        "line": 24,
+        "component": "input",
+        "field": "{id}",
+        "status": "保留",
+        "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
+      },
+      {
+        "line": 38,
+        "component": "NativeSelect",
+        "field": "{values.includes(value.fixed) ? value.fixed : values[0]}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      }
+    ],
+    "sections": [],
+    "violations": []
+  },
+  {
+    "file": "packages/web/src/components/function-maps/MapPreferencesPanel.tsx",
+    "fields": [
+      {
+        "line": 43,
+        "component": "NativeSelect",
+        "field": "{draft.appearance.flow ? \"flow\" : \"static\"}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 53,
+        "component": "NativeSelect",
+        "field": "{draft.appearance.color}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 69,
+        "component": "input",
+        "field": "{draft.appearance.lineWidth}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 84,
+        "component": "input",
+        "field": "{draft.appearance.duration}",
+        "status": "保留",
+        "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
+      }
+    ],
+    "sections": [],
+    "violations": []
+  },
+  {
+    "file": "packages/web/src/components/function-maps/icons.tsx",
+    "fields": [],
+    "sections": [],
+    "violations": []
+  },
+  {
     "file": "packages/web/src/components/interconnect/InterconnectDashboard.tsx",
     "fields": [
       {
-        "line": 586,
+        "line": 730,
+        "component": "Input",
+        "field": "{t(\"interconnect.searchResources\")}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 742,
+        "component": "ResourceSelectField",
+        "field": "{t(\"interconnect.organization\")}",
+        "status": "已替换",
+        "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
+      },
+      {
+        "line": 760,
+        "component": "NativeSelect",
+        "field": "{t(\"interconnect.statusLabel\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 775,
+        "component": "NativeSelect",
+        "field": "{t(\"interconnect.connectionType\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 792,
         "component": "ResourceSelectField",
         "field": "{t(\"interconnect.filterCenter\")}",
         "status": "已替换",
@@ -2447,7 +2719,7 @@
     ],
     "sections": [
       {
-        "line": 906,
+        "line": 1186,
         "component": "DialogContent"
       }
     ],
@@ -2457,14 +2729,14 @@
     "file": "packages/web/src/components/interconnect/InterconnectMap.tsx",
     "fields": [
       {
-        "line": 230,
+        "line": 235,
         "component": "NativeSelect",
         "field": "{t(\"interconnect.mapLevel\")}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 240,
+        "line": 245,
         "component": "ResourceSelectField",
         "field": "{t(\"interconnect.province\")}",
         "status": "已替换",
@@ -2478,133 +2750,154 @@
     "file": "packages/web/src/components/interconnect/MetadataEditor.tsx",
     "fields": [
       {
-        "line": 204,
+        "line": 216,
         "component": "Input",
         "field": "\"name\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 207,
+        "line": 219,
         "component": "NativeSelect",
         "field": "\"status\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 222,
+        "line": 234,
         "component": "ResourceSelectField",
         "field": "\"orgId\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 240,
+        "line": 252,
         "component": "Input",
         "field": "\"country\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 247,
+        "line": 259,
         "component": "Input",
         "field": "\"province\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 254,
+        "line": 266,
         "component": "Input",
         "field": "\"city\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 259,
+        "line": 271,
         "component": "Input",
         "field": "\"longitude\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 269,
+        "line": 281,
         "component": "Input",
         "field": "\"latitude\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 284,
+        "line": 296,
         "component": "ResourceSelectField",
         "field": "{centerId}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 303,
+        "line": 315,
         "component": "input",
         "field": "\"computeTypes\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 316,
+        "line": 328,
         "component": "Input",
         "field": "\"cpuCores\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 326,
+        "line": 338,
         "component": "Input",
         "field": "\"storageGiB\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 341,
+        "line": 353,
         "component": "Input",
         "field": "\"storageTypes\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 348,
+        "line": 360,
         "component": "Input",
         "field": "\"applications\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 365,
+        "line": 377,
         "component": "input",
         "field": "\"agentIds\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 395,
+        "line": 403,
+        "component": "NativeSelect",
+        "field": "{networkType}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 418,
         "component": "ResourceSelectField",
-        "field": "{name}",
+        "field": "{zoneId}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 422,
+        "line": 442,
+        "component": "ResourceSelectField",
+        "field": "{side === \"from\" ? fromClusterId : toClusterId}",
+        "status": "已替换",
+        "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
+      },
+      {
+        "line": 467,
+        "component": "Input",
+        "field": "\"configuredBandwidthMbps\"",
+        "status": "保留",
+        "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
+      },
+      {
+        "line": 485,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 435,
+        "line": 498,
         "component": "Input",
         "field": "\"observedAt\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 451,
+        "line": 514,
         "component": "Input",
         "field": "\"source\"",
         "status": "保留",
@@ -2613,7 +2906,7 @@
     ],
     "sections": [
       {
-        "line": 65,
+        "line": 70,
         "component": "DialogContent"
       }
     ],
@@ -2630,28 +2923,28 @@
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 396,
+        "line": 402,
         "component": "Input",
         "field": "\"command-workdir-new-folder-name\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 423,
+        "line": 429,
         "component": "input",
         "field": "\"command-workdir-upload\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 501,
+        "line": 510,
         "component": "Input",
         "field": "{`command-workdir-rename-dir-${safeTestId(row.fullPath)}`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 546,
+        "line": 555,
         "component": "Input",
         "field": "{`command-workdir-stage-${row.entry.fileMetadataId}`}",
         "status": "保留",
@@ -2670,7 +2963,7 @@
     "file": "packages/web/src/components/jobs/ImportJobJsonDialog.tsx",
     "fields": [
       {
-        "line": 251,
+        "line": 232,
         "component": "input",
         "field": "\"import-job-json-file\"",
         "status": "保留",
@@ -2679,7 +2972,7 @@
     ],
     "sections": [
       {
-        "line": 236,
+        "line": 220,
         "component": "DialogContent"
       }
     ],
@@ -2715,6 +3008,12 @@
     "violations": []
   },
   {
+    "file": "packages/web/src/components/jobs/JobResourceMap.tsx",
+    "fields": [],
+    "sections": [],
+    "violations": []
+  },
+  {
     "file": "packages/web/src/components/jobs/JobResourcesTab.tsx",
     "fields": [],
     "sections": [],
@@ -2725,7 +3024,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 108,
+        "line": 109,
         "component": "PageShell"
       }
     ],
@@ -2755,98 +3054,105 @@
     "file": "packages/web/src/components/jobs/SubmitJobDialog.tsx",
     "fields": [
       {
-        "line": 390,
+        "line": 441,
         "component": "ResourceSelectField",
         "field": "{`submit-usecase-dataset-select-${descriptor}`}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1244,
+        "line": 1335,
+        "component": "NativeSelect",
+        "field": "{fieldId}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 1357,
         "component": "Textarea",
         "field": "{fieldId}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1255,
+        "line": 1370,
         "component": "Input",
         "field": "{fieldId}",
         "status": "保留",
-        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+        "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 1380,
+        "line": 1530,
         "component": "Textarea",
         "field": "\"submit-job-command-input\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1443,
+        "line": 1593,
         "component": "Input",
         "field": "\"submit-job-name-input\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1460,
+        "line": 1610,
         "component": "Input",
         "field": "\"submit-job-cpus-input\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 1476,
+        "line": 1626,
         "component": "Input",
         "field": "\"submit-job-memory-input\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 1492,
+        "line": 1642,
         "component": "input",
         "field": "\"submit-job-placement-auto\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1506,
+        "line": 1656,
         "component": "input",
         "field": "\"submit-job-placement-default\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1520,
+        "line": 1670,
         "component": "input",
         "field": "\"submit-job-placement-named\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1592,
+        "line": 1742,
         "component": "ResourceSelectField",
         "field": "\"submit-job-queue-select\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1838,
+        "line": 1970,
         "component": "NativeSelect",
         "field": "\"submit-usecase-runtime-filter\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1852,
+        "line": 1984,
         "component": "NativeSelect",
         "field": "\"submit-usecase-input-filter\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1864,
+        "line": 1996,
         "component": "Input",
         "field": "\"submit-usecase-software-filter\"",
         "status": "保留",
@@ -2855,11 +3161,11 @@
     ],
     "sections": [
       {
-        "line": 1097,
+        "line": 1179,
         "component": "SheetContent"
       },
       {
-        "line": 1815,
+        "line": 1947,
         "component": "DialogContent"
       }
     ],
@@ -2869,28 +3175,28 @@
     "file": "packages/web/src/components/providers/ComputeProvidersPage.tsx",
     "fields": [
       {
-        "line": 93,
+        "line": 129,
         "component": "Input",
         "field": "\"search\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 355,
+        "line": 435,
         "component": "Input",
         "field": "{`${id}-name`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 368,
+        "line": 448,
         "component": "Textarea",
         "field": "{`${id}-${key}`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 378,
+        "line": 458,
         "component": "Input",
         "field": "{`${id}-${key}`}",
         "status": "保留",
@@ -2899,15 +3205,15 @@
     ],
     "sections": [
       {
-        "line": 80,
+        "line": 116,
         "component": "PageShell"
       },
       {
-        "line": 215,
+        "line": 295,
         "component": "DialogContent"
       },
       {
-        "line": 304,
+        "line": 384,
         "component": "DialogContent"
       }
     ],
@@ -2929,7 +3235,7 @@
     "file": "packages/web/src/components/settings/AgentCertsPanel.tsx",
     "fields": [
       {
-        "line": 107,
+        "line": 108,
         "component": "Input",
         "field": "\"agent-certs-agent-id\"",
         "status": "保留",
@@ -2938,7 +3244,7 @@
     ],
     "sections": [
       {
-        "line": 101,
+        "line": 102,
         "component": "Card"
       }
     ],
@@ -2948,19 +3254,14 @@
     "file": "packages/web/src/components/settings/AuditCapabilityPanel.tsx",
     "fields": [
       {
-        "line": 72,
+        "line": 78,
         "component": "Input",
         "field": "\"search\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       }
     ],
-    "sections": [
-      {
-        "line": 56,
-        "component": "Card"
-      }
-    ],
+    "sections": [],
     "violations": []
   },
   {
@@ -2973,7 +3274,7 @@
     "file": "packages/web/src/components/settings/AuthzAdminPanel.tsx",
     "fields": [
       {
-        "line": 296,
+        "line": 406,
         "component": "Textarea",
         "field": "{t(\"adminAccess.rawLabel\")}",
         "status": "保留",
@@ -2982,7 +3283,7 @@
     ],
     "sections": [
       {
-        "line": 173,
+        "line": 353,
         "component": "Card"
       }
     ],
@@ -3064,77 +3365,84 @@
     "file": "packages/web/src/components/settings/ClusterFileRootsPanel.tsx",
     "fields": [
       {
-        "line": 305,
+        "line": 447,
         "component": "Input",
         "field": "\"cluster-file-root-new-label\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 320,
+        "line": 462,
         "component": "ResourceSelectField",
         "field": "\"cluster-file-root-new-provider\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 357,
+        "line": 499,
         "component": "Input",
         "field": "\"cluster-file-root-new-path\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 372,
+        "line": 514,
         "component": "Input",
         "field": "\"cluster-file-root-new-capacity\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 422,
+        "line": 547,
+        "component": "Input",
+        "field": "{t(\"settings.clusterFileRoots.search\")}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 596,
         "component": "Input",
         "field": "{`cluster-file-root-label-${root.id}`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 445,
+        "line": 619,
         "component": "Input",
         "field": "{`cluster-file-root-path-${root.id}`}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 458,
+        "line": 632,
         "component": "Input",
         "field": "{`cluster-file-root-capacity-${root.id}`}",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 482,
+        "line": 654,
         "component": "input",
         "field": "{`cluster-file-root-enabled-${root.id}`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 591,
+        "line": 791,
         "component": "ResourceSelectField",
         "field": "{testId}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 645,
+        "line": 845,
         "component": "Input",
         "field": "{t(\"settings.clusterFileRoots.searchOrganizations\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 671,
+        "line": 871,
         "component": "input",
         "field": "input",
         "status": "保留",
@@ -3143,8 +3451,16 @@
     ],
     "sections": [
       {
-        "line": 249,
+        "line": 369,
         "component": "Card"
+      },
+      {
+        "line": 585,
+        "component": "DialogContent"
+      },
+      {
+        "line": 716,
+        "component": "DialogContent"
       }
     ],
     "violations": []
@@ -3195,14 +3511,14 @@
     "file": "packages/web/src/components/settings/CostRatesForm.tsx",
     "fields": [
       {
-        "line": 208,
-        "component": "Input",
+        "line": 234,
+        "component": "ResourceSelectField",
         "field": "{`cost-rates-cluster-${idx}`}",
-        "status": "保留",
+        "status": "已替换",
         "reason": "费率配置按调度器 cluster 名称建键，可预设尚未接入的集群；在线 Agent/算网档案不是完整同义目录，保留合法自定义键。"
       },
       {
-        "line": 218,
+        "line": 259,
         "component": "Input",
         "field": "{`cost-rates-rate-${idx}`}",
         "status": "保留",
@@ -3211,15 +3527,15 @@
     ],
     "sections": [
       {
-        "line": 69,
+        "line": 70,
         "component": "Card"
       },
       {
-        "line": 89,
+        "line": 90,
         "component": "Card"
       },
       {
-        "line": 176,
+        "line": 189,
         "component": "Card"
       }
     ],
@@ -3229,49 +3545,49 @@
     "file": "packages/web/src/components/settings/DesensitizeAdminPanel.tsx",
     "fields": [
       {
-        "line": 169,
+        "line": 173,
         "component": "input",
         "field": "\"desensitize-global-enabled\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 184,
+        "line": 188,
         "component": "NativeSelect",
         "field": "{t(\"settings.desensitize.scope\")}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 198,
+        "line": 202,
         "component": "Input",
         "field": "{t(\"settings.desensitize.scopeId\")}",
         "status": "保留",
         "reason": "只读、受权限或状态约束的字段，保留原数据展示与禁用规则。"
       },
       {
-        "line": 205,
+        "line": 209,
         "component": "Input",
         "field": "{t(\"settings.desensitize.fieldPath\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 211,
+        "line": 215,
         "component": "NativeSelect",
         "field": "{t(\"settings.desensitize.action\")}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 289,
+        "line": 293,
         "component": "Textarea",
         "field": "\"desensitize-alias-ids\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 336,
+        "line": 340,
         "component": "Textarea",
         "field": "{envelope.token}",
         "status": "保留",
@@ -3280,7 +3596,7 @@
     ],
     "sections": [
       {
-        "line": 144,
+        "line": 145,
         "component": "Card"
       }
     ],
@@ -3474,14 +3790,14 @@
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 440,
+        "line": 439,
         "component": "Input",
         "field": "{t(\"federation.permissions.memberSearch\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 509,
+        "line": 508,
         "component": "select",
         "field": "{`${fieldId}-capability`}",
         "status": "保留",
@@ -3490,7 +3806,7 @@
     ],
     "sections": [
       {
-        "line": 73,
+        "line": 74,
         "component": "Card"
       },
       {
@@ -3498,7 +3814,7 @@
         "component": "Card"
       },
       {
-        "line": 327,
+        "line": 326,
         "component": "DialogContent"
       }
     ],
@@ -3552,7 +3868,7 @@
     ],
     "sections": [
       {
-        "line": 75,
+        "line": 76,
         "component": "Card"
       },
       {
@@ -3637,7 +3953,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 125,
+        "line": 126,
         "component": "Card"
       },
       {
@@ -3689,6 +4005,34 @@
     "violations": []
   },
   {
+    "file": "packages/web/src/components/settings/NotificationsPanel.tsx",
+    "fields": [
+      {
+        "line": 53,
+        "component": "input",
+        "field": "input",
+        "status": "保留",
+        "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
+      },
+      {
+        "line": 63,
+        "component": "Input",
+        "field": "{url}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 68,
+        "component": "Input",
+        "field": "{secret}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      }
+    ],
+    "sections": [],
+    "violations": []
+  },
+  {
     "file": "packages/web/src/components/settings/OperationsAttentionCards.tsx",
     "fields": [],
     "sections": [],
@@ -3699,15 +4043,15 @@
     "fields": [],
     "sections": [
       {
-        "line": 65,
+        "line": 67,
         "component": "PageShell"
       },
       {
-        "line": 83,
+        "line": 85,
         "component": "PageShell"
       },
       {
-        "line": 91,
+        "line": 96,
         "component": "PageShell"
       }
     ],
@@ -3826,14 +4170,42 @@
     "file": "packages/web/src/components/settings/PlatformUsersTable.tsx",
     "fields": [
       {
-        "line": 66,
+        "line": 230,
         "component": "Input",
         "field": "{t(\"cp.users.searchLabel\")}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 191,
+        "line": 241,
+        "component": "NativeSelect",
+        "field": "{t(\"cp.users.col.role\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 258,
+        "component": "NativeSelect",
+        "field": "{t(\"operations.users.status\")}",
+        "status": "保留",
+        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+      },
+      {
+        "line": 345,
+        "component": "Input",
+        "field": "{email}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 357,
+        "component": "Input",
+        "field": "{displayName}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 367,
         "component": "Textarea",
         "field": "\"platform-user-status-reason\"",
         "status": "保留",
@@ -3842,7 +4214,7 @@
     ],
     "sections": [
       {
-        "line": 178,
+        "line": 312,
         "component": "DialogContent"
       }
     ],
@@ -3852,35 +4224,35 @@
     "file": "packages/web/src/components/settings/SSOConfigForm.tsx",
     "fields": [
       {
-        "line": 320,
+        "line": 316,
         "component": "input",
         "field": "\"sso-enabled\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 339,
+        "line": 335,
         "component": "Input",
         "field": "\"sso-provider-display-name\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 350,
+        "line": 346,
         "component": "Input",
         "field": "\"sso-login-welcome-zh\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 360,
+        "line": 356,
         "component": "Input",
         "field": "\"sso-login-welcome-en\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 380,
+        "line": 376,
         "component": "NativeSelect",
         "field": "\"sso-provider\"",
         "status": "保留",
@@ -3942,11 +4314,11 @@
         "component": "Card"
       },
       {
-        "line": 202,
+        "line": 200,
         "component": "Card"
       },
       {
-        "line": 308,
+        "line": 304,
         "component": "Card"
       }
     ],
@@ -3995,11 +4367,11 @@
     "fields": [],
     "sections": [
       {
-        "line": 210,
+        "line": 205,
         "component": "Card"
       },
       {
-        "line": 328,
+        "line": 332,
         "component": "PageShell"
       }
     ],
@@ -4010,7 +4382,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 74,
+        "line": 75,
         "component": "Card"
       }
     ],
@@ -4020,63 +4392,70 @@
     "file": "packages/web/src/components/settings/SshCredentialsForm.tsx",
     "fields": [
       {
-        "line": 254,
+        "line": 262,
         "component": "ResourceSelect",
         "field": "\"ssh-agent-id\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 272,
+        "line": 280,
         "component": "LabeledInput",
         "field": "\"ssh-username\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 278,
+        "line": 286,
         "component": "LabeledInput",
         "field": "\"ssh-host\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 284,
+        "line": 292,
         "component": "LabeledInput",
         "field": "\"ssh-port\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 291,
+        "line": 299,
         "component": "LabeledInput",
         "field": "\"ssh-password\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 306,
+        "line": 314,
         "component": "Textarea",
         "field": "\"ssh-private-key\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 317,
+        "line": 325,
         "component": "LabeledInput",
         "field": "\"ssh-passphrase\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 330,
+        "line": 338,
+        "component": "LabeledInput",
+        "field": "\"ssh-jumps\"",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 344,
         "component": "LabeledInput",
         "field": "\"ssh-host-key\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 377,
+        "line": 391,
         "component": "Input",
         "field": "{id}",
         "status": "保留",
@@ -4085,7 +4464,7 @@
     ],
     "sections": [
       {
-        "line": 174,
+        "line": 182,
         "component": "Card"
       }
     ],
@@ -4222,16 +4601,10 @@
     "violations": []
   },
   {
-    "file": "packages/web/src/components/software/FormHeader.tsx",
-    "fields": [],
-    "sections": [],
-    "violations": []
-  },
-  {
     "file": "packages/web/src/components/software/MaterialCatalog.tsx",
     "fields": [
       {
-        "line": 108,
+        "line": 110,
         "component": "Input",
         "field": "{`${id}-repository`}",
         "status": "保留",
@@ -4326,28 +4699,28 @@
     "file": "packages/web/src/components/software/MaterialPackImport.tsx",
     "fields": [
       {
-        "line": 187,
+        "line": 198,
         "component": "Input",
         "field": "{`${id}-manifest`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 200,
+        "line": 211,
         "component": "Input",
         "field": "{`${id}-files`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 213,
+        "line": 224,
         "component": "Input",
         "field": "{`${id}-directory`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 347,
+        "line": 358,
         "component": "input",
         "field": "input",
         "status": "保留",
@@ -4444,14 +4817,14 @@
     "file": "packages/web/src/components/software/OfflineDeliveryImport.tsx",
     "fields": [
       {
-        "line": 123,
+        "line": 143,
         "component": "Input",
         "field": "{`${id}-plan`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 135,
+        "line": 155,
         "component": "Input",
         "field": "{`${id}-files`}",
         "status": "保留",
@@ -4492,7 +4865,7 @@
     "file": "packages/web/src/components/software/RecipeRepositoryDetail.tsx",
     "fields": [
       {
-        "line": 252,
+        "line": 259,
         "component": "input",
         "field": "input",
         "status": "保留",
@@ -4501,7 +4874,7 @@
     ],
     "sections": [
       {
-        "line": 232,
+        "line": 239,
         "component": "DialogContent"
       }
     ],
@@ -4686,12 +5059,7 @@
   {
     "file": "packages/web/src/components/software/SoftwareCard.tsx",
     "fields": [],
-    "sections": [
-      {
-        "line": 52,
-        "component": "Card"
-      }
-    ],
+    "sections": [],
     "violations": []
   },
   {
@@ -4716,7 +5084,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 67,
+        "line": 71,
         "component": "PageShell"
       }
     ],
@@ -4726,105 +5094,105 @@
     "file": "packages/web/src/components/software/SoftwarePage.tsx",
     "fields": [
       {
-        "line": 1553,
+        "line": 1555,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1557,
+        "line": 1559,
         "component": "Input",
         "field": "{version}",
         "status": "保留",
         "reason": "发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。"
       },
       {
-        "line": 1563,
+        "line": 1565,
         "component": "Input",
         "field": "{description}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1567,
+        "line": 1569,
         "component": "Input",
         "field": "{tags}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1571,
+        "line": 1573,
         "component": "Textarea",
         "field": "{yamlContent}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2195,
+        "line": 2210,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2199,
-        "component": "NativeSelect",
+        "line": 2214,
+        "component": "Input",
         "field": "{`${id}-source`}",
         "status": "保留",
-        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2212,
+        "line": 2219,
         "component": "Input",
         "field": "{description}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2216,
+        "line": 2223,
         "component": "Input",
         "field": "{tags}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2385,
+        "line": 2408,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2389,
+        "line": 2412,
         "component": "Input",
         "field": "{version}",
         "status": "保留",
         "reason": "发布或登记新版本的版本号，属于创建内容；已有版本引用在独立资源选择控件中处理。"
       },
       {
-        "line": 2395,
+        "line": 2418,
         "component": "Input",
         "field": "{description}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2400,
+        "line": 2423,
         "component": "Input",
         "field": "{commandFile}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2444,
+        "line": 2467,
         "component": "Input",
         "field": "{inputDescriptor}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 2453,
+        "line": 2476,
         "component": "Input",
         "field": "{argumentFormat}",
         "status": "保留",
@@ -4837,19 +5205,19 @@
         "component": "PageShell"
       },
       {
-        "line": 1458,
+        "line": 1460,
         "component": "SheetContent"
       },
       {
-        "line": 1699,
+        "line": 1703,
         "component": "SheetContent"
       },
       {
-        "line": 2084,
+        "line": 2088,
         "component": "SheetContent"
       },
       {
-        "line": 2111,
+        "line": 2116,
         "component": "DialogContent"
       }
     ],
@@ -4874,35 +5242,28 @@
     "file": "packages/web/src/components/software/SpackCatalogPackageForm.tsx",
     "fields": [
       {
-        "line": 88,
+        "line": 89,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 100,
+        "line": 101,
         "component": "NativeSelect",
         "field": "{`${id}-source`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 118,
+        "line": 119,
         "component": "Input",
         "field": "{description}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 130,
-        "component": "Textarea",
-        "field": "{`${id}-packageFile`}",
-        "status": "保留",
-        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
-      },
-      {
-        "line": 161,
+        "line": 155,
         "component": "Input",
         "field": "{tags}",
         "status": "保留",
@@ -5006,6 +5367,27 @@
     "violations": []
   },
   {
+    "file": "packages/web/src/components/software/SpackSourceEditor.tsx",
+    "fields": [
+      {
+        "line": 110,
+        "component": "Textarea",
+        "field": "\"software-spack-package-file\"",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      },
+      {
+        "line": 131,
+        "component": "Input",
+        "field": "{field.value}",
+        "status": "保留",
+        "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
+      }
+    ],
+    "sections": [],
+    "violations": []
+  },
+  {
     "file": "packages/web/src/components/software/SpackSpecPicker.tsx",
     "fields": [
       {
@@ -5056,42 +5438,42 @@
     "file": "packages/web/src/components/software/UsecasePackageForm.tsx",
     "fields": [
       {
-        "line": 121,
+        "line": 119,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 125,
+        "line": 123,
         "component": "Input",
         "field": "{version}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 131,
+        "line": 129,
         "component": "Input",
         "field": "{description}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 136,
+        "line": 134,
         "component": "Input",
         "field": "{commandFile}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 186,
+        "line": 184,
         "component": "Input",
         "field": "{inputDescriptor}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 195,
+        "line": 193,
         "component": "Input",
         "field": "{argumentFormat}",
         "status": "保留",
@@ -5105,35 +5487,35 @@
     "file": "packages/web/src/components/software/WorkflowTemplateForm.tsx",
     "fields": [
       {
-        "line": 44,
+        "line": 42,
         "component": "Input",
         "field": "{name}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 48,
+        "line": 46,
         "component": "Input",
         "field": "{version}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 54,
+        "line": 52,
         "component": "Input",
         "field": "{description}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 58,
+        "line": 56,
         "component": "Input",
         "field": "{tags}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 62,
+        "line": 60,
         "component": "Textarea",
         "field": "{yamlContent}",
         "status": "保留",
@@ -5153,7 +5535,7 @@
     "file": "packages/web/src/components/terminal/AuditDrawer.tsx",
     "fields": [
       {
-        "line": 130,
+        "line": 144,
         "component": "Input",
         "field": "\"terminal-audit-search\"",
         "status": "保留",
@@ -5162,7 +5544,7 @@
     ],
     "sections": [
       {
-        "line": 65,
+        "line": 70,
         "component": "SheetContent"
       }
     ],
@@ -5172,14 +5554,14 @@
     "file": "packages/web/src/components/terminal/NewSessionDialog.tsx",
     "fields": [
       {
-        "line": 142,
+        "line": 139,
         "component": "ResourceSelectField",
         "field": "\"terminal-agent\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 187,
+        "line": 198,
         "component": "ResourceSelectField",
         "field": "\"terminal-user\"",
         "status": "已替换",
@@ -5188,10 +5570,16 @@
     ],
     "sections": [
       {
-        "line": 106,
+        "line": 100,
         "component": "SheetContent"
       }
     ],
+    "violations": []
+  },
+  {
+    "file": "packages/web/src/components/terminal/SessionIdCopyButton.tsx",
+    "fields": [],
+    "sections": [],
     "violations": []
   },
   {
@@ -5205,7 +5593,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 168,
+        "line": 184,
         "component": "PageShell"
       }
     ],
@@ -5317,252 +5705,245 @@
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 563,
+        "line": 566,
         "component": "ResourceSelect",
         "field": "\"rf-prop-usecase-version-select\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 593,
+        "line": 596,
         "component": "Input",
         "field": "\"rf-prop-usecase-version-id\"",
         "status": "保留",
         "reason": "嵌入编辑器未提供候选目录时的兼容分支；平台 Shell 已提供资源目录及当前图候选，运行时使用 ResourceSelect。SubWorkflow ByVersion 没有可验证的 workflowVersionId 目录，保留原 ID 输入。"
       },
       {
-        "line": 609,
+        "line": 612,
         "component": "Input",
         "field": "\"rf-prop-software-version-id\"",
         "status": "保留",
         "reason": "嵌入编辑器未提供候选目录时的兼容分支；平台 Shell 已提供资源目录及当前图候选，运行时使用 ResourceSelect。SubWorkflow ByVersion 没有可验证的 workflowVersionId 目录，保留原 ID 输入。"
       },
       {
-        "line": 628,
+        "line": 631,
         "component": "Input",
         "field": "{`rf-prop-req-${field}`}",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 711,
-        "component": "NativeSelect",
-        "field": "\"rf-prop-script-source\"",
-        "status": "保留",
-        "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
-      },
-      {
-        "line": 730,
+        "line": 765,
         "component": "ResourceSelect",
         "field": "\"rf-prop-script-runtime-select\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 746,
+        "line": 780,
         "component": "Input",
         "field": "\"rf-prop-script-runtime\"",
         "status": "保留",
         "reason": "嵌入编辑器未提供候选目录时的兼容分支；平台 Shell 已提供资源目录及当前图候选，运行时使用 ResourceSelect。SubWorkflow ByVersion 没有可验证的 workflowVersionId 目录，保留原 ID 输入。"
       },
       {
-        "line": 764,
+        "line": 800,
         "component": "Input",
         "field": "\"rf-prop-script-identity\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 776,
+        "line": 812,
         "component": "Input",
         "field": "\"rf-prop-script-language\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 786,
+        "line": 822,
         "component": "Textarea",
         "field": "\"rf-prop-script-content\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 845,
+        "line": 881,
         "component": "Input",
         "field": "\"rf-prop-milestone-url\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 858,
+        "line": 894,
         "component": "Textarea",
         "field": "\"rf-prop-milestone-message\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 963,
+        "line": 1000,
         "component": "Input",
         "field": "{`rf-prop-switch-case-when-${index}`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 973,
+        "line": 1010,
         "component": "ResourceSelect",
         "field": "{`rf-prop-switch-case-to-select-${index}`}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 993,
+        "line": 1030,
         "component": "Input",
         "field": "{`rf-prop-switch-case-to-${index}`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1034,
+        "line": 1072,
         "component": "ResourceSelect",
         "field": "{defaultTo}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1048,
+        "line": 1086,
         "component": "Input",
         "field": "\"rf-prop-switch-default\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1148,
+        "line": 1186,
         "component": "NativeSelect",
         "field": "\"rf-prop-loop-mode\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1166,
+        "line": 1204,
         "component": "Input",
         "field": "\"rf-prop-loop-max-iterations\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1176,
+        "line": 1214,
         "component": "Input",
         "field": "\"rf-prop-loop-over\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1188,
+        "line": 1226,
         "component": "Input",
         "field": "\"rf-prop-loop-until\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1200,
+        "line": 1238,
         "component": "NativeSelect",
         "field": "\"rf-prop-loop-on-exhausted\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1214,
+        "line": 1252,
         "component": "Input",
         "field": "\"rf-prop-loop-max-parallel\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 1289,
+        "line": 1327,
         "component": "ResourceSelect",
         "field": "{fromLoop}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1302,
+        "line": 1340,
         "component": "Input",
         "field": "\"rf-prop-reduce-from-loop\"",
         "status": "保留",
         "reason": "嵌入编辑器未提供候选目录时的兼容分支；平台 Shell 已提供资源目录及当前图候选，运行时使用 ResourceSelect。SubWorkflow ByVersion 没有可验证的 workflowVersionId 目录，保留原 ID 输入。"
       },
       {
-        "line": 1315,
+        "line": 1353,
         "component": "ResourceSelect",
         "field": "{fromOutput}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 1333,
+        "line": 1371,
         "component": "Input",
         "field": "\"rf-prop-reduce-from-output\"",
         "status": "保留",
         "reason": "嵌入编辑器未提供候选目录时的兼容分支；平台 Shell 已提供资源目录及当前图候选，运行时使用 ResourceSelect。SubWorkflow ByVersion 没有可验证的 workflowVersionId 目录，保留原 ID 输入。"
       },
       {
-        "line": 1345,
+        "line": 1383,
         "component": "NativeSelect",
         "field": "\"rf-prop-reduce-ordering\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1359,
+        "line": 1397,
         "component": "NativeSelect",
         "field": "\"rf-prop-reduce-output-kind\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1374,
+        "line": 1413,
         "component": "Input",
         "field": "\"rf-prop-reduce-output-descriptor\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1451,
+        "line": 1490,
         "component": "NativeSelect",
         "field": "\"rf-prop-subworkflow-ref-kind\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1469,
+        "line": 1508,
         "component": "Input",
         "field": "\"rf-prop-subworkflow-version-id\"",
         "status": "保留",
         "reason": "嵌入编辑器未提供候选目录时的兼容分支；平台 Shell 已提供资源目录及当前图候选，运行时使用 ResourceSelect。SubWorkflow ByVersion 没有可验证的 workflowVersionId 目录，保留原 ID 输入。"
       },
       {
-        "line": 1494,
+        "line": 1533,
         "component": "Input",
         "field": "\"rf-prop-subworkflow-max-depth\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 1507,
+        "line": 1546,
         "component": "NativeSelect",
         "field": "\"rf-prop-subworkflow-on-depth-exceeded\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 1555,
+        "line": 1594,
         "component": "Input",
         "field": "\"rf-prop-generate-output-descriptor\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 1566,
+        "line": 1605,
         "component": "NativeSelect",
         "field": "\"rf-prop-generate-output-as\"",
         "status": "保留",
@@ -5582,14 +5963,14 @@
     "file": "packages/web/src/components/workflow/WorkflowEditorShell.tsx",
     "fields": [
       {
-        "line": 480,
+        "line": 510,
         "component": "NativeSelect",
         "field": "\"rf-shell-flow-animation\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 523,
+        "line": 553,
         "component": "input",
         "field": "input",
         "status": "保留",
@@ -5603,21 +5984,21 @@
     "file": "packages/web/src/components/workflow/WorkflowSlotMappingDialog.tsx",
     "fields": [
       {
-        "line": 276,
+        "line": 280,
         "component": "ResourceSelectField",
         "field": "{fromSlot}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 305,
+        "line": 309,
         "component": "ResourceSelectField",
         "field": "{toSlot}",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 321,
+        "line": 325,
         "component": "NativeSelect",
         "field": "{transferType}",
         "status": "保留",
@@ -5626,7 +6007,7 @@
     ],
     "sections": [
       {
-        "line": 199,
+        "line": 202,
         "component": "DialogContent"
       }
     ],
@@ -5647,20 +6028,20 @@
     "file": "packages/web/src/components/workflows/NewWorkflowPage.tsx",
     "fields": [
       {
-        "line": 683,
-        "component": "input",
-        "field": "\"workflow-name-input\"",
+        "line": 694,
+        "component": "Input",
+        "field": "\"workflow-name\"",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       }
     ],
     "sections": [
       {
-        "line": 829,
+        "line": 844,
         "component": "DialogContent"
       },
       {
-        "line": 866,
+        "line": 881,
         "component": "DialogContent"
       }
     ],
@@ -5679,6 +6060,12 @@
     "violations": []
   },
   {
+    "file": "packages/web/src/components/workflows/WorkflowCreationLayout.tsx",
+    "fields": [],
+    "sections": [],
+    "violations": []
+  },
+  {
     "file": "packages/web/src/components/workflows/WorkflowCreationStepper.tsx",
     "fields": [],
     "sections": [],
@@ -5689,39 +6076,39 @@
     "fields": [],
     "sections": [
       {
-        "line": 336,
+        "line": 358,
         "component": "Card"
       },
       {
-        "line": 361,
+        "line": 383,
         "component": "Card"
       },
       {
-        "line": 443,
+        "line": 465,
         "component": "DialogContent"
       },
       {
-        "line": 491,
+        "line": 513,
         "component": "Card"
       },
       {
-        "line": 507,
+        "line": 529,
         "component": "Card"
       },
       {
-        "line": 557,
+        "line": 583,
         "component": "Card"
       },
       {
-        "line": 571,
+        "line": 597,
         "component": "Card"
       },
       {
-        "line": 584,
+        "line": 628,
         "component": "Card"
       },
       {
-        "line": 629,
+        "line": 671,
         "component": "Card"
       }
     ],
@@ -5731,56 +6118,56 @@
     "file": "packages/web/src/components/workflows/WorkflowInputsStep.tsx",
     "fields": [
       {
-        "line": 559,
+        "line": 561,
         "component": "NativeSelect",
         "field": "{`workflow-value-${requirement.key}`}",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 572,
+        "line": 574,
         "component": "Textarea",
         "field": "{`workflow-value-${requirement.key}`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 585,
+        "line": 587,
         "component": "Input",
         "field": "{`workflow-value-${requirement.key}`}",
         "status": "保留",
         "reason": "自由内容（名称、路径、命令、表达式、凭据或搜索查询），保持原提交与校验。"
       },
       {
-        "line": 715,
+        "line": 717,
         "component": "input",
         "field": "\"workflow-choose-local-file\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 730,
+        "line": 732,
         "component": "input",
         "field": "\"workflow-choose-local-folder\"",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 893,
+        "line": 898,
         "component": "input",
         "field": "{`workflow-choose-local-file-${requirement.key}`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 915,
+        "line": 920,
         "component": "input",
         "field": "{`workflow-choose-local-folder-${requirement.key}`}",
         "status": "保留",
         "reason": "勾选、单选、文件上传或隐藏表单值，保留原生语义。"
       },
       {
-        "line": 1153,
+        "line": 1158,
         "component": "ResourceSelectField",
         "field": "{`workflow-dataset-select-${requirement.key}`}",
         "status": "已替换",
@@ -5789,16 +6176,8 @@
     ],
     "sections": [
       {
-        "line": 535,
-        "component": "Card"
-      },
-      {
-        "line": 614,
-        "component": "Card"
-      },
-      {
-        "line": 662,
-        "component": "Card"
+        "line": 1380,
+        "component": "DialogContent"
       }
     ],
     "violations": []
@@ -5807,21 +6186,21 @@
     "file": "packages/web/src/components/workflows/WorkflowPickerDialogs.tsx",
     "fields": [
       {
-        "line": 121,
+        "line": 125,
         "component": "ResourceSelectField",
         "field": "\"workflow-template-tag-filter\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 339,
+        "line": 351,
         "component": "NativeSelect",
         "field": "\"workflow-usecase-runtime-filter\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 350,
+        "line": 362,
         "component": "NativeSelect",
         "field": "\"workflow-usecase-input-filter\"",
         "status": "保留",
@@ -5830,11 +6209,11 @@
     ],
     "sections": [
       {
-        "line": 100,
+        "line": 104,
         "component": "DialogContent"
       },
       {
-        "line": 322,
+        "line": 334,
         "component": "DialogContent"
       }
     ],
@@ -5844,51 +6223,42 @@
     "file": "packages/web/src/components/workflows/WorkflowResourcesStep.tsx",
     "fields": [
       {
-        "line": 167,
+        "line": 168,
         "component": "NativeSelect",
         "field": "\"workflow-resource-planner-mode\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 200,
+        "line": 201,
         "component": "Input",
         "field": "\"workflow-placement-budget\"",
         "status": "保留",
         "reason": "数值输入；共用 Input 提供合法范围内的原生预设，并保留自定义数值与 min/max/step。"
       },
       {
-        "line": 269,
+        "line": 267,
         "component": "NativeSelect",
         "field": "\"workflow-resource-node-strategy\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       },
       {
-        "line": 293,
+        "line": 291,
         "component": "ResourceSelectField",
         "field": "\"workflow-resource-target-queue\"",
         "status": "已替换",
         "reason": "共用 Radix Popover + cmdk / Dialog 资源选择器，沿用业务候选与 stable ID。"
       },
       {
-        "line": 316,
+        "line": 314,
         "component": "NativeSelect",
         "field": "\"workflow-resource-data-movement\"",
         "status": "保留",
         "reason": "少量固定枚举、分页大小、布尔策略或共用资源选择器的原生表单桥接，保留统一简单选择。"
       }
     ],
-    "sections": [
-      {
-        "line": 151,
-        "component": "Card"
-      },
-      {
-        "line": 242,
-        "component": "Card"
-      }
-    ],
+    "sections": [],
     "violations": []
   },
   {
@@ -5900,12 +6270,7 @@
   {
     "file": "packages/web/src/components/workflows/WorkflowReviewStep.tsx",
     "fields": [],
-    "sections": [
-      {
-        "line": 133,
-        "component": "Card"
-      }
-    ],
+    "sections": [],
     "violations": []
   },
   {
@@ -5918,7 +6283,7 @@
     "file": "packages/web/src/components/workflows/WorkflowScriptPickerDialog.tsx",
     "fields": [
       {
-        "line": 52,
+        "line": 61,
         "component": "NativeSelect",
         "field": "\"workflow-script-language-filter\"",
         "status": "保留",
@@ -5939,7 +6304,7 @@
     "fields": [],
     "sections": [
       {
-        "line": 166,
+        "line": 168,
         "component": "PageShell"
       }
     ],
@@ -6035,7 +6400,12 @@
   {
     "file": "packages/web/src/routes/cp.metering.tsx",
     "fields": [],
-    "sections": [],
+    "sections": [
+      {
+        "line": 21,
+        "component": "PageShell"
+      }
+    ],
     "violations": []
   },
   {
@@ -6109,15 +6479,15 @@
     "fields": [],
     "sections": [
       {
-        "line": 64,
+        "line": 68,
         "component": "PageShell"
       },
       {
-        "line": 79,
+        "line": 83,
         "component": "PageShell"
       },
       {
-        "line": 161,
+        "line": 176,
         "component": "PageShell"
       }
     ],

@@ -165,7 +165,10 @@ function ScopedMaps({
       type={model.type}
       dashboard={dashboard}
       common={common}
-      recommended={recommended}
+      recommended={
+        recommended ??
+        (dashboard === undefined && model.type !== "runtime" ? "collapsed" : undefined)
+      }
       nodeTarget={graph.nodes.some((node) => node.id === search.mapNode)}
       urlDisplay={
         dashboard !== undefined

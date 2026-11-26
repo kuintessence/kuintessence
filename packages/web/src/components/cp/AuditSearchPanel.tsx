@@ -177,7 +177,9 @@ export function AuditSearchPanel() {
     <div className="space-y-4" data-testid="cp-audit-panel">
       <div className="flex items-baseline justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.audit.title")}</h2>
+          <h1 className="break-words text-2xl font-semibold tracking-tight">
+            {t("cp.audit.title")}
+          </h1>
           <p className="text-sm text-muted-foreground">{t("cp.audit.subtitle")}</p>
         </div>
       </div>

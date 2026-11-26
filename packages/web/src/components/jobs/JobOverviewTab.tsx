@@ -24,7 +24,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 
 function MonoValue({ value }: { value: string }) {
   return (
-    <span className="block min-w-0 truncate font-mono text-xs" title={value}>
+    <span className="block min-w-0 font-mono text-xs [overflow-wrap:anywhere]" title={value}>
       {value}
     </span>
   );

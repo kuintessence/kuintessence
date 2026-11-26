@@ -29,7 +29,8 @@ function statusVariant(status: string): "running" | "cancelled" | "failed" | "de
   return "default";
 }
 
-export function CpAgentsTable() {
+export function CpAgentsTable({ embedded = false }: { embedded?: boolean }) {
+  const Heading = embedded ? "h2" : "h1";
   const { t } = useTranslation();
   const q = useCpAgents();
   const organizationName = useOrganizationName();
@@ -55,11 +56,11 @@ export function CpAgentsTable() {
 
   return (
     <div className="space-y-4" data-testid="cp-agents-table">
-      <div className="flex items-baseline justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.agents.title")}</h2>
-        </div>
-      </div>
+      <Heading
+        className={embedded ? "text-base font-semibold" : "text-2xl font-semibold tracking-tight"}
+      >
+        {t("cp.agents.title")}
+      </Heading>
 
       {q.error ? (
         <div className=" p-3 text-sm" data-testid="cp-agents-error">

@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { ApiError, api, downloadAuthedFile, uploadFileToNetDrive } from "./api-client";
+import {
+  ApiError,
+  api,
+  downloadAuthedFile,
+  resolveSoftwareAvailability,
+  submitSoftwareAsset,
+  uploadFileToNetDrive,
+} from "./api-client";
 import { getAuthState, setAuth } from "./auth";
 import { refreshAuthSession } from "./authenticated-fetch";
+
+import { setMobileManagementPolicy } from "./mobile-management-policy";
 
 type FetchSpy = ReturnType<typeof makeFetchSpy>;
 
@@ -27,6 +36,39 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   window.__KQ_LOCAL__ = undefined;
+});
+
+test("resolves a software spec on mobile while software changes still require desktop", async () => {
+  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+  setMobileManagementPolicy(true);
+  try {
+    const organizationId = "00000000-0000-4000-8000-000000000123";
+    localStorage.setItem("kq_active_organization_id", organizationId);
+    const result = {
+      spec: "demo",
+      installedAvailable: [],
+      installableAvailable: [],
+      blocked: [],
+      explanations: [],
+    };
+    const spy = makeFetchSpy(JSON.stringify({ success: true, data: result }), { status: 200 });
+    vi.stubGlobal("fetch", spy);
+    const spec = { rawSpec: "demo", installable: true };
+    await expect(resolveSoftwareAvailability(spec)).resolves.toEqual(result);
+    expect(getUrl(spy)).toMatch(/\/software\/resolve-availability$/);
+    expect(getInit(spy)).toMatchObject({
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-KQ-Active-Organization": organizationId },
+      body: JSON.stringify(spec),
+    });
+    await expect(submitSoftwareAsset("demo")).rejects.toMatchObject({
+      code: "MOBILE_HIGH_RISK_MUTATION_BLOCKED",
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+  } finally {
+    setMobileManagementPolicy(false);
+  }
 });
 
 describe("api.get", () => {

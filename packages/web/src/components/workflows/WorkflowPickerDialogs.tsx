@@ -42,6 +42,7 @@ export function WorkflowTemplatePickerDialog({
   onApply,
   onFiltersChange,
   onOpenChange,
+  onRetry,
   onPageChange,
   open,
   page,
@@ -56,6 +57,7 @@ export function WorkflowTemplatePickerDialog({
   onApply: (template: WorkflowTemplate) => void;
   onFiltersChange: (filters: { query: string; tag: string }) => void;
   onOpenChange: (open: boolean) => void;
+  onRetry: () => void;
   onPageChange: (page: number) => void;
   open: boolean;
   page: number;
@@ -82,9 +84,11 @@ export function WorkflowTemplatePickerDialog({
     [templates],
   );
   const draft =
-    templates.find(
-      (template) => template.id === draftId && templateValidity.get(template.id) === true,
-    ) ?? null;
+    error || loading
+      ? null
+      : (templates.find(
+          (template) => template.id === draftId && templateValidity.get(template.id) === true,
+        ) ?? null);
 
   useEffect(() => {
     if (open) {
@@ -105,7 +109,7 @@ export function WorkflowTemplatePickerDialog({
           <DialogTitle>{t("workflows.templates.pickerTitle")}</DialogTitle>
           <DialogDescription>{t("workflows.templates.pickerDescription")}</DialogDescription>
         </DialogHeader>
-        <DialogBody className="flex flex-col gap-3">
+        <DialogBody className="space-y-3">
           <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px]">
             <SearchInput
               aria-label={t("workflows.templates.searchPlaceholder")}
@@ -138,14 +142,14 @@ export function WorkflowTemplatePickerDialog({
             </ResourceSelectField>
           </div>
           <div
-            className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2 lg:grid-cols-3"
+            className="grid min-w-0 auto-rows-max content-start gap-3 border-border p-2 sm:grid-cols-2 lg:grid-cols-3"
             data-testid="workflow-template-grid"
           >
             {loading ? (
               <PickerState text={t("common.loading")} />
             ) : error ? (
               <PickerState
-                failed
+                onRetry={onRetry}
                 text={toUserFacingError(error, t("workflows.templates.loadFailed"))}
               />
             ) : templates.length === 0 ? (
@@ -172,7 +176,9 @@ export function WorkflowTemplatePickerDialog({
                       onClick={() => valid && setDraftId(template.id)}
                     />
                     <div className="pointer-events-none relative z-[1] flex min-w-0 items-start justify-between gap-2 pr-7">
-                      <span className="truncate text-sm font-semibold">{template.name}</span>
+                      <span className="min-w-0 text-sm font-semibold [overflow-wrap:anywhere]">
+                        {template.name}
+                      </span>
                       {selected ? (
                         <Check className="h-4 w-4 shrink-0 text-brand" />
                       ) : !valid ? (
@@ -183,6 +189,7 @@ export function WorkflowTemplatePickerDialog({
                       type="button"
                       className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-brand"
                       aria-label={t("workflows.templates.toggleFavorite", { name: template.name })}
+                      aria-pressed={favoriteIds.includes(template.id)}
                       onClick={() => {
                         const next = favoriteIds.includes(template.id)
                           ? favoriteIds.filter((id) => id !== template.id)
@@ -193,13 +200,13 @@ export function WorkflowTemplatePickerDialog({
                     >
                       <Star className={favoriteIds.includes(template.id) ? "fill-current" : ""} />
                     </button>
-                    <p className="pointer-events-none relative z-[1] mt-1 font-mono text-[11px] text-muted-foreground">
+                    <p className="pointer-events-none relative z-[1] mt-1 [overflow-wrap:anywhere] font-mono text-[11px] text-muted-foreground">
                       v{template.version}
                     </p>
                     <p className="pointer-events-none relative z-[1] mt-3 line-clamp-3 text-xs leading-5 text-muted-foreground">
                       {template.description ?? t("software.card.noDescription")}
                     </p>
-                    <div className="pointer-events-none relative z-[1] mt-3 flex flex-wrap gap-1">
+                    <div className="pointer-events-none relative z-[1] mt-3 flex flex-wrap gap-1 [&>span]:max-w-full [overflow-wrap:anywhere]">
                       {template.tags.slice(0, 4).map((value) => (
                         <Badge key={value} variant="outline">
                           {value}
@@ -231,8 +238,8 @@ export function WorkflowTemplatePickerDialog({
             </div>
           ) : null}
         </DialogBody>
-        <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <span className="min-w-0 truncate text-xs text-muted-foreground">
+        <DialogFooter className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <span className="max-h-20 min-w-0 overflow-auto text-xs text-muted-foreground [overflow-wrap:anywhere]">
             {draft
               ? t("workflows.templates.pendingSelection", { name: draft.name })
               : t("workflows.templates.noSelection")}
@@ -292,6 +299,7 @@ export function WorkflowUsecasePickerDialog({
   loading,
   onApply,
   onOpenChange,
+  onRetry,
   open,
   packages,
 }: {
@@ -299,6 +307,7 @@ export function WorkflowUsecasePickerDialog({
   loading: boolean;
   onApply: (pkg: UsecasePackage) => void;
   onOpenChange: (open: boolean) => void;
+  onRetry: () => void;
   open: boolean;
   packages: UsecasePackage[];
 }) {
@@ -311,7 +320,10 @@ export function WorkflowUsecasePickerDialog({
     () => packages.filter((pkg) => usecaseMatches(pkg, query, runtime, input)),
     [input, packages, query, runtime],
   );
-  const draft = packages.find((pkg) => pkg.id === draftId) ?? null;
+  const draft =
+    error || loading
+      ? null
+      : (filtered.find((pkg) => pkg.id === draftId && pkg.publishedSoftwareRevisionId) ?? null);
 
   useEffect(() => {
     if (!open) setDraftId(null);
@@ -327,7 +339,7 @@ export function WorkflowUsecasePickerDialog({
           <DialogTitle>{t("workflow.editor.usecasePicker.title")}</DialogTitle>
           <DialogDescription>{t("workflow.editor.usecasePicker.description")}</DialogDescription>
         </DialogHeader>
-        <DialogBody className="flex flex-col gap-3">
+        <DialogBody className="space-y-3">
           <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_180px]">
             <SearchInput
               aria-label={t("software.usecaseSearchPlaceholder")}
@@ -358,12 +370,12 @@ export function WorkflowUsecasePickerDialog({
               <option value="File">{t("jobs.usecase.fileInputs")}</option>
             </NativeSelect>
           </div>
-          <div className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid min-w-0 auto-rows-max content-start gap-3 border-border p-2 sm:grid-cols-2 lg:grid-cols-3">
             {loading ? (
               <PickerState text={t("common.loading")} />
             ) : error ? (
               <PickerState
-                failed
+                onRetry={onRetry}
                 text={toUserFacingError(error, t("workflow.editor.usecasePicker.loadFailed"))}
               />
             ) : filtered.length === 0 ? (
@@ -391,18 +403,25 @@ export function WorkflowUsecasePickerDialog({
                     }
                   >
                     <div className="flex min-w-0 items-start justify-between gap-2">
-                      <span className="truncate text-sm font-semibold">{pkg.name}</span>
+                      <span className="min-w-0 text-sm font-semibold [overflow-wrap:anywhere]">
+                        {pkg.name}
+                      </span>
                       <Badge variant={pkg.spec.software.kind === "Spack" ? "brand" : "outline"}>
                         {pkg.spec.software.kind}
                       </Badge>
                     </div>
-                    <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                    <p className="mt-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
                       {softwareSummary(pkg)}
                     </p>
+                    {!selectable ? (
+                      <p className="mt-2 text-xs text-status-failed">
+                        {t("workflow.editor.usecasePicker.invalidRevision")}
+                      </p>
+                    ) : null}
                     <p className="mt-3 line-clamp-3 text-xs leading-5 text-muted-foreground">
                       {pkg.description ?? t("software.card.noDescription")}
                     </p>
-                    <div className="mt-3 flex flex-wrap gap-1">
+                    <div className="mt-3 flex flex-wrap gap-1 [&>span]:max-w-full [overflow-wrap:anywhere]">
                       <Badge variant="outline">v{pkg.version}</Badge>
                       <Badge variant="outline">
                         {t("jobs.usecase.inputCount", {
@@ -421,8 +440,8 @@ export function WorkflowUsecasePickerDialog({
             )}
           </div>
         </DialogBody>
-        <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <span className="min-w-0 truncate text-xs text-muted-foreground">
+        <DialogFooter className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <span className="max-h-20 min-w-0 overflow-auto text-xs text-muted-foreground [overflow-wrap:anywhere]">
             {draft
               ? t("workflow.editor.usecasePicker.pendingSelection", { name: draft.name })
               : t("workflow.editor.usecasePicker.noSelection")}
@@ -449,25 +468,31 @@ export function WorkflowUsecasePickerDialog({
 }
 
 function PickerState({
-  failed = false,
+  onRetry,
   seamless = false,
   text,
 }: {
-  failed?: boolean;
+  onRetry?: () => void;
   seamless?: boolean;
   text: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div
-      className={`col-span-full flex min-h-64 items-center justify-center p-4 text-center text-sm ${
-        failed
+      className={`col-span-full flex min-h-24 flex-col gap-2 items-center justify-center p-4 text-center text-sm ${
+        onRetry
           ? " text-status-failed"
           : seamless
             ? "text-muted-foreground"
             : " border-border text-muted-foreground"
       }`}
     >
-      {text}
+      <p role={onRetry ? "alert" : undefined}>{text}</p>
+      {onRetry ? (
+        <Button type="button" size="sm" variant="outline" onClick={onRetry}>
+          {t("common.retry")}
+        </Button>
+      ) : null}
     </div>
   );
 }

@@ -410,6 +410,7 @@
         "catalogNoDescription": "No description.",
         "catalogNoMetadata": "No metadata",
         "catalogMeta": "{{versions}} versions · {{variants}} variants",
+        "catalogSelected": "Selected",
         "catalogChoose": "Select",
         "catalogSpecTitle": "Spack spec",
         "catalogSpecEmpty": "Select a package on the left first.",

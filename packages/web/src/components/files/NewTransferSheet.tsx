@@ -4,7 +4,7 @@ import {
   type Transfer,
   type TransferDirection,
 } from "@kuintessence/shared/browser";
-import { ArrowLeftFromLine, ArrowRightFromLine, Loader2 } from "lucide-react";
+import { ArrowLeftFromLine, ArrowRightFromLine, Check, Loader2 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -23,6 +23,7 @@ import {
   SheetTitle,
 } from "../ui/sheet";
 import { PathPickerField, type PathPickerSelection } from "./PathPickerSheet";
+import { basenameFromPath } from "./path-picker-utils";
 
 const DIRECTIONS: ReadonlyArray<{
   value: TransferDirection;
@@ -43,10 +44,6 @@ const DIRECTIONS: ReadonlyArray<{
     hintKey: "files.transfer.clusterToCloud.hint",
   },
 ];
-
-function basenameFromPath(value: string): string {
-  return value.split("/").filter(Boolean).pop() ?? "";
-}
 
 function appendBasename(directory: string, basename: string): string {
   if (!directory.trim()) return basename;
@@ -448,7 +445,7 @@ export function NewTransferSheet({
             className="space-y-4"
             data-testid="files-new-transfer-form"
           >
-            <fieldset disabled={busy} className="space-y-4 disabled:opacity-70">
+            <fieldset disabled={busy} className="min-w-0 space-y-4 disabled:opacity-70">
               <div className="grid grid-cols-1 gap-2">
                 {DIRECTIONS.map((d) => {
                   const Icon = d.icon;
@@ -462,7 +459,9 @@ export function NewTransferSheet({
                       onClick={() => setDirection(d.value)}
                       className={cn(
                         "flex w-full items-start gap-3 px-3 py-2 text-left text-sm transition-colors",
-                        selected ? " text-foreground" : "border-border text-muted-foreground ",
+                        selected
+                          ? "bg-brand-soft text-brand"
+                          : "text-muted-foreground hover:bg-muted",
                       )}
                     >
                       <Icon className="mt-0.5 h-4 w-4" />
@@ -470,6 +469,9 @@ export function NewTransferSheet({
                         <span className="font-medium text-foreground">{t(d.labelKey)}</span>
                         <span className="text-[11px] text-muted-foreground">{t(d.hintKey)}</span>
                       </span>
+                      {selected && (
+                        <Check aria-hidden="true" className="ml-auto h-4 w-4 shrink-0" />
+                      )}
                     </button>
                   );
                 })}
@@ -511,7 +513,7 @@ export function NewTransferSheet({
                   {t("files.transfer.executionCluster")}
                 </span>
                 <div
-                  className=" border-border px-3 py-2 font-mono text-xs"
+                  className="px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]"
                   data-testid="files-new-transfer-execution-cluster"
                 >
                   {executionClusterLabel}
@@ -570,27 +572,39 @@ export function NewTransferSheet({
                 </p>
               </div>
 
-              <div className="space-y-2 border-border p-3" data-testid="files-new-transfer-summary">
+              <div
+                className="space-y-2 border-t border-border pt-3"
+                data-testid="files-new-transfer-summary"
+              >
                 <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {t("files.transfer.summary")}
                 </div>
-                <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+                <dl className="grid gap-x-3 gap-y-1 text-xs sm:grid-cols-[96px_minmax(0,1fr)]">
                   <dt className="text-muted-foreground">{t("files.transfer.summaryDirection")}</dt>
-                  <dd className="min-w-0 truncate font-mono">
+                  <dd className="mb-1 min-w-0 font-mono [overflow-wrap:anywhere] sm:mb-0">
                     {direction === "cloud_to_cluster"
                       ? t("files.transfer.cloudToCluster.label")
                       : t("files.transfer.clusterToCloud.label")}
                   </dd>
                   <dt className="text-muted-foreground">{t("files.transfer.summarySource")}</dt>
-                  <dd className="min-w-0 truncate font-mono" title={sourcePath || sourceLabel}>
+                  <dd
+                    className="mb-1 min-w-0 font-mono [overflow-wrap:anywhere] sm:mb-0"
+                    title={sourcePath || sourceLabel}
+                  >
                     {sourcePath || sourceLabel}
                   </dd>
                   <dt className="text-muted-foreground">{t("files.transfer.summaryCluster")}</dt>
-                  <dd className="min-w-0 truncate font-mono" title={executionClusterLabel}>
+                  <dd
+                    className="mb-1 min-w-0 font-mono [overflow-wrap:anywhere] sm:mb-0"
+                    title={executionClusterLabel}
+                  >
                     {executionClusterLabel}
                   </dd>
                   <dt className="text-muted-foreground">{t("files.transfer.summaryTarget")}</dt>
-                  <dd className="min-w-0 truncate font-mono" title={finalTarget || target}>
+                  <dd
+                    className="mb-1 min-w-0 font-mono [overflow-wrap:anywhere] sm:mb-0"
+                    title={finalTarget || target}
+                  >
                     {finalTarget || target || t("files.pathPicker.emptyValue")}
                   </dd>
                 </dl>
@@ -614,7 +628,7 @@ export function NewTransferSheet({
             data-testid="files-new-transfer-submit"
           >
             {busy ? <Loader2 className="animate-spin" /> : null}
-            {t("files.transfer.start")}
+            {busy ? t("files.transfer.starting") : t("files.transfer.start")}
           </Button>
         </SheetFooter>
       </SheetContent>

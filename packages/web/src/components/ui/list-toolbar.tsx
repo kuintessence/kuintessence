@@ -16,7 +16,9 @@ export function ListToolbar({
         <SearchInput containerClassName="basis-full sm:basis-64" {...search} />
         {children}
       </div>
-      {actions ? <div className="kq-fill-row flex-[1_1_auto]">{actions}</div> : null}
+      {actions ? (
+        <div className="kq-fill-row flex-[1_1_auto] sm:flex-initial">{actions}</div>
+      ) : null}
     </div>
   );
 }

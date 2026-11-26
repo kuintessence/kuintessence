@@ -194,6 +194,16 @@ describe("OperationsPage", () => {
     expect(screen.queryByTestId("operations-metering-configuration")).toBeNull();
   });
 
+  test("keeps a page heading when metering settings are available without the report", () => {
+    localStorage.setItem("kq_role", "platform_admin");
+    capabilityOverride.values = ["workspace.platform.view"];
+    router.hash = "#metering";
+    render(<OperationsPage />);
+    expect(screen.getByRole("heading", { level: 1 })).toBeTruthy();
+    expect(screen.getByTestId("operations-metering-configuration")).toBeTruthy();
+    expect(screen.queryByTestId("operator-metering-report")).toBeNull();
+  });
+
   test("keeps cost rates and break-glass exclusive to super_admin", () => {
     localStorage.setItem("kq_role", "platform_admin");
     router.hash = "#security";

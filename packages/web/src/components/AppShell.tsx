@@ -83,10 +83,7 @@ function getParentDestination(pathname: string): ParentDestination | null {
 
 function readStoredExpanded(): boolean {
   if (typeof window === "undefined") return true;
-  const v = window.localStorage.getItem(SIDEBAR_KEY);
-  if (v === "true") return true;
-  if (v === "false") return false;
-  return window.matchMedia("(min-width: 768px)").matches;
+  return window.localStorage.getItem(SIDEBAR_KEY) !== "false";
 }
 
 function persistExpanded(next: boolean) {
@@ -133,7 +130,7 @@ function consumeOidcLanding(): void {
 export function AppShell() {
   consumeOidcLanding();
   const [, setAuthRevision] = useState(0);
-  const collapseSidebarOnNavigate = useMediaQuery("(max-width: 767px)");
+  const collapseSidebarOnNavigate = useMediaQuery("(max-width: 1023px)");
   const [desktopExpanded, setDesktopExpanded] = useState<boolean>(() => readStoredExpanded());
   const [mobileExpanded, setMobileExpanded] = useState(false);
   const expanded = collapseSidebarOnNavigate ? mobileExpanded : desktopExpanded;
@@ -247,7 +244,7 @@ export function AppShell() {
       <div
         className={cn(
           "flex min-h-screen flex-col transition-[padding] duration-200",
-          expanded ? "md:pl-64 xl:pl-72" : "md:pl-16",
+          expanded ? "lg:pl-64 xl:pl-72" : "lg:pl-16",
         )}
       >
         <Topbar
@@ -332,7 +329,7 @@ function Topbar({
       <Button
         variant="ghost"
         size="icon"
-        className="md:hidden"
+        className="lg:hidden"
         id="workspace-navigation-toggle"
         aria-controls="workspace-navigation"
         data-testid="mobile-sidebar-open"
@@ -357,7 +354,13 @@ function SubmitMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" data-testid="submit-menu" className="px-3 sm:px-4">
+        <Button
+          size="sm"
+          variant="outline"
+          aria-label={t("topbar.submit")}
+          data-testid="submit-menu"
+          className="px-3 sm:px-4"
+        >
           <Plus />
           <span className="hidden sm:inline">{t("topbar.submit")}</span>
           <ChevronRight className="hidden h-3 w-3 -rotate-90 opacity-70 sm:block" />

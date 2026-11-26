@@ -48,10 +48,11 @@ export function UsersTable() {
 
   return (
     <div className="space-y-4" data-testid="cp-users-table">
-      <FunctionMaps ids={["G07"]} />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
         <div className="min-w-0 flex-1">
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.users.title")}</h2>
+          <h1 className="break-words text-2xl font-semibold tracking-tight">
+            {t("cp.users.title")}
+          </h1>
           <p
             className="mt-1 break-words text-xs text-muted-foreground"
             title={activeOrganizationId ?? undefined}
@@ -82,6 +83,7 @@ export function UsersTable() {
           </Button>
         </div>
       </div>
+      <FunctionMaps ids={["G07"]} />
 
       {showLegacy ? (
         <div className=" border-border p-3 text-sm" data-testid="cp-users-readonly-notice">

@@ -944,15 +944,13 @@ function SoftwareStickyControls({
           >
             {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
               (item) => (
-                <Button
+                <TagButton
                   key={item}
-                  type="button"
-                  variant={spackCatalogSource === item ? "default" : "outline"}
-                  size="sm"
+                  active={spackCatalogSource === item}
                   onClick={() => setSpackCatalogSource(item)}
                 >
                   {sourceLabel(t, item)}
-                </Button>
+                </TagButton>
               ),
             )}
           </CatalogToolbar>
@@ -1254,7 +1252,8 @@ function TagButton({
   return (
     <Button
       type="button"
-      variant={active ? "default" : "outline"}
+      variant="ghost"
+      className="aria-pressed:bg-brand-soft aria-pressed:font-semibold aria-pressed:text-brand"
       size="sm"
       aria-pressed={active}
       onClick={onClick}
@@ -1307,11 +1306,13 @@ function CatalogToolbar({
           ) : null
         }
       />
-      {tags.length > 0 || children ? (
-        <div className="kq-fill-row gap-1.5" data-testid={tagTestId}>
-          <TagButton active={activeTag === null} onClick={() => setActiveTag(null)}>
-            {t("common.all", { defaultValue: "全部" })}
-          </TagButton>
+      {tags.length > 0 || activeTag || children ? (
+        <div className="kq-fill-row gap-1.5 sm:[&>button]:flex-none" data-testid={tagTestId}>
+          {tags.length > 0 || activeTag ? (
+            <TagButton active={activeTag === null} onClick={() => setActiveTag(null)}>
+              {t("common.all", { defaultValue: "全部" })}
+            </TagButton>
+          ) : null}
           {tags.map((tag) => (
             <TagButton key={tag} active={activeTag === tag} onClick={() => setActiveTag(tag)}>
               {tag}
@@ -1381,7 +1382,8 @@ function FavoriteButton({ active, onClick }: { active: boolean; onClick: () => v
   return (
     <Button
       type="button"
-      variant={active ? "default" : "outline"}
+      variant="ghost"
+      className="aria-pressed:bg-brand-soft aria-pressed:font-semibold aria-pressed:text-brand"
       size="sm"
       onClick={onClick}
       aria-pressed={active}

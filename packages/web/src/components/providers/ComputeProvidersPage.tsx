@@ -12,6 +12,7 @@ import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
+import { useCompactLayout } from "../../lib/use-compact-layout";
 import { useMediaQuery } from "../../lib/use-media-query";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
@@ -51,6 +52,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const endpoint = `/compute-providers/${mode}`;
+  const [measure, compactRows] = useCompactLayout(704);
   const compact = useMediaQuery("(max-width: 767px)");
   const mobileReadOnly = compact && isMobileHighRiskMutationBlocked(`${endpoint}/organizations`);
   const query = useQuery({
@@ -68,6 +70,10 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
     if (query.error || !canEdit) setEditing(false);
     if (query.error) setSelected(null);
   }, [query.error, canEdit]);
+  function openProvider(id: string, edit = false) {
+    setSelected(id);
+    setEditing(edit);
+  }
   async function refresh() {
     await Promise.all([
       client.invalidateQueries({ queryKey: ["compute-providers"] }),
@@ -75,6 +81,35 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
       client.invalidateQueries({ queryKey: ["interconnect"] }),
       client.invalidateQueries({ queryKey: ["admin", "authz"] }),
     ]);
+  }
+  function countLink(provider: ComputeProvider, kind: "centers" | "agents" | "members") {
+    const links = {
+      centers: {
+        href: `${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=${encodeURIComponent(provider.id)}#availability-zones`,
+        count: provider.centerCount,
+        label: "providers.viewCenters",
+      },
+      agents: {
+        href: `${mode === "operator" ? "/operations" : "/cp/agents"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#clusters" : ""}`,
+        count: provider.agentCount,
+        label: "providers.viewAgents",
+      },
+      members: {
+        href: `${mode === "operator" ? "/operations" : "/cp/users"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#users" : ""}`,
+        count: provider.memberCount,
+        label: "providers.viewMembers",
+      },
+    } as const;
+    const { href, count, label } = links[kind];
+    return (
+      <a
+        className="text-brand underline underline-offset-4"
+        href={href}
+        aria-label={t(label, { name: provider.name, count })}
+      >
+        {count}
+      </a>
+    );
   }
   const title = t(mode === "operator" ? "providers.title" : "providers.selfTitle");
   return (
@@ -131,101 +166,98 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
         <p role="status">{t("providers.loading")}</p>
       ) : (
         <>
-          <div className="overflow-x-auto border-border">
-            <Table className="w-full text-left text-sm">
-              <TableHeader className="border-b border-border ">
-                <TableRow>
-                  {["name", "contactName", "centers", "agents", "members", "actions"].map((key) => (
-                    <TableHead key={key} className="whitespace-nowrap px-4 py-3 font-medium">
-                      {t(`providers.${key}`)}
-                    </TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+          <div ref={measure} className="min-w-0 overflow-x-auto">
+            {compactRows ? (
+              <ul className="divide-y divide-border">
                 {data.items.map((provider) => (
-                  <TableRow key={provider.id} className="border-b border-border ">
-                    <TableCell className="min-w-44 px-4 py-3">
+                  <li key={provider.id} className="space-y-2 py-3 first:pt-0">
+                    <div className="flex items-start justify-between gap-3">
                       <button
                         type="button"
-                        className="kq-name-fade max-w-72 text-left text-brand hover:underline"
+                        className="min-w-0 text-left font-medium text-brand [overflow-wrap:anywhere] hover:underline"
                         title={provider.name}
-                        onClick={() => {
-                          setSelected(provider.id);
-                          setEditing(false);
-                        }}
+                        onClick={() => openProvider(provider.id)}
                       >
                         {provider.name}
                       </button>
-                    </TableCell>
-                    <TableCell className="px-4 py-3">
-                      {provider.profile.contactName || "—"}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 tabular-nums">
-                      <a
-                        className="text-brand underline underline-offset-4"
-                        href={`${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=${encodeURIComponent(provider.id)}#availability-zones`}
-                        aria-label={t("providers.viewCenters", {
-                          name: provider.name,
-                          count: provider.centerCount,
-                        })}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openProvider(provider.id, canEdit)}
                       >
-                        {provider.centerCount}
-                      </a>
-                    </TableCell>
-                    <TableCell className="px-4 py-3 tabular-nums">
-                      <a
-                        className="text-brand underline underline-offset-4"
-                        href={`${mode === "operator" ? "/operations" : "/cp/agents"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#clusters" : ""}`}
-                        aria-label={t("providers.viewAgents", {
-                          name: provider.name,
-                          count: provider.agentCount,
-                        })}
-                      >
-                        {provider.agentCount}
-                      </a>
-                    </TableCell>
-                    <TableCell className="px-4 py-3 tabular-nums">
-                      <a
-                        className="text-brand underline underline-offset-4"
-                        href={`${mode === "operator" ? "/operations" : "/cp/users"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#users" : ""}`}
-                        aria-label={t("providers.viewMembers", {
-                          name: provider.name,
-                          count: provider.memberCount,
-                        })}
-                      >
-                        {provider.memberCount}
-                      </a>
-                    </TableCell>
-                    <TableCell className="px-4 py-3">
-                      {canEdit ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setSelected(provider.id);
-                            setEditing(true);
-                          }}
-                        >
-                          {t("providers.edit")}
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setSelected(provider.id);
-                            setEditing(false);
-                          }}
-                        >
-                          {t("providers.view")}
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
+                        {t(canEdit ? "providers.edit" : "providers.view")}
+                      </Button>
+                    </div>
+                    <dl className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+                      {(
+                        [
+                          ["contactName", provider.profile.contactName || "—"],
+                          ["centers", countLink(provider, "centers")],
+                          ["agents", countLink(provider, "agents")],
+                          ["members", countLink(provider, "members")],
+                        ] as const
+                      ).map(([key, value]) => (
+                        <div key={key} className="min-w-0">
+                          <dt className="text-xs text-muted-foreground">{t(`providers.${key}`)}</dt>
+                          <dd className="tabular-nums [overflow-wrap:anywhere]">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </li>
                 ))}
-              </TableBody>
-            </Table>
+              </ul>
+            ) : (
+              <Table className="w-full text-left text-sm">
+                <TableHeader className="border-b border-border ">
+                  <TableRow>
+                    {["name", "contactName", "centers", "agents", "members", "actions"].map(
+                      (key) => (
+                        <TableHead key={key} className="whitespace-nowrap px-4 py-3 font-medium">
+                          {t(`providers.${key}`)}
+                        </TableHead>
+                      ),
+                    )}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.items.map((provider) => (
+                    <TableRow key={provider.id} className="border-b border-border ">
+                      <TableCell className="min-w-44 px-4 py-3">
+                        <button
+                          type="button"
+                          className="min-w-0 text-left font-medium text-brand [overflow-wrap:anywhere] hover:underline"
+                          title={provider.name}
+                          onClick={() => openProvider(provider.id)}
+                        >
+                          {provider.name}
+                        </button>
+                      </TableCell>
+                      <TableCell className="px-4 py-3">
+                        {provider.profile.contactName || "—"}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 tabular-nums">
+                        {countLink(provider, "centers")}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 tabular-nums">
+                        {countLink(provider, "agents")}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 tabular-nums">
+                        {countLink(provider, "members")}
+                      </TableCell>
+                      <TableCell className="px-4 py-3">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openProvider(provider.id, canEdit)}
+                        >
+                          {t(canEdit ? "providers.edit" : "providers.view")}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
             {!data.items.length && (
               <p className="p-8 text-center text-muted-foreground">{t("providers.empty")}</p>
             )}

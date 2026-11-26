@@ -128,6 +128,7 @@ describe("StorageQuotaRequestDialog", () => {
     fireEvent.click(submit);
     fireEvent.click(submit);
 
+    expect(screen.getByText("files.quota.submitting")).toHaveProperty("disabled", true);
     expect(api.post).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "common.close" })).toHaveProperty("disabled", true);
     fireEvent.keyDown(document, { key: "Escape" });
@@ -140,8 +141,8 @@ describe("StorageQuotaRequestDialog", () => {
 
 describe("quota request validation and history scope", () => {
   test.each([
-    ["0.5", null, "", "files.quota.formIncomplete"],
-    ["1000000000", null, "", "files.quota.formIncomplete"],
+    ["0.5", null, "", "files.quota.invalidQuota"],
+    ["1000000000", null, "", "files.quota.invalidQuota"],
     ["3", 2 * 1024 ** 3, "", "files.quota.exceedsLimit"],
     ["1", null, "2000-01-01T00:00", "files.quota.expiryMustBeFuture"],
   ] as const)("rejects invalid quota %s with limit %s and expiry %s", async (quota, limit, expiry, message) => {
@@ -167,7 +168,12 @@ describe("quota request validation and history scope", () => {
       });
     fireEvent.click(screen.getByText("files.quota.submit"));
     expect(api.post).not.toHaveBeenCalled();
-    expect(toastError).toHaveBeenCalledWith(message);
+    const invalid = nativeControl(
+      screen.getByLabelText(expiry ? "files.quota.expiresAt" : "files.quota.requestedGb"),
+    );
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+    expect(invalid.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(invalid);
   });
 
   test("submits a valid future expiry as UTC and allows the policy limit", async () => {

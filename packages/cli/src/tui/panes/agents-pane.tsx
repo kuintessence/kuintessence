@@ -16,7 +16,7 @@ const COLS = { id: 18, site: 16, sched: 16, status: 10, seen: 7 } as const;
 
 function AgentRow({ agent, selected, now }: { agent: TuiAgent; selected: boolean; now: number }) {
   return (
-    <Text inverse={selected}>
+    <Text bold={selected} underline={selected}>
       <Text color={statusColor(agent.status)}>{statusGlyph(agent.status)} </Text>
       {padCell(agent.id, COLS.id)} {padCell(agent.site, COLS.site)}{" "}
       {padCell(agent.scheduler, COLS.sched)}{" "}

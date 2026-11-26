@@ -10,7 +10,7 @@ export const DEFAULT_VIEWPORT_ROWS = 20;
 
 /** Lines of fixed chrome around a list pane: tab bar, top/bottom margins, the
  *  column header, two scroll hints, and the footer. */
-const LIST_CHROME_ROWS = 9;
+const LIST_CHROME_ROWS = 10;
 const MIN_VIEWPORT_ROWS = 5;
 
 /**

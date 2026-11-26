@@ -8,12 +8,10 @@ Kuintessence 用于管理 Slurm、PBS Pro、Torque、Kubernetes 及云/边缘资
 
 ## 按角色阅读
 
-| 角色 | 主要问题 | 入口 |
-|---|---|---|
-| 普通用户 / Compute Consumer | 如何登录、提交作业、运行 workflow、查看文件和软件可用性 | [用户手册](./roles/user.md) |
-| 算力中心 / 集群管理员 | 如何接入 Agent、管理节点、软件策略、用户和计量 | [算力中心手册](./roles/compute-provider.md) |
-| 平台运营 | 如何管理资源、协调审批、查询审计和处理事件 | [平台运营手册](./roles/platform-operator.md) |
-| 软件开发者 / Software Provider | 如何维护 Spack package、用例、workflow template 并提交审核 | [软件开发者手册](./roles/software-provider.md) |
+- [普通用户 / Compute Consumer](./roles/user.md)：如何登录、提交作业、运行 workflow、查看文件和软件可用性。
+- [算力中心 / 集群管理员](./roles/compute-provider.md)：如何接入 Agent、管理节点、软件策略、用户和计量。
+- [平台运营](./roles/platform-operator.md)：如何管理资源、协调审批、查询审计和处理事件。
+- [软件开发者 / Software Provider](./roles/software-provider.md)：如何维护 Spack package、用例、workflow template 并提交审核。
 
 ## 快速入口
 

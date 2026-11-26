@@ -163,6 +163,7 @@ export interface ReactFlowEditorProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
   onChange: (nodes: GraphNode[], edges: GraphEdge[]) => void;
+  inspectedNodeId?: string | null;
   onSelectionChange?: (id: string | null) => void;
   onEdgeSelectionChange?: (id: string | null) => void;
   onRequestCreate?: (request: NodeCreationRequest) => void;
@@ -250,6 +251,7 @@ export function ReactFlowEditor({
   nodes,
   edges,
   onChange,
+  inspectedNodeId,
   onSelectionChange,
   onEdgeSelectionChange,
   onRequestCreate,
@@ -275,7 +277,7 @@ export function ReactFlowEditor({
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [focusedEdgeId, setFocusedEdgeId] = useState<string | null>(null);
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, getZoom } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const fittedInitially = useRef(false);
   useEffect(() => {
@@ -283,6 +285,27 @@ export function ReactFlowEditor({
     fittedInitially.current = true;
     void fitView({ minZoom: 0.1, maxZoom: 1 });
   }, [nodesInitialized, fitView]);
+  useEffect(() => {
+    if (!nodesInitialized || !inspectedNodeId) return;
+    const frame = requestAnimationFrame(() => {
+      const canvas = wrapperRef.current;
+      const node = canvas?.querySelector<HTMLElement>(
+        `.react-flow__node[data-id="${CSS.escape(inspectedNodeId)}"]`,
+      );
+      if (!canvas || !node) return;
+      const view = canvas.getBoundingClientRect();
+      const rect = node.getBoundingClientRect();
+      if (
+        rect.left < view.left ||
+        rect.top < view.top ||
+        rect.right > view.right ||
+        rect.bottom > view.bottom
+      ) {
+        void fitView({ nodes: [{ id: inspectedNodeId }], minZoom: 0.1, maxZoom: getZoom() });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [nodesInitialized, inspectedNodeId, fitView, getZoom]);
   const handledExternalConnectionRef = useRef<number | null>(null);
 
   useEffect(() => {

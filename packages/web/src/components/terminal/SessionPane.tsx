@@ -2,15 +2,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { TerminalSession } from "@kuintessence/shared/browser";
-import { Copy, ScrollText, X } from "lucide-react";
+import { Loader2, ScrollText, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { AuditDrawer } from "./AuditDrawer";
+import { SessionIdCopyButton } from "./SessionIdCopyButton";
 
 const PROMPT_GUESS_RE = /\]\$\s*$/;
 
@@ -145,18 +145,7 @@ export function SessionPane({ session, closing, onClose }: SessionPaneProps) {
           >
             {size.cols}×{size.rows}
           </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t("terminal.copySessionId")}
-            data-testid="terminal-copy-id"
-            onClick={() => {
-              void navigator.clipboard?.writeText(session.id);
-              toast.message(t("terminal.copySessionIdSucceeded", { id: session.id.slice(0, 8) }));
-            }}
-          >
-            <Copy />
-          </Button>
+          <SessionIdCopyButton id={session.id} iconOnly />
           <Button
             variant="ghost"
             size="icon"
@@ -175,7 +164,7 @@ export function SessionPane({ session, closing, onClose }: SessionPaneProps) {
             disabled={closing}
             onClick={() => onClose(session)}
           >
-            <X className="h-3.5 w-3.5" />
+            {closing ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />}
             {t("terminal.close")}
           </Button>
         </span>

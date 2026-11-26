@@ -7,6 +7,8 @@ import { ResourcePickerDialog } from "../ui/resource-picker";
 export function WorkflowScriptPickerDialog({
   busy,
   error,
+  onRetry,
+  selectionError,
   loading,
   onApply,
   onOpenChange,
@@ -14,7 +16,9 @@ export function WorkflowScriptPickerDialog({
   scripts,
 }: {
   busy: boolean;
-  error: boolean;
+  error?: string;
+  onRetry: () => void;
+  selectionError: { value: string; message: string } | null;
   loading: boolean;
   onApply: (script: SandboxScriptAsset) => void;
   onOpenChange: (open: boolean) => void;
@@ -39,11 +43,16 @@ export function WorkflowScriptPickerDialog({
       closeOnConfirm={false}
       busy={busy}
       loading={loading}
-      error={error ? t("workflow.editor.scriptPicker.loadFailed") : undefined}
+      error={error}
+      onRetry={onRetry}
+      selectionError={selectionError}
+      confirmLabel={
+        busy ? t("workflow.editor.scriptPicker.checking") : t("workflow.editor.scriptPicker.add")
+      }
       options={scripts.map((script) => ({
         value: script.id,
-        label: script.name,
-        description: `${script.version} · ${script.payload.language} · ${script.payload.entrypoint}`,
+        label: `${script.name} · ${script.version}`,
+        description: `${script.payload.language} · ${script.payload.entrypoint}`,
         keywords: [...Object.keys(script.payload.inputs), ...Object.keys(script.payload.outputs)],
         language: script.payload.language,
       }))}

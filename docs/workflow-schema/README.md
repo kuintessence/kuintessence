@@ -241,6 +241,7 @@ Script 的输出描述符定义在 `outputs` manifest 中，无需重复声明�
 
 保存写入 owner-scoped draft，不创建 run，也不占用队列；从 `/workflows` 可继续编辑或删除。
 输入配置只上传已关联的本地文件，并把 NetDrive metadata、参数与 Dataset 引用写回 canonical YAML。
+预览页列出工作流参数的名称和值，并在对应节点下显示文本输入及其上游来源。
 提交前重新解析最终 YAML；空画布、必填缺失、文件未确认、Dataset 无权限或 queue 不可见均应先处理。
 ByVersion 内的 Dataset 不能由父页面直接改写，需先更新被引用模板或改成 Inline。
 

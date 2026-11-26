@@ -211,7 +211,7 @@ export function SshTerminal({ agentId }: SshTerminalProps) {
   return (
     <div className="space-y-3" data-testid="ssh-terminal">
       <div
-        className="flex items-center justify-between gap-3 border-border px-3 py-2 text-xs"
+        className="flex flex-wrap items-center justify-between gap-3 border-border px-3 py-2 text-xs"
         data-testid="ssh-status"
       >
         <SshStatusBanner state={stream.state} code={stream.lastCode} t={t} />
@@ -276,7 +276,7 @@ function SshStatusBanner({
   }
   if (state === "connected") {
     return (
-      <span className="flex items-center gap-2 text-status-success">
+      <span className="flex items-center gap-2 text-status-succeeded">
         <span className="h-2 w-2 rounded-full bg-current" /> {t("ssh.terminal.connected")}
       </span>
     );
@@ -284,9 +284,11 @@ function SshStatusBanner({
   if (state === "closed") {
     const detail = closeMessage(code, t);
     return (
-      <span className="flex items-center gap-2 text-status-failed">
-        <span className="h-2 w-2 rounded-full bg-current" /> {t("ssh.terminal.disconnected")}
-        {detail ? <span className="text-muted-foreground">— {detail}</span> : null}
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-2 whitespace-nowrap font-medium text-status-failed">
+          <span className="size-2 rounded-full bg-current" /> {t("ssh.terminal.disconnected")}
+        </span>
+        {detail ? <span className="text-muted-foreground">{detail}</span> : null}
       </span>
     );
   }

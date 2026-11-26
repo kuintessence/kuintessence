@@ -164,7 +164,9 @@ describe("TerminalPage", () => {
       "terminal.mode",
     );
     expect(screen.getByTestId("terminal-live-ssh-link").getAttribute("href")).toBe("/agents");
-    expect(screen.getByTestId("terminal-empty").textContent).toContain("terminal.emptyHint");
+    expect((await screen.findByTestId("terminal-empty")).textContent).toContain(
+      "terminal.emptyHint",
+    );
   });
 
   test("surfaces command session list errors without rendering an empty page", async () => {
@@ -176,6 +178,7 @@ describe("TerminalPage", () => {
     render(withQueryClient(<TerminalPage />));
 
     await screen.findByTestId("terminal-sessions-error");
+    expect(screen.queryByText("0 active sessions")).toBeNull();
     expect(screen.getByTestId("terminal-sessions-error").textContent).not.toContain(
       "session list denied",
     );
@@ -297,6 +300,48 @@ describe("TerminalPage", () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
+  test("keeps the active session on a close failure from either close control", async () => {
+    const sessions = [makeSession(), makeSession({ id: "session-2", siteId: "Second site" })];
+    vi.mocked(api.get).mockResolvedValue({ sessions });
+    vi.mocked(api.delete).mockRejectedValue(new Error("unavailable"));
+    render(withQueryClient(<TerminalPage />));
+    const tab = await screen.findByTestId("terminal-tab-session-2");
+    fireEvent.click(tab);
+    fireEvent.click(screen.getByTestId("terminal-tab-close-session-2"));
+    await screen.findByTestId("terminal-close-error-session-2");
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(
+      within(screen.getByTestId("terminal-panel-session-2")).getByTestId("terminal-close"),
+    );
+    await waitFor(() => expect(api.delete).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("terminal-close-error-session-2")).toBeTruthy();
+  });
+
+  test("only enables audit export after a successful read with frames", async () => {
+    let available = false;
+    vi.mocked(api.get).mockImplementation(async (path) => {
+      if (path === "/terminal/sessions") return { sessions: [makeSession()] };
+      if (path.endsWith("/audit") && available) {
+        return { frames: [{ kind: "stderr", ts: "2026-11-20T00:00:00Z", data: "警告\n详细信息" }] };
+      }
+      throw new Error("offline");
+    });
+    render(withQueryClient(<TerminalPage />));
+    fireEvent.click(await screen.findByTestId("terminal-open-audit"));
+    const drawer = within(await screen.findByTestId("terminal-audit-drawer"));
+    await drawer.findByRole("alert");
+    expect(drawer.queryByTestId("terminal-audit-summary")).toBeNull();
+    expect(drawer.getByTestId("terminal-audit-export")).toHaveProperty("disabled", true);
+    available = true;
+    fireEvent.click(drawer.getByRole("button", { name: "common.retry" }));
+    await drawer.findByText("警告");
+    expect(drawer.getByTestId("terminal-audit-export")).toHaveProperty("disabled", false);
+    fireEvent.change(drawer.getByRole("searchbox"), { target: { value: "missing" } });
+    fireEvent.click(drawer.getByRole("button", { name: "terminal.auditClearFilters" }));
+    expect(drawer.getByRole("searchbox")).toHaveProperty("value", "");
+    expect(drawer.getByText("警告")).toBeTruthy();
+  });
+
   test("moves focus and selection with the keyboard while keeping every pane mounted", async () => {
     const second = makeSession({
       id: "session-2",
@@ -384,7 +429,7 @@ describe("TerminalPage", () => {
     fireEvent.click(close);
     close.blur();
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("terminal.closeFailed"));
+    await screen.findByTestId("terminal-close-error-session-2");
     expect(secondTab.getAttribute("aria-selected")).toBe("true");
     expect(close).toHaveProperty("disabled", false);
     expect(document.activeElement).toBe(close);
@@ -503,9 +548,9 @@ describe("AuditDrawer", () => {
 
     render(withQueryClient(<AuditDrawer session={session} open onOpenChange={vi.fn()} />));
 
-    const all = await screen.findByRole("button", { name: "ALL (2)", pressed: true });
+    const all = await screen.findByRole("button", { name: "terminal.auditAll (2)", pressed: true });
     const errors = screen.getByRole("button", { name: "stderr (1)", pressed: false });
-    const search = screen.getByRole("searchbox", { name: "terminal.auditTitle" });
+    const search = screen.getByRole("searchbox", { name: "terminal.auditSearch" });
     fireEvent.click(errors);
 
     expect(all.getAttribute("aria-pressed")).toBe("false");
@@ -518,7 +563,7 @@ describe("AuditDrawer", () => {
     expect(screen.queryByText("command error")).toBeNull();
   });
 
-  test("keeps export disabled during initial loading and failure until retry succeeds", async () => {
+  test("keeps export disabled during loading, failure and an empty retry", async () => {
     const request = Promise.withResolvers<{ frames: TerminalAuditFrame[] }>();
     const createUrl = vi.spyOn(URL, "createObjectURL");
     vi.mocked(api.get).mockReturnValueOnce(request.promise).mockResolvedValueOnce({ frames: [] });
@@ -534,16 +579,16 @@ describe("AuditDrawer", () => {
 
     const error = await screen.findByRole("alert");
     expect(error.textContent).not.toContain("private audit diagnostic");
-    expect(screen.queryByText("terminal.auditNoFrames")).toBeNull();
+    expect(screen.queryByText("terminal.auditEmpty")).toBeNull();
     expect(exportButton).toHaveProperty("disabled", true);
     fireEvent.click(exportButton);
     expect(createUrl).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
 
-    await screen.findByText("terminal.auditNoFrames");
+    await screen.findByText("terminal.auditEmpty");
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(exportButton).toHaveProperty("disabled", false);
+    expect(exportButton).toHaveProperty("disabled", true);
   });
 
   test("hides cached frames and counts after a refetch error until fresh frames arrive", async () => {
@@ -560,9 +605,8 @@ describe("AuditDrawer", () => {
     render(withQueryClient(<AuditDrawer session={session} open onOpenChange={vi.fn()} />, client));
 
     await screen.findByText("cached output");
-    const all = screen.getByTestId("terminal-audit-filter-ALL");
     const exportButton = screen.getByTestId("terminal-audit-export");
-    expect(all.textContent).toBe("ALL (1)");
+    expect(screen.getByRole("button", { name: "terminal.auditAll (1)" })).toBeTruthy();
     expect(screen.getByTestId("terminal-audit-summary")).toBeTruthy();
     expect(exportButton).toHaveProperty("disabled", false);
 
@@ -571,7 +615,7 @@ describe("AuditDrawer", () => {
     await screen.findByRole("alert");
     const retryButton = screen.getByRole("button", { name: "common.retry" });
     expect(screen.queryByText("cached output")).toBeNull();
-    expect(all.textContent).toBe("ALL");
+    expect(screen.queryByTestId("terminal-audit-filter-ALL")).toBeNull();
     expect(screen.queryByTestId("terminal-audit-summary")).toBeNull();
     expect(exportButton).toHaveProperty("disabled", true);
     fireEvent.click(exportButton);
@@ -583,7 +627,7 @@ describe("AuditDrawer", () => {
     await act(async () => retry.resolve({ frames: [{ ...frame, data: "fresh output" }] }));
 
     await screen.findByText("fresh output");
-    expect(all.textContent).toBe("ALL (1)");
+    expect(screen.getByRole("button", { name: "terminal.auditAll (1)" })).toBeTruthy();
     expect(screen.getByTestId("terminal-audit-summary")).toBeTruthy();
     expect(exportButton).toHaveProperty("disabled", false);
   });

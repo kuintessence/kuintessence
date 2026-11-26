@@ -40,9 +40,10 @@ export function WorkflowCreationStepper({
             disabled={blocked}
             onClick={() => onChange(step)}
             className={cn(
-              "flex min-w-0 items-center gap-2 border-border px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 sm:border-l sm:first:border-l-0",
-              active ? "bg-brand-soft text-brand" : "hover:bg-muted/50",
-              blocked && "cursor-not-allowed opacity-55 hover:bg-transparent",
+              "flex min-w-0 items-center gap-2 border-b-2 border-transparent px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 ",
+              active && "border-brand bg-brand-soft text-brand font-semibold",
+              blocked && "cursor-not-allowed",
+              blocked && !active && "text-muted-foreground",
             )}
             data-testid={`workflow-step-${step}`}
           >
@@ -57,7 +58,7 @@ export function WorkflowCreationStepper({
               {complete ? <Check className="h-4 w-4" /> : index + 1}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-medium">
+              <span className="block truncate text-sm">
                 {t(`workflows.creation.steps.${step}.title`)}
               </span>
             </span>

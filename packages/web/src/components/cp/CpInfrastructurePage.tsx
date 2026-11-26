@@ -42,7 +42,9 @@ export function CpInfrastructurePage() {
   return (
     <div className="space-y-4" data-testid="cp-infrastructure-page">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">{t("cp.infrastructure.title")}</h2>
+        <h1 className="break-words text-2xl font-semibold tracking-tight">
+          {t("cp.infrastructure.title")}
+        </h1>
         <p className="text-sm text-muted-foreground">{t("cp.infrastructure.subtitle")}</p>
       </div>
       <FunctionMaps

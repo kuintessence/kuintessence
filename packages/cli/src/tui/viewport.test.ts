@@ -72,8 +72,8 @@ describe("windowByHeight", () => {
 
 describe("computeViewportRows", () => {
   test("subtracts chrome from the terminal height", () => {
-    expect(computeViewportRows(50)).toBe(41);
-    expect(computeViewportRows(24)).toBe(15);
+    expect(computeViewportRows(50)).toBe(40);
+    expect(computeViewportRows(24)).toBe(14);
   });
 
   test("clamps to a minimum on tiny terminals", () => {
@@ -82,7 +82,7 @@ describe("computeViewportRows", () => {
   });
 
   test("falls back to a 24-row assumption when height is unknown", () => {
-    expect(computeViewportRows(undefined)).toBe(15);
-    expect(computeViewportRows(0)).toBe(15);
+    expect(computeViewportRows(undefined)).toBe(14);
+    expect(computeViewportRows(0)).toBe(14);
   });
 });

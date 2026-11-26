@@ -654,7 +654,7 @@ function CommandWorkdirPreviewTree({
   const nodes = buildCommandWorkdirPreviewTree(entries, folders);
 
   const renderNode = (node: CommandWorkdirPreviewNode, depth: number) => {
-    const paddingLeft = `calc(${depth * 1.25}rem + 0.75rem)`;
+    const paddingLeft = `min(calc(${depth * 1.25}rem + 0.75rem), 20%)`;
     if (node.kind === "dir") {
       const fileCount = previewDirFileCount(node);
       return (
@@ -668,7 +668,10 @@ function CommandWorkdirPreviewTree({
             style={{ paddingLeft }}
           >
             <Folder className="h-4 w-4 shrink-0 text-brand" />
-            <span className="min-w-0 flex-1 truncate font-mono text-xs" title={node.path}>
+            <span
+              className="min-w-0 flex-1 [overflow-wrap:anywhere] font-mono text-xs"
+              title={node.path}
+            >
               {node.name}
             </span>
             <span className="shrink-0 text-[11px] text-muted-foreground">
@@ -698,15 +701,17 @@ function CommandWorkdirPreviewTree({
       >
         <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-xs" title={stagePath}>
+          <div className="[overflow-wrap:anywhere] font-mono text-xs" title={stagePath}>
             {node.name}
           </div>
-          <div
-            className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground"
-            title={node.entry.cloudPath}
-          >
-            {node.entry.cloudPath}
-          </div>
+          {node.entry.cloudPath !== node.name && (
+            <div
+              className="mt-0.5 [overflow-wrap:anywhere] font-mono text-[11px] text-muted-foreground"
+              title={node.entry.cloudPath}
+            >
+              {node.entry.cloudPath}
+            </div>
+          )}
         </div>
         <Badge className="shrink-0" variant={node.entry.source === "upload" ? "brand" : "outline"}>
           {node.entry.source === "upload"
@@ -749,6 +754,10 @@ export function SubmitJobDialog({
   const [legacyQueueId, setLegacyQueueId] = useState<string | null>(null);
   const [invalidQueueId, setInvalidQueueId] = useState<string | null>(null);
   const [queueSubmitError, setQueueSubmitError] = useState<string | null>(null);
+  const queueErrorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (queueSubmitError) queueErrorRef.current?.focus();
+  }, [queueSubmitError]);
   const [busy, setBusy] = useState(false);
   const [usecasePickerOpen, setUsecasePickerOpen] = useState(false);
   const [selectedUsecaseId, setSelectedUsecaseId] = useState<string | null>(null);
@@ -1119,7 +1128,9 @@ export function SubmitJobDialog({
       );
       return;
     }
+    setQueueSubmitError(null);
     setBusy(true);
+    const receipt = { id: `submit-job-${draftStorageKey ?? "local"}` };
     try {
       const payload = usecasePayload();
       const commandPayload = getCommandJobSpec();
@@ -1133,7 +1144,7 @@ export function SubmitJobDialog({
         toast.error(t("jobs.submitFailed"));
         return;
       }
-      toast.success(t("jobs.submitted", { name: r.name, id: r.id.slice(0, 8) }));
+      toast.success(t("jobs.submitted", { name: r.name, id: r.id.slice(0, 8) }), receipt);
       queryClient.invalidateQueries({ queryKey: ["jobs-list"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       draftCleared.current = true;
@@ -1155,8 +1166,9 @@ export function SubmitJobDialog({
             defaultValue: "Queue observation is temporarily unavailable. Retry after it recovers.",
           }),
         );
+      } else {
+        toast.error(toUserFacingError(err, t("jobs.submitFailed")), receipt);
       }
-      toast.error(toUserFacingError(err, t("jobs.submitFailed")));
     } finally {
       setBusy(false);
     }
@@ -1400,17 +1412,18 @@ export function SubmitJobDialog({
                                             defaultValue: "Choose file",
                                           })}
                                     </Button>
-                                    <span className="text-xs text-muted-foreground">
-                                      {batch
-                                        ? t("jobs.usecase.batchFileHint", {
-                                            count: files.length,
-                                            defaultValue: "{{count}} files selected",
-                                          })
-                                        : (files[0]?.fileMetadataName ??
-                                          t("jobs.usecase.noFile", {
-                                            defaultValue: "No file selected",
-                                          }))}
-                                    </span>
+                                    {(batch || files.length === 0) && (
+                                      <span className="text-xs text-muted-foreground">
+                                        {batch
+                                          ? t("jobs.usecase.batchFileHint", {
+                                              count: files.length,
+                                              defaultValue: "{{count}} files selected",
+                                            })
+                                          : t("jobs.usecase.noFile", {
+                                              defaultValue: "No file selected",
+                                            })}
+                                      </span>
+                                    )}
                                   </div>
                                   {files.length > 0 ? (
                                     <div className="space-y-1">
@@ -1822,6 +1835,8 @@ export function SubmitJobDialog({
                 <p
                   className="text-xs text-status-failed"
                   role="alert"
+                  ref={queueErrorRef}
+                  tabIndex={-1}
                   data-testid="submit-job-queue-submit-error"
                 >
                   {queueSubmitError}
@@ -1857,7 +1872,7 @@ export function SubmitJobDialog({
             uploadPrefix={`jobs/command-drafts/${commandDraftId}`}
           />
         </SheetBody>
-        <SheetFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <SheetFooter className="justify-end gap-2 [&>button]:flex-initial [&>button]:px-3">
           <Button
             type="button"
             variant="ghost"

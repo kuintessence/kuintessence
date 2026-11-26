@@ -141,7 +141,7 @@ export function NodePalette({
           </Button>
         ) : null}
       </div>
-      <ul className="flex flex-col gap-2">
+      <ul className="grid grid-cols-2 gap-2 lg:grid-cols-1">
         {ITEMS.map((item) => (
           <li key={item.kind}>
             <button
@@ -154,7 +154,7 @@ export function NodePalette({
                 e.dataTransfer.effectAllowed = "move";
               }}
               onClick={() => onAdd?.(item.kind)}
-              className="relative flex w-full cursor-grab flex-col items-start gap-1 overflow-hidden rounded-lg border border-border bg-card p-2.5 text-left text-xs transition-colors hover:border-ring hover:bg-background active:scale-[0.99]"
+              className="relative flex h-full w-full cursor-grab flex-col items-start gap-1 rounded-md border border-border bg-card p-2 text-left text-xs transition-colors hover:border-brand focus-visible:outline-2 focus-visible:outline-ring active:scale-[0.99]"
             >
               <span className="flex items-center gap-1 font-medium">
                 {item.icon}

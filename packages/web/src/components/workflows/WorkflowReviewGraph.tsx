@@ -36,7 +36,7 @@ export function WorkflowReviewGraph({
     <div
       className={`flex justify-center border-border ${
         mode === "fill"
-          ? "h-80 min-h-64 overflow-hidden lg:h-full lg:min-h-0"
+          ? "h-44 overflow-hidden sm:h-56 lg:h-full lg:min-h-96"
           : mode === "resizable"
             ? "h-64 min-h-52 max-h-[70vh] resize-y overflow-hidden"
             : "h-56 overflow-hidden"

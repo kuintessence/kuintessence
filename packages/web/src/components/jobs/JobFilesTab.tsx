@@ -62,7 +62,9 @@ function fileNameFromUsecaseInputs(
 export function JobFilesTab({ job, loading }: JobFilesTabProps) {
   const { t } = useTranslation();
   const needsCloudFiles =
-    !!job && ((job.inputStaging?.length ?? 0) > 0 || (job.fileOutputDescriptors?.length ?? 0) > 0);
+    !!job &&
+    !job.federationRunId &&
+    ((job.inputStaging?.length ?? 0) > 0 || (job.fileOutputDescriptors?.length ?? 0) > 0);
   const cloudQ = useQuery({
     queryKey: ["job-files-netdrive", job?.id, job?.status],
     queryFn: listAllNetDriveFiles,
@@ -108,38 +110,54 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
       toast.error(toUserFacingError(err, t("jobs.files.downloadFailed")));
     }
   };
-  if (job.federationRunId)
+  if (job.federationRunId) {
+    const groups = Object.entries(job.federationOutputs ?? {}).filter(
+      ([, files]) => files.length > 0,
+    );
     return (
-      <div className="divide-y" data-testid="federation-job-files">
-        {Object.entries(job.federationOutputs ?? {}).flatMap(([descriptor, files]) =>
-          files.map((file) => (
-            <div
-              key={`${descriptor}:${file.fileMetadataId}`}
-              className="flex min-w-0 items-center justify-between gap-3 py-3"
-            >
-              <span className="min-w-0 break-all text-sm">{file.fileMetadataName}</span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void handleCloudDownload(file.fileMetadataId, file.fileMetadataName)}
-              >
-                <Download className="size-4" />
-                {t("common.download")}
-              </Button>
-            </div>
-          )),
-        )}
-        {!Object.keys(job.federationOutputs ?? {}).length ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
+      <div className="divide-y divide-border" data-testid="federation-job-files">
+        {groups.map(([descriptor, files]) => (
+          <section key={descriptor} className="min-w-0 space-y-1 py-3">
+            <h3 className="font-mono text-sm font-medium [overflow-wrap:anywhere]">{descriptor}</h3>
+            <ul className="divide-y divide-border">
+              {files.map((file) => (
+                <li
+                  key={file.fileMetadataId}
+                  className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2"
+                >
+                  <span className="min-w-0 text-sm [overflow-wrap:anywhere]">
+                    {file.fileMetadataName}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={t("jobs.files.downloadOutput", {
+                      name: `${descriptor}/${file.fileMetadataName}`,
+                    })}
+                    onClick={() =>
+                      void handleCloudDownload(file.fileMetadataId, file.fileMetadataName)
+                    }
+                  >
+                    <Download className="size-4" />
+                    {t("common.download")}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+        {groups.length === 0 ? (
+          <p className="py-3 text-sm text-muted-foreground">
             {t(
-              ["completed", "failed", "cancelled"].includes(job.status)
-                ? "jobs.files.empty"
+              ["completed", "failed", "cancelled"].includes(job.status.toLowerCase())
+                ? "jobs.remoteOutputsEmpty"
                 : "jobs.remoteOutputsPending",
             )}
           </p>
         ) : null}
       </div>
     );
+  }
   if (inputs.length === 0 && outputs.length === 0) {
     return (
       <div className=" border-border p-4 text-sm text-muted-foreground">
@@ -148,7 +166,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
     );
   }
   return (
-    <div className="grid gap-4" data-testid="job-files-tab">
+    <div className="@container grid min-w-0 grid-cols-1 gap-4" data-testid="job-files-tab">
       {needsCloudFiles ? (
         <div className="flex justify-end">
           <RefreshButton
@@ -194,15 +212,15 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
             {t("jobs.files.noInputs", { defaultValue: "No input files staged." })}
           </div>
         ) : (
-          <div className="overflow-hidden border-border text-sm">
-            <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)_5.5rem] text-left text-[11px] uppercase text-muted-foreground">
+          <div className="min-w-0 text-sm">
+            <div className="hidden @lg:grid @lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)_auto] text-left text-[11px] uppercase text-muted-foreground">
               <div className="px-3 py-2 font-medium">
                 {t("jobs.files.source", { defaultValue: "Source" })}
               </div>
               <div className="px-3 py-2 font-medium">
                 {t("jobs.files.stagePath", { defaultValue: "Stage path" })}
               </div>
-              <div className="px-3 py-2 font-medium" />
+              <div className="w-24" />
             </div>
             <div className="divide-y divide-border">
               {inputs.map((file) => {
@@ -214,20 +232,29 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
                 return (
                   <div
                     key={`${file.fileMetadataId}:${file.stagePath}`}
-                    className="grid min-w-0 grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)_5.5rem] items-center"
+                    className="grid min-w-0 gap-y-2 py-3 @lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)_auto] @lg:items-start"
                   >
-                    <div className="min-w-0 px-3 py-3">
-                      <div className="truncate font-mono text-xs" title={source}>
+                    <div className="min-w-0 @lg:px-3">
+                      <div className="text-xs text-muted-foreground @lg:hidden">
+                        {t("jobs.files.source")}
+                      </div>
+                      <div className="font-mono text-xs [overflow-wrap:anywhere]" title={source}>
                         {source}
                       </div>
                     </div>
-                    <div className="min-w-0 px-3 py-3">
-                      <div className="truncate font-mono text-xs" title={file.stagePath}>
+                    <div className="min-w-0 @lg:px-3">
+                      <div className="text-xs text-muted-foreground @lg:hidden">
+                        {t("jobs.files.stagePath")}
+                      </div>
+                      <div
+                        className="font-mono text-xs [overflow-wrap:anywhere]"
+                        title={file.stagePath}
+                      >
                         {file.stagePath}
                       </div>
                     </div>
-                    <div className="px-2 py-2 text-right">
-                      <div className="flex justify-end gap-1">
+                    <div className="@lg:w-24 @lg:px-2">
+                      <div className="flex gap-1 @lg:justify-end">
                         <Button
                           variant="ghost"
                           size="icon"
@@ -278,22 +305,24 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
             {t("jobs.files.noOutputs", { defaultValue: "No output files declared." })}
           </div>
         ) : (
-          <div className="grid gap-2">
+          <div className="grid min-w-0 grid-cols-1 divide-y divide-border">
             {outputs.map((output) => {
               if (!job.fileOutputDescriptors?.includes(output.descriptor)) {
                 const value = job.collectedOutputs?.[output.descriptor];
                 return (
                   <div
                     key={output.descriptor}
-                    className="space-y-2 border-border p-3"
+                    className="min-w-0 space-y-2 py-3"
                     data-testid={`job-text-output-${output.descriptor}`}
                   >
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      {output.path}
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium">
+                      <span className="min-w-0 font-mono [overflow-wrap:anywhere]">
+                        {output.path}
+                      </span>
                       <Badge variant="outline">{t("jobs.files.textResult")}</Badge>
                     </div>
                     {typeof value === "string" ? (
-                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs">
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] py-2 font-mono text-xs">
                         {value || t("jobs.files.emptyTextResult")}
                       </pre>
                     ) : (
@@ -310,12 +339,12 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
               const outputPrefix = outputCloudPrefix(job, output.path);
               const canDownloadCluster = !!job.agentId && !!job.workingDir && !isGlob(output.path);
               return (
-                <div key={`${output.descriptor}:${output.path}`} className=" border-border p-3">
-                  <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,0.75fr)_auto] md:items-start">
+                <div key={`${output.descriptor}:${output.path}`} className="py-3">
+                  <div className="grid min-w-0 gap-3 @xl:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)_auto] @xl:items-start">
                     <div className="min-w-0">
-                      <div className="flex min-w-0 items-center gap-2">
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
                         <div
-                          className="truncate font-mono text-sm font-medium"
+                          className="font-mono text-sm font-medium [overflow-wrap:anywhere]"
                           title={output.descriptor}
                         >
                           {output.descriptor}
@@ -327,7 +356,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
                         </Badge>
                       </div>
                       <div
-                        className="mt-1 truncate font-mono text-xs text-muted-foreground"
+                        className="mt-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]"
                         title={output.path}
                       >
                         {output.path}
@@ -344,7 +373,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
                               key={file.id}
                               variant="ghost"
                               size="sm"
-                              className="h-7 min-w-0 justify-start px-2 font-mono text-xs"
+                              className="h-auto min-h-8 min-w-0 justify-start whitespace-normal px-1 py-1 text-left font-mono text-xs"
                               aria-label={t("jobs.files.downloadOutput", {
                                 name: file.path,
                               })}
@@ -355,7 +384,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
                               }
                             >
                               <Download />
-                              <span className="min-w-0 truncate">
+                              <span className="min-w-0 [overflow-wrap:anywhere]">
                                 {filenameFromPath(file.path)}
                               </span>
                             </Button>
@@ -371,7 +400,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
                         />
                       )}
                     </div>
-                    <div className="flex justify-end gap-1">
+                    <div className="flex gap-1 @lg:justify-end">
                       {canDownloadCluster ? (
                         <Button
                           variant="ghost"
@@ -464,7 +493,7 @@ function OutputPublicationDiagnostic({
   }
   return (
     <div
-      className=" border-border p-2 text-xs"
+      className="text-xs [overflow-wrap:anywhere]"
       data-testid={`job-file-output-diagnostic-${descriptor}`}
     >
       {!netdriveLoading && !netdriveError ? (

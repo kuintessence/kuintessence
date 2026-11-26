@@ -111,6 +111,8 @@ export function WorkflowSlotMappingDialog({
   const [toSlot, setToSlot] = useState("");
   const [transferType, setTransferType] = useState<"Network" | "Disk">("Network");
   const [draggedSlot, setDraggedSlot] = useState<string | null>(null);
+  const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
+  const activeOutput = sources.find((slot) => slot.descriptor === (draggedSlot ?? selectedOutput));
   const [mode, setMode] = useState<"visual" | "standard">("visual");
   const compatibleTargets = useMemo(() => {
     const sourceSlot = sources.find((slot) => slot.descriptor === fromSlot);
@@ -152,6 +154,7 @@ export function WorkflowSlotMappingDialog({
     setToSlot(firstTarget?.descriptor ?? "");
     setTransferType("Network");
     setDraggedSlot(null);
+    setSelectedOutput(null);
     setMode("visual");
   }, [edge, initialMappings, open, sources, targets]);
 
@@ -207,15 +210,19 @@ export function WorkflowSlotMappingDialog({
           <DialogDescription>{t("workflow.editor.slotMapping.description")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
-          <div className="flex items-center gap-3 border-border p-3">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">{source?.data.name}</p>
-              <p className="truncate font-mono text-xs text-muted-foreground">{source?.id}</p>
+          <div className="grid gap-1 p-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
+            <div className="min-w-0">
+              <p className="[overflow-wrap:anywhere] text-sm font-semibold">{source?.data.name}</p>
+              <p className="[overflow-wrap:anywhere] font-mono text-xs text-muted-foreground">
+                {source?.id}
+              </p>
             </div>
-            <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <div className="min-w-0 flex-1 text-right">
-              <p className="truncate text-sm font-semibold">{target?.data.name}</p>
-              <p className="truncate font-mono text-xs text-muted-foreground">{target?.id}</p>
+            <ArrowRight className="h-4 w-4 rotate-90 text-muted-foreground sm:rotate-0" />
+            <div className="min-w-0 sm:text-right">
+              <p className="[overflow-wrap:anywhere] text-sm font-semibold">{target?.data.name}</p>
+              <p className="[overflow-wrap:anywhere] font-mono text-xs text-muted-foreground">
+                {target?.id}
+              </p>
             </div>
           </div>
 
@@ -234,31 +241,28 @@ export function WorkflowSlotMappingDialog({
               ) : (
                 <div className="grid gap-3 border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
                   <SlotColumn
-                    active={draggedSlot}
-                    activeType={
-                      sources.find((slot) => slot.descriptor === draggedSlot)?.type ?? null
-                    }
+                    active={activeOutput}
                     label={t("workflow.editor.slotMapping.output")}
                     mappings={mappings}
                     onDragEnd={() => setDraggedSlot(null)}
+                    onSelect={setSelectedOutput}
                     onDragStart={beginSlotDrag}
                     side="source"
                     slots={sources}
                   />
-                  <div className="flex min-w-20 flex-col items-center justify-center gap-2 py-8 text-brand">
-                    <ArrowRight className="h-5 w-5" />
-                    <span className="max-w-24 text-center text-[11px] text-muted-foreground">
+                  <div className="flex items-center justify-center gap-2 py-1 text-brand sm:min-w-20 sm:flex-col sm:py-8">
+                    <ArrowRight className="h-5 w-5 rotate-90 sm:rotate-0" />
+                    <span className="text-center text-[11px] sm:max-w-24 text-muted-foreground">
                       {t("workflow.editor.slotMapping.visualHint")}
                     </span>
                   </div>
                   <SlotColumn
-                    active={draggedSlot}
-                    activeType={
-                      sources.find((slot) => slot.descriptor === draggedSlot)?.type ?? null
-                    }
-                    activeBatch={sources.find((slot) => slot.descriptor === draggedSlot)?.batch}
+                    active={activeOutput}
                     label={t("workflow.editor.slotMapping.input")}
                     mappings={mappings}
+                    onSelect={(descriptor) => {
+                      if (selectedOutput) addMapping(selectedOutput, descriptor);
+                    }}
                     onDrop={completeSlotDrop}
                     side="target"
                     slots={targets}
@@ -332,6 +336,7 @@ export function WorkflowSlotMappingDialog({
                   <Button
                     type="button"
                     className="self-end"
+                    variant="outline"
                     onClick={() => addMapping()}
                     disabled={!canAdd}
                     data-testid="workflow-slot-mapping-add"
@@ -361,15 +366,18 @@ export function WorkflowSlotMappingDialog({
               mappings.map((mapping) => (
                 <div
                   key={`${mapping.fromSlot}:${mapping.toSlot}`}
-                  className="flex items-center gap-2 border-border px-3 py-2 text-sm"
+                  className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 border-b border-border px-2 py-2 text-sm sm:flex"
                 >
                   <Link2 className="h-4 w-4 shrink-0 text-brand" />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                  <span className="min-w-0 flex-1 [overflow-wrap:anywhere] font-mono text-xs">
                     {mapping.fromSlot} → {mapping.toSlot}
                   </span>
-                  <Badge variant="outline">{mapping.transferStrategy.type}</Badge>
+                  <Badge className="col-start-2 row-start-2 justify-self-start" variant="outline">
+                    {mapping.transferStrategy.type}
+                  </Badge>
                   <button
                     type="button"
+                    className="col-start-3 row-span-2 row-start-1 grid size-8 place-items-center rounded focus-visible:outline-2 focus-visible:outline-ring"
                     aria-label={t("common.remove")}
                     onClick={() =>
                       setMappings((current) =>
@@ -414,8 +422,7 @@ function EmptySlots({ text }: { text: string }) {
 
 function SlotColumn({
   active,
-  activeType,
-  activeBatch,
+  onSelect,
   label,
   mappings,
   onDragEnd,
@@ -424,9 +431,8 @@ function SlotColumn({
   side,
   slots,
 }: {
-  active: string | null;
-  activeType?: SlotOption["type"] | null;
-  activeBatch?: boolean;
+  active?: SlotOption;
+  onSelect: (descriptor: string) => void;
   label: string;
   mappings: SlotMapping[];
   onDragEnd?: () => void;
@@ -444,19 +450,19 @@ function SlotColumn({
             ? mapping.fromSlot === slot.descriptor
             : mapping.toSlot === slot.descriptor,
         );
-        const compatible =
-          !active ||
-          side === "source" ||
-          (slot.type === activeType && Boolean(slot.batch) === Boolean(activeBatch));
+        const compatible = side === "source" || Boolean(active && slotsCompatible(active, slot));
         return (
           <button
             key={slot.descriptor}
             type="button"
             className={cn(
-              "flex min-h-12 w-full items-center gap-2 border-b px-3 py-2 text-left transition-all",
+              "flex min-h-12 w-full items-center gap-2 border-b px-3 py-2 text-left focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-65 aria-pressed:bg-accent",
               mapped && "border-brand text-brand font-semibold ",
-              active && side === "target" && compatible && "border-brand/60 ",
+              active && side === "target" && compatible && "border-brand/60 bg-accent/50",
             )}
+            disabled={!compatible}
+            aria-pressed={side === "source" ? slot.descriptor === active?.descriptor : undefined}
+            onClick={() => onSelect(slot.descriptor)}
             draggable={side === "source"}
             onDragEnd={onDragEnd}
             onDragOver={(event) => {
@@ -470,7 +476,7 @@ function SlotColumn({
           >
             {side === "source" ? <GripVertical className="h-4 w-4 shrink-0" /> : null}
             <span className="min-w-0 flex-1">
-              <span className="block truncate font-mono text-xs font-medium">
+              <span className="block [overflow-wrap:anywhere] font-mono text-xs font-medium">
                 {slot.descriptor}
               </span>
               {slot.description ? (

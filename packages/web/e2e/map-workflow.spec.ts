@@ -164,6 +164,8 @@ test("diagram views, collapse and central appearance settings", async ({ page },
   await popup.screenshot({ path: info.outputPath("node-details.png"), animations: "disabled" });
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "个人中心", exact: true }).click();
+  await page.getByRole("button", { name: "展开", exact: true }).click();
+  await expect(page.locator(".function-map-canvas")).toBeVisible();
   await page.getByRole("button", { name: "收起", exact: true }).click();
   await expect(page.locator(".function-map-canvas")).toBeHidden();
   await page.getByRole("button", { name: "外观与界面", exact: true }).click();

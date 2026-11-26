@@ -274,7 +274,7 @@ export function CommandWorkdirDialog({
             })}
           </DialogDescription>
         </DialogHeader>
-        <DialogBody className="grid gap-4 lg:grid-cols-2">
+        <DialogBody className="space-y-4 lg:grid lg:grid-cols-2 lg:gap-4 lg:space-y-0">
           <section className="flex min-h-0 min-w-0 flex-col border-border ">
             <div className="border-b border-border p-3">
               <div className="flex items-center gap-2 text-sm font-medium">
@@ -294,7 +294,7 @@ export function CommandWorkdirDialog({
                     <ArrowUp />
                   </Button>
                 ) : null}
-                <span className="min-w-0 truncate" title={cloudPrefix || "/"}>
+                <span className="min-w-0 [overflow-wrap:anywhere]" title={cloudPrefix || "/"}>
                   {cloudPrefix || "/"}
                 </span>
               </div>
@@ -309,7 +309,7 @@ export function CommandWorkdirDialog({
                 data-testid="command-workdir-cloud-search"
               />
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3">
+            <div className="flex-1 p-3 lg:min-h-24 lg:overflow-auto">
               {cloudQ.isLoading ? (
                 <div className="p-3 text-sm text-muted-foreground">{t("common.loading")}</div>
               ) : cloudError ? (
@@ -337,7 +337,10 @@ export function CommandWorkdirDialog({
                       >
                         <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-medium" title={row.name}>
+                          <span
+                            className="block [overflow-wrap:anywhere] text-sm font-medium"
+                            title={row.name}
+                          >
                             {row.name}
                           </span>
                           <span className="block truncate text-[11px] text-muted-foreground">
@@ -355,7 +358,10 @@ export function CommandWorkdirDialog({
                         data-testid={`command-workdir-cloud-row-${row.file.id}`}
                       >
                         <div className="min-w-0">
-                          <div className="truncate font-mono text-xs" title={row.file.path}>
+                          <div
+                            className="[overflow-wrap:anywhere] font-mono text-xs"
+                            title={row.file.path}
+                          >
                             {row.displayName}
                           </div>
                           <div className="mt-1 truncate text-[11px] text-muted-foreground">
@@ -400,7 +406,7 @@ export function CommandWorkdirDialog({
                   placeholder={t("jobs.commandWorkdir.newFolder", {
                     defaultValue: "New folder",
                   })}
-                  className="h-8 min-w-0 flex-1 text-xs sm:w-36 sm:flex-none"
+                  className="h-8 w-full flex-auto basis-full text-xs sm:w-36 sm:flex-none"
                   data-testid="command-workdir-new-folder-name"
                 />
                 <Button
@@ -444,11 +450,14 @@ export function CommandWorkdirDialog({
                   <ArrowUp />
                 </Button>
               ) : null}
-              <span className="min-w-0 truncate" title={workdirPrefix || "/"}>
+              <span className="min-w-0 [overflow-wrap:anywhere]" title={workdirPrefix || "/"}>
                 {workdirPrefix || "/"}
               </span>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3" data-testid="command-workdir-entries">
+            <div
+              className="flex-1 p-3 lg:min-h-24 lg:overflow-auto"
+              data-testid="command-workdir-entries"
+            >
               {workdirRows.length === 0 ? (
                 <div className=" border-border p-4 text-sm text-muted-foreground">
                   {t("jobs.commandWorkdir.empty", {
@@ -469,7 +478,7 @@ export function CommandWorkdirDialog({
                           >
                             <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
                             <span
-                              className="min-w-0 flex-1 truncate text-sm font-medium"
+                              className="min-w-0 flex-1 [overflow-wrap:anywhere] text-sm font-medium"
                               title={row.fullPath}
                             >
                               {row.name}
@@ -516,13 +525,13 @@ export function CommandWorkdirDialog({
                         <div className="flex min-w-0 items-start justify-between gap-2">
                           <div className="min-w-0 overflow-hidden">
                             <div
-                              className="truncate text-sm font-medium"
+                              className="text-sm font-medium [overflow-wrap:anywhere]"
                               title={row.entry.fileMetadataName}
                             >
                               {row.entry.fileMetadataName}
                             </div>
                             <div
-                              className="truncate font-mono text-[11px] text-muted-foreground"
+                              className="[overflow-wrap:anywhere] font-mono text-[11px] text-muted-foreground"
                               title={row.entry.cloudPath}
                               data-testid={`command-workdir-entry-cloud-${row.entry.fileMetadataId}`}
                             >

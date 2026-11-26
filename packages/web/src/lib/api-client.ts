@@ -131,9 +131,15 @@ export const api = {
 export async function resolveSoftwareAvailability(
   payload: Omit<SoftwareAvailabilityRequest, "subject">,
 ): Promise<SoftwareAvailabilityResponse> {
-  const body = await api.post<{ success: true; data: SoftwareAvailabilityResponse }>(
+  // The resolver evaluates the spec without installing software or changing policy.
+  const body = await request<{ success: true; data: SoftwareAvailabilityResponse }>(
     "/software/resolve-availability",
-    payload,
+    () => ({
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(payload),
+    }),
   );
   return body.data;
 }

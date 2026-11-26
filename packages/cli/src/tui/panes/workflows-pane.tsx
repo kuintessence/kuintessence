@@ -17,7 +17,7 @@ function WorkflowRow({
   now: number;
 }) {
   return (
-    <Text inverse={selected}>
+    <Text bold={selected} underline={selected}>
       <Text color={statusColor(run.status)}>{statusGlyph(run.status)} </Text>
       {padCell(run.id, COLS.id)} {padCell(run.name, COLS.name)}{" "}
       <Text color={statusColor(run.status)}>{padCell(run.status, COLS.status)}</Text>{" "}

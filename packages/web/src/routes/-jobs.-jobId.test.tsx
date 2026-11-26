@@ -82,7 +82,10 @@ describe("JobDetailPage", () => {
     expect(mocks.statusStream).toHaveBeenLastCalledWith(null);
   });
 
-  test("allows cancelling a running job from the deep-link page", async () => {
+  test.each([
+    ["cancelled", "jobs.cancelled"],
+    ["running", "jobs.cancelRequested"],
+  ])("reports the cancellation response for status %s", async (status, message) => {
     const running = {
       id: "job-1",
       name: "running-job",
@@ -94,12 +97,12 @@ describe("JobDetailPage", () => {
         ? Promise.reject(new ApiError(404, "NOT_FOUND", "No placement trace"))
         : Promise.resolve(running),
     );
-    mocks.post.mockResolvedValue({ ...running, status: "cancelled" });
+    mocks.post.mockResolvedValue({ ...running, status });
     renderPage();
 
     fireEvent.click(await screen.findByText("jobs.cancel"));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/jobs/job-1/cancel", {}));
-    expect(mocks.toastSuccess).toHaveBeenCalledWith("jobs.cancelled");
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(message);
   });
 });
 

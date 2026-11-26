@@ -70,7 +70,7 @@ function AgentMetrics({
     queueHistory && queueHistory.length >= 2 ? sparkline(queueHistory, queueMax) : "";
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text inverse={selected}>
+      <Text bold={selected} underline={selected}>
         <Text color={statusColor(agent.status)}>{statusGlyph(agent.status)} </Text>
         {padCell(`${agent.id} (${agent.site})`, NAME_W)}
         {seen ? <Text color="gray"> seen {seen}</Text> : null}

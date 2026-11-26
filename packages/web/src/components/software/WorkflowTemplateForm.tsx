@@ -1,11 +1,10 @@
-import { GitBranch, PackagePlus } from "lucide-react";
+import { GitBranch } from "lucide-react";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { WorkflowTemplateCreate } from "../../lib/software-client";
 import { Button } from "../ui/button";
 import { FormField } from "../ui/form-field";
 import { Input, Textarea } from "../ui/input";
-import { FormHeader } from "./FormHeader";
 import { optionalText, parseTagInput } from "./software-fields";
 
 export function WorkflowTemplateForm({
@@ -38,7 +37,6 @@ export function WorkflowTemplateForm({
         });
       }}
     >
-      <FormHeader icon={<PackagePlus />} title={t("software.manage.publishTemplate")} />
       <div className="grid gap-2 md:grid-cols-[1fr_140px]">
         <FormField id={`${id}-name`} label={t("software.manage.templateName")}>
           {(field) => <Input {...field} value={name} onChange={(e) => setName(e.target.value)} />}

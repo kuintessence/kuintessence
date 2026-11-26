@@ -43,13 +43,15 @@
       "nodeDetails": {
         "usecaseVersion": "用例版本：{{id}}",
         "inlineScript": "内联脚本：{{language}}",
-        "assetScript": "脚本资产：revision {{revision}}",
+        "assetScript": "脚本资产：修订 {{revision}}",
         "loopMode": "循环模式：{{mode}}",
         "switchCases_one": "{{count}} 个分支",
         "switchCases_other": "{{count}} 个分支",
         "subWorkflowRef": "引用方式：{{kind}}"
       },
       "usecasePicker": {
+        "loadFailed": "暂时无法加载软件用例。",
+        "invalidRevision": "此用例尚未绑定已发布的软件版本。",
         "title": "选择软件用例",
         "description": "从软件中心选择已发布的可运行入口，并绑定到新节点。",
         "pendingSelection": "待添加：{{name}}",
@@ -58,6 +60,8 @@
         "add": "添加到工作流"
       },
       "scriptPicker": {
+        "checking": "正在核对修订版本…",
+        "revisionLoadFailed": "无法读取所选脚本的修订版本，请重试。",
         "title": "选择数据转换脚本",
         "description": "从软件中心的脚本库选择受管 revision，并固定脚本 hash、runtime 和 I/O manifest。",
         "search": "搜索名称、入口文件或输入输出…",
@@ -74,7 +78,7 @@
         "description": "选择上游输出与下游输入的对应关系。双击已有连线可重新配置。",
         "visualMode": "可视化",
         "standardMode": "表单",
-        "visualHint": "拖拽到兼容插槽",
+        "visualHint": "先选输出槽，再选兼容的输入槽，也可直接拖拽。",
         "output": "上游输出插槽",
         "input": "下游输入插槽",
         "transfer": "传输方式",
@@ -121,7 +125,7 @@
         "when": "When 守卫 (CEL)",
         "whenHint": "填写 CEL 条件表达式；条件为 true 时才会执行该节点",
         "body": "节点主体",
-        "bodyHint": "在 YAML 面板中编辑完整节点主体",
+        "bodyHint": "要修改完整节点定义，请编辑工作流 YAML 文件并重新导入。",
         "usecaseVersionId": "软件用例版本 ID",
         "softwareVersionId": "软件版本 ID",
         "requirements": "资源需求",
@@ -133,6 +137,7 @@
         "bodyExtraHint": "调度策略和插槽关联可在 YAML 中精细调整",
         "scriptSource": "脚本来源",
         "sourceInline": "内联脚本",
+        "scriptAssetId": "脚本资产 ID",
         "sourceAssetRevision": "脚本库固定版本",
         "scriptRuntime": "运行环境",
         "scriptOriginHint": "平台预构建并按镜像 digest 固定的受管运行环境",
@@ -165,7 +170,40 @@
           "Persistent": "持久保存"
         },
         "delete": "删除节点",
-        "save": "应用修改"
+        "save": "应用修改",
+        "milestoneUrl": "通知地址",
+        "milestoneUrlHint": "到达里程碑时，向此地址发送通知。",
+        "milestoneMessage": "通知内容",
+        "controlFlowBodyHint": "要修改嵌套步骤或复杂规则，请编辑工作流 YAML 文件并重新导入。",
+        "switchCases": "分支条件",
+        "switchCasesHint": "CEL 条件成立时，工作流会转到对应的目标节点。",
+        "remove": "移除",
+        "switchAddCase": "添加分支",
+        "switchDefault": "默认目标",
+        "switchDefaultHint": "所有条件都不匹配时转到此节点。可留空。",
+        "loopMode": "循环模式",
+        "loopMaxIterations": "最大迭代次数",
+        "loopMaxIterationsHint": "填写正整数或返回正整数的 CEL 表达式。",
+        "loopOver": "迭代集合（CEL）",
+        "loopUntil": "终止条件（CEL）",
+        "loopOnExhausted": "达到迭代上限时",
+        "loopMaxParallel": "最大并行数",
+        "reduceFromLoop": "来源循环",
+        "reduceFromLoopHint": "选择提供汇总数据的循环节点。",
+        "reduceFromOutput": "来源输出",
+        "reduceOrdering": "排序方式",
+        "reduceOutputKind": "输出类型",
+        "reduceOutputDescriptor": "输出标识",
+        "subworkflowRefKind": "引用方式",
+        "subworkflowRefKindHint": "可引用已发布的工作流版本，也可嵌入工作流定义。",
+        "subworkflowVersionId": "工作流版本 ID",
+        "subworkflowInlineBody": "嵌入的工作流",
+        "subworkflowInlineBodyHint": "要修改嵌入的工作流，请编辑 YAML 文件并重新导入。",
+        "subworkflowMaxDepth": "最大嵌套深度",
+        "subworkflowOnDepthExceeded": "超过嵌套深度时",
+        "generateOutputDescriptor": "输出标识",
+        "generateOutputAs": "输出格式",
+        "defaultOption": "使用默认设置"
       },
       "canvas": {
         "empty": "空白图：从左侧拖入节点开始编辑。",
@@ -207,7 +245,8 @@
         "arbitrationPolicyDigest": "仲裁政策摘要",
         "invalid": "请核对编号、摘要、金额、资源和截止时间。",
         "apply": "应用配置"
-      }
+      },
+      "validationDetails": "查看工作流配置错误"
     }
   }
 }

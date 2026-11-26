@@ -8,7 +8,7 @@ const badgeVariants = cva("inline-flex items-center gap-1 px-0 py-0.5 text-xs fo
       default: "text-foreground",
       outline: "text-foreground",
       brand: "text-foreground",
-      pending: "text-foreground",
+      pending: "text-status-pending",
       running: "text-[var(--status-running)]",
       succeeded: "text-[var(--status-succeeded)]",
       failed: "text-[var(--status-failed)]",

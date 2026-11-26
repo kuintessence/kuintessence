@@ -94,6 +94,10 @@ export function findClusterRoot(path: string, roots: string[]): string {
   );
 }
 
+export function basenameFromPath(value: string): string {
+  return value.split("/").filter(Boolean).pop() ?? "";
+}
+
 export function fmtBytes(bytes: number | null | undefined): string {
   if (bytes == null) return "-";
   if (bytes === 0) return "0 B";

@@ -378,3 +378,20 @@ test("refreshes artifact publication when job status reaches completed", async (
   rerender(<JobFilesTab job={{ ...job, status: "completed" }} loading={false} />);
   expect(await screen.findByTestId("job-file-output-download-cloud-summary-output")).toBeTruthy();
 });
+
+test.each([
+  ["RUNNING", "jobs.remoteOutputsPending"],
+  ["completed", "jobs.remoteOutputsEmpty"],
+])("explains empty federation output groups for a %s job", async (status, message) => {
+  vi.mocked(api.get).mockClear();
+  render(
+    withQueryClient(
+      <JobFilesTab
+        loading={false}
+        job={{ ...job, status, federationRunId: "remote", federationOutputs: { batch: [] } }}
+      />,
+    ),
+  );
+  expect(await screen.findByText(message)).toBeTruthy();
+  expect(api.get).not.toHaveBeenCalled();
+});

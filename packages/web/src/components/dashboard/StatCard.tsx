@@ -30,7 +30,7 @@ export function StatCard({
   return (
     <Card data-testid={testId} className="flex min-w-0 flex-col">
       <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 p-3 pb-1 sm:p-4 sm:pb-2">
-        <CardTitle>{title}</CardTitle>
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
         <Icon className={cn("h-4 w-4 shrink-0", toneClasses[tone])} aria-hidden />
       </CardHeader>
       <CardContent className="flex flex-1 flex-col justify-end p-3 pt-1 sm:p-4 sm:pt-2">

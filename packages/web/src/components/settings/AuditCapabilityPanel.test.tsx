@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { setLang } from "../../lib/i18n";
 import { nativeControl } from "../../lib/test-resource-field";
 import { AuditCapabilityPanel } from "./AuditCapabilityPanel";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 vi.mock("../../lib/api-client", () => ({ api }));
 test("server search and pagination keep the correct user attached to grant actions", async () => {
+  setLang("zh");
   const row = {
     id: "target",
     displayName: "目标用户",
@@ -39,7 +41,9 @@ test("server search and pagination keep the correct user attached to grant actio
       "/admin/authz/audit-capabilities?search=target%40example.test&limit=50&offset=0",
     ),
   );
-  fireEvent.click(await screen.findByRole("button", { name: "授予" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "授予 target@example.test 审计只读权限" }),
+  );
   await waitFor(() =>
     expect(api.put).toHaveBeenCalledWith("/admin/authz/audit-capabilities/target"),
   );

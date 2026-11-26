@@ -393,7 +393,7 @@ export function CloudPane({
                         )}
                         <button
                           type="button"
-                          className="kq-name-fade flex-1 text-left text-sm focus-visible:outline-2 focus-visible:outline-brand"
+                          className="kq-name-fade flex-1 text-left text-sm aria-pressed:font-semibold aria-pressed:underline aria-pressed:underline-offset-4 focus-visible:outline-2 focus-visible:outline-brand"
                           title={r.displayName}
                           aria-pressed={isSelected}
                           onClick={(event) => {

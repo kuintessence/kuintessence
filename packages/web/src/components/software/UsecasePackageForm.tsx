@@ -1,4 +1,4 @@
-import { CircleAlert, FlaskConical, PackagePlus } from "lucide-react";
+import { CircleAlert, PackagePlus } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -11,7 +11,6 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { FormField } from "../ui/form-field";
 import { Input } from "../ui/input";
-import { FormHeader } from "./FormHeader";
 import { CatalogPackagePickerField, SpackCatalogPickerDialog } from "./SpackCatalogPicker";
 import { SpackSpecConfigSheet, SpackSpecPickerField } from "./SpackSpecPicker";
 import { optionalText } from "./software-fields";
@@ -96,7 +95,6 @@ export function UsecasePackageForm({
         });
       }}
     >
-      <FormHeader icon={<FlaskConical />} title={t("software.manage.createUsecase")} />
       {catalogError ? (
         <div
           className="flex min-w-0 items-start gap-2 p-3 text-sm text-status-failed"

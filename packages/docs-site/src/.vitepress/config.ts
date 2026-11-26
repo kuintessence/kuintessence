@@ -5,6 +5,7 @@ const base = rawBase.startsWith("/") && rawBase.endsWith("/") ? rawBase : "/";
 
 export default defineConfig({
   title: "Kuintessence 文档中心",
+  lang: "zh-CN",
   description: "统一算力网络平台的用户、集群、平台和软件治理手册",
   base,
   cleanUrls: true,
@@ -14,6 +15,21 @@ export default defineConfig({
     lineNumbers: true,
   },
   themeConfig: {
+    siteTitle: "Kuintessence 文档",
+    sidebarMenuLabel: "文档目录",
+    returnToTopLabel: "返回顶部",
+    skipToContentLabel: "跳到正文",
+    darkModeSwitchLabel: "外观",
+    lightModeSwitchTitle: "切换到浅色模式",
+    darkModeSwitchTitle: "切换到深色模式",
+    docFooter: { prev: "上一篇", next: "下一篇" },
+    lastUpdated: { text: "最后更新" },
+    notFound: {
+      title: "找不到此页",
+      quote: "请检查文档地址，或从首页按角色查找手册。",
+      linkLabel: "返回文档首页",
+      linkText: "返回文档首页",
+    },
     logo: `${base}logo.svg`,
     nav: [
       { text: "开始", link: "/guide/getting-started" },
@@ -21,7 +37,13 @@ export default defineConfig({
       { text: "运维", link: "/operate/deployment" },
       { text: "SOP 与手册", link: "/operate/manuals" },
       { text: "参考", link: "/reference/glossary" },
-      { text: "代码仓库", link: "https://github.com/kuintessence/kuintessence" },
+    ],
+    socialLinks: [
+      {
+        icon: "github",
+        link: "https://github.com/kuintessence/kuintessence",
+        ariaLabel: "代码仓库",
+      },
     ],
     sidebar: [
       {
@@ -31,6 +53,7 @@ export default defineConfig({
           { text: "快速开始", link: "/guide/getting-started" },
           { text: "科学软件生态", link: "/guide/scientific-ecosystem" },
           { text: "Data Market 数据使用", link: "/guide/data-market" },
+          { text: "联邦协同", link: "/guide/federation-collaboration" },
           { text: "角色地图", link: "/guide/role-map" },
         ],
       },
@@ -67,9 +90,30 @@ export default defineConfig({
     ],
     search: {
       provider: "local",
+      options: {
+        translations: {
+          button: { buttonText: "搜索", buttonAriaLabel: "搜索文档" },
+          modal: {
+            displayDetails: "显示搜索结果详情",
+            resetButtonTitle: "清空搜索",
+            backButtonTitle: "关闭搜索",
+            noResultsText: "没有找到相关文档",
+            footer: {
+              selectText: "打开",
+              selectKeyAriaLabel: "回车键",
+              navigateText: "选择结果",
+              navigateUpKeyAriaLabel: "向上键",
+              navigateDownKeyAriaLabel: "向下键",
+              closeText: "关闭",
+              closeKeyAriaLabel: "退出键",
+            },
+          },
+        },
+      },
     },
     outline: {
       level: [2, 3],
+      label: "本页章节",
     },
     editLink: {
       pattern:

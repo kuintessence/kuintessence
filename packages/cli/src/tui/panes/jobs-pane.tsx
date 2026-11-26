@@ -27,7 +27,7 @@ function JobRow({
   now: number;
 }) {
   return (
-    <Text inverse={selected}>
+    <Text bold={selected} underline={selected}>
       <Text color="yellow">{marked ? "◉" : " "}</Text>
       <Text color={statusColor(jobItem.status)}>{statusGlyph(jobItem.status)} </Text>
       {padCell(jobItem.id, COLS.id)} {padCell(jobItem.name, COLS.name)}{" "}

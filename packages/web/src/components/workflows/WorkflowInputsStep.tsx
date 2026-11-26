@@ -43,6 +43,7 @@ import { fmtBytes } from "../files/path-picker-utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { ResourceSelectField } from "../ui/resource-select-field";
@@ -661,7 +662,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
 
         {model.files.length > 0 && (
           <WorkflowPanel className="rounded-md shadow-none">
-            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+            <CardHeader className="flex flex-col items-start gap-3 space-y-0 sm:flex-row sm:justify-between">
               <div>
                 <CardTitle>{t("workflows.creation.inputs.filesTitle")}</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
@@ -845,9 +846,9 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                                 </Badge>
                               </div>
                               <div className="mt-3 space-y-2">
-                                <div className="flex min-h-10 min-w-0 flex-col items-stretch gap-2 rounded-md border border-dashed border-brand/35 bg-brand-soft/20 px-3 py-2">
+                                <div className="flex min-h-10 min-w-0 flex-col items-stretch justify-center gap-2 rounded-md border border-dashed border-input px-2 py-2">
                                   {assigned.length === 0 ? (
-                                    <span className="block min-w-0 truncate text-xs text-muted-foreground">
+                                    <span className="block min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
                                       {t("workflows.creation.inputs.dropHere")}
                                     </span>
                                   ) : (
@@ -1375,41 +1376,40 @@ function UploadOverlay({ progress }: { progress: UploadProgress }) {
   const { t } = useTranslation();
   const percent = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4 backdrop-blur-md"
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="workflow-upload-title"
-      data-testid="workflow-upload-overlay"
-    >
-      <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl">
+    <Dialog open>
+      <DialogContent
+        role="alertdialog"
+        dismissible={false}
+        className="max-w-md gap-4 p-5 [&>button:disabled]:hidden"
+        data-testid="workflow-upload-overlay"
+      >
         <div className="flex items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand">
-            <Loader2 className="h-5 w-5 animate-spin" />
-          </span>
+          <Loader2 className="mt-0.5 size-5 shrink-0 animate-spin text-brand" aria-hidden="true" />
           <div className="min-w-0">
-            <h3 id="workflow-upload-title" className="font-semibold">
-              {t("workflows.creation.inputs.uploadingTitle")}
-            </h3>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <DialogTitle>{t("workflows.creation.inputs.uploadingTitle")}</DialogTitle>
+            <DialogDescription className="mt-1">
               {t("workflows.creation.inputs.uploadingDescription")}
-            </p>
+            </DialogDescription>
           </div>
         </div>
-        <div className="mt-5 h-2 overflow-hidden rounded-full bg-muted">
-          <div
-            className="h-full rounded-full bg-brand transition-[width] duration-300"
-            style={{ width: `${percent}%` }}
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between gap-3 text-sm">
+            <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+              {progress.currentName}
+            </span>
+            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+              {progress.completed}/{progress.total} · {percent}%
+            </span>
+          </div>
+          <progress
+            aria-label={t("workflows.creation.inputs.uploadingTitle")}
+            max={progress.total || 1}
+            value={progress.completed}
+            className="kq-transfer-progress h-2 w-full text-brand"
           />
         </div>
-        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span className="truncate">{progress.currentName}</span>
-          <span className="shrink-0 font-mono">
-            {progress.completed}/{progress.total} · {percent}%
-          </span>
-        </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

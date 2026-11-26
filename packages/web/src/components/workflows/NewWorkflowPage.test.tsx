@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { nativeControl } from "../../lib/test-resource-field";
+import zh from "../../locales/zh.json";
 
 const {
   get,
@@ -30,8 +31,12 @@ const {
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, opts?: { defaultValue?: string; count?: number }) =>
-      opts?.count !== undefined ? `${key}:${opts.count}` : (opts?.defaultValue ?? key),
+    t: (key: string, opts?: { defaultValue?: string; count?: number; date?: string }) =>
+      key === "workflows.creation.defaultName" && opts?.date
+        ? zh.workflows.creation.defaultName.replace("{{date}}", opts.date)
+        : opts?.count !== undefined
+          ? `${key}:${opts.count}`
+          : (opts?.defaultValue ?? key),
   }),
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
@@ -267,6 +272,7 @@ describe("NewWorkflowPage", () => {
     expect(screen.getByTestId("workflow-start-overlay")).toBeTruthy();
     expect(screen.getByTestId("workflow-start-scratch")).toBeTruthy();
     expect(screen.getByTestId("workflow-start-template")).toBeTruthy();
+    expect(screen.queryByTestId("workflow-readiness")).toBeNull();
     expect(screen.queryByTestId("workflow-template-picker-open")).toBeNull();
     expect(screen.queryByTestId("yaml-input")).toBeNull();
     expect(screen.getByTestId("workflow-step-inputs").hasAttribute("disabled")).toBe(true);
@@ -371,6 +377,10 @@ describe("NewWorkflowPage", () => {
     fireEvent.click(screen.getByTestId("workflow-title-next"));
     fireEvent.click(screen.getByTestId("workflow-title-previous"));
     expect(screen.getByTestId("workflow-value-param:command")).toHaveProperty("value", edited);
+    fireEvent.click(screen.getByTestId("workflow-step-review"));
+    expect(screen.getByTestId("workflow-review-parameters").querySelector("dd")?.textContent).toBe(
+      edited,
+    );
   });
 
   test("picking a Registry template replaces the editor YAML", async () => {
@@ -383,6 +393,16 @@ describe("NewWorkflowPage", () => {
     expect(editor.value).toContain("repository-template");
     expect(screen.queryByTestId("workflow-start-overlay")).toBeNull();
     expect(listWorkflowTemplatePage).toHaveBeenCalled();
+  });
+
+  test("retries a failed template lookup in the open picker", async () => {
+    listWorkflowTemplatePage.mockRejectedValueOnce(new Error("temporarily unavailable"));
+    renderPage();
+    fireEvent.click(screen.getByTestId("workflow-start-template"));
+    const retry = await screen.findByRole("button", { name: "common.retry" });
+    expect(screen.getByTestId("workflow-template-apply").hasAttribute("disabled")).toBe(true);
+    fireEvent.click(retry);
+    expect(await screen.findByTestId("workflow-template-option-template-two-node")).toBeTruthy();
   });
 
   test("filters Registry templates in the picker", async () => {

@@ -88,3 +88,28 @@ test("changing source clears an incompatible destination and prevents adding a s
   ).toBe("");
   expect(screen.getByTestId("workflow-slot-mapping-add")).toHaveProperty("disabled", true);
 });
+
+test("visual selection only enables compatible targets and saves the selected pair", () => {
+  const confirm = vi.fn();
+  render(
+    <WorkflowSlotMappingDialog
+      edge={null}
+      source={node("a")}
+      target={node("b")}
+      open
+      onOpenChange={vi.fn()}
+      onConfirm={confirm}
+    />,
+  );
+  const input = screen.getByTestId("workflow-slot-target-file");
+  expect(input).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByTestId("workflow-slot-source-text"));
+  expect(input).toHaveProperty("disabled", true);
+  const output = screen.getByTestId("workflow-slot-source-file");
+  fireEvent.click(output);
+  expect(output.getAttribute("aria-pressed")).toBe("true");
+  expect(input).toHaveProperty("disabled", false);
+  fireEvent.click(input);
+  fireEvent.click(screen.getByTestId("workflow-slot-mapping-confirm"));
+  expect(confirm).toHaveBeenCalledWith(edge.slotRelations);
+});

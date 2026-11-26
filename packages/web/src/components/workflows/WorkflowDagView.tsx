@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ExternalLink, FileInput, Route, SlidersHorizontal, X } from "lucide-react";
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -150,7 +150,7 @@ function RunConfiguration({
   label,
   value,
 }: {
-  detail: string;
+  detail: ReactNode;
   icon: ComponentType<{ className?: string }>;
   label: string;
   value: string;
@@ -162,10 +162,28 @@ function RunConfiguration({
         {label}
       </div>
       <p className="mt-2 text-lg font-semibold">{value}</p>
-      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground" title={detail}>
+      <div className="mt-1 text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]">
         {detail}
-      </p>
+      </div>
     </section>
+  );
+}
+
+function NodeOutputs({ values }: { values: Record<string, unknown> }) {
+  return (
+    <dl className="min-w-0 divide-y divide-border empty:hidden">
+      {Object.entries(values).map(([key, value]) => (
+        <div
+          key={key}
+          className="grid min-w-0 gap-1 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:gap-3"
+        >
+          <dt className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{key}</dt>
+          <dd className="max-h-56 min-w-0 overflow-auto whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">
+            {typeof value === "string" && value !== "" ? value : JSON.stringify(value, null, 2)}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -311,6 +329,10 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
   ]
     .filter((nodeId) => nodeId !== "__run__")
     .map((nodeId) => [nodeId, liveStatusByNode[nodeId] || "unknown"] as const);
+  const graph = runQ.data?.graph;
+  const savedOutputs = Object.entries(runQ.data?.result?.values ?? {}).filter(
+    ([nodeId, result]) => nodeId !== "__run__" && Object.keys(result.values).length > 0,
+  );
   const localizedError =
     runQ.data?.errorMessage && runQ.data.errorCode !== "WORKFLOW_NODE_FAILED"
       ? localizedRunError(t, runQ.data.errorCode, runQ.data.errorMessage)
@@ -401,11 +423,11 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
               </Badge>
             ) : null}
             <span
-              className="font-mono text-xs text-muted-foreground"
+              className="min-w-0 select-all font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]"
               title={runId}
               data-testid="run-meta"
             >
-              {runId.slice(0, 8)}
+              {runId}
             </span>
           </>
         }
@@ -512,15 +534,19 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
             {failedNodes.map((failure) => (
               <section
                 key={failure.nodeId}
-                className="space-y-2 p-3"
+                className="min-w-0 space-y-2 border-b border-border py-3"
                 data-testid={`workflow-failure-node-${failure.nodeId}`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="font-medium text-foreground">{failure.nodeName}</p>
-                    <p className="truncate font-mono text-[11px] text-muted-foreground">
-                      {failure.nodeId}
+                    <p className="font-medium text-foreground [overflow-wrap:anywhere]">
+                      {failure.nodeName}
                     </p>
+                    {failure.nodeName !== failure.nodeId ? (
+                      <p className="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                        {failure.nodeId}
+                      </p>
+                    ) : null}
                   </div>
                   {failure.exitCode !== null ? (
                     <Badge variant="failed">
@@ -567,17 +593,35 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
         </Card>
       ) : null}
 
-      {runQ.data?.graph && runQ.data.graph.nodes.length > 0 ? (
+      {graph && graph.nodes.length > 0 ? (
         <Card className=" " data-testid="workflow-graph-card">
           <CardHeader>
             <CardTitle className="text-foreground">{t("workflows.run.graph")}</CardTitle>
           </CardHeader>
           <CardContent>
             <WorkflowRunGraph
-              graph={runQ.data.graph}
+              graph={graph}
+              missingNodeStatus={POLLED_RUN_STATUSES.has(runStatus) ? "Pending" : "Unknown"}
               statusByNode={liveStatusByNode}
               jobIdsByNode={stepJobs}
             />
+            {savedOutputs.length > 0 ? (
+              <details className="mt-3 border-t border-border" data-testid="workflow-run-outputs">
+                <summary className="cursor-pointer py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+                  {t("workflows.run.nodeOutputs")}
+                </summary>
+                <div className="divide-y divide-border">
+                  {savedOutputs.map(([nodeId, result]) => (
+                    <section key={nodeId} className="min-w-0 py-2">
+                      <h4 className="font-mono text-sm font-medium [overflow-wrap:anywhere]">
+                        {nodeId}
+                      </h4>
+                      <NodeOutputs values={result.values} />
+                    </section>
+                  ))}
+                </div>
+              </details>
+            ) : null}
           </CardContent>
         </Card>
       ) : nodeStatuses.length > 0 ? (
@@ -585,7 +629,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
           <CardHeader>
             <CardTitle className="text-foreground">{t("workflows.run.nodes")}</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="divide-y divide-border">
             {nodeStatuses.map(([nodeId, status]) => {
               const values = runQ.data?.result?.values[nodeId]?.values ?? {};
               const jobId = stepJobs[nodeId];
@@ -593,15 +637,12 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
                 <div
                   key={nodeId}
                   data-testid={`workflow-node-${nodeId}`}
-                  className="flex items-center justify-between gap-3 border-border p-3"
+                  className="min-w-0 space-y-2 py-3"
                 >
-                  <span className="font-mono text-xs">{nodeId}</span>
-                  <div className="flex items-center gap-2">
-                    {Object.keys(values).length > 0 ? (
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {JSON.stringify(values)}
-                      </span>
-                    ) : null}
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="min-w-0 font-mono text-sm [overflow-wrap:anywhere]">
+                      {nodeId}
+                    </span>
                     <Badge variant={statusToBadgeVariant(status)}>
                       {statusLabel(status, language)}
                     </Badge>
@@ -620,6 +661,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
                       </Button>
                     ) : null}
                   </div>
+                  <NodeOutputs values={values} />
                 </div>
               );
             })}
@@ -651,16 +693,34 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
             icon={SlidersHorizontal}
             label={t("workflows.run.parameters")}
             value={String(runInputModel.values.length)}
-            detail={runInputModel.values.map((item) => item.label).join(" · ") || "—"}
+            detail={
+              runInputModel.values.length ? (
+                <ul className="space-y-1">
+                  {runInputModel.values.map((item) => (
+                    <li key={item.key}>{item.label}</li>
+                  ))}
+                </ul>
+              ) : (
+                "—"
+              )
+            }
           />
           <RunConfiguration
             icon={FileInput}
             label={t("workflows.run.inputFiles")}
             value={String(runInputModel.files.length)}
             detail={
-              runInputModel.files
-                .map((item) => `${item.nodeName}/${item.descriptor}`)
-                .join(" · ") || "—"
+              runInputModel.files.length ? (
+                <ul className="space-y-1">
+                  {runInputModel.files.map((item) => (
+                    <li key={item.key}>
+                      {item.nodeName}/{item.descriptor}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                "—"
+              )
             }
           />
           <RunConfiguration

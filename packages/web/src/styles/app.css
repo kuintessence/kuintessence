@@ -35,7 +35,8 @@
   --brand-foreground: oklch(0.99 0 0);
   --brand-soft: oklch(0.94 0.04 255);
 
-  --status-pending: oklch(0.62 0.02 260);
+  --status-warning: oklch(0.47 0.105 65);
+  --status-pending: oklch(0.52 0.02 260);
   --status-running: oklch(0.49 0.17 255);
   --status-succeeded: oklch(0.46 0.13 150);
   --status-failed: oklch(0.5 0.19 25);
@@ -64,6 +65,7 @@
   --brand-foreground: oklch(0.12 0.01 260);
   --brand-soft: oklch(0.28 0.07 255);
 
+  --status-warning: oklch(0.79 0.13 75);
   --status-pending: oklch(0.7 0.02 260);
   --status-running: oklch(0.7 0.18 255);
   --status-succeeded: oklch(0.72 0.16 150);
@@ -92,6 +94,7 @@
   --color-brand-foreground: var(--brand-foreground);
   --color-brand-soft: var(--brand-soft);
 
+  --color-status-warning: var(--status-warning);
   --color-status-pending: var(--status-pending);
   --color-status-running: var(--status-running);
   --color-status-succeeded: var(--status-succeeded);
@@ -409,6 +412,42 @@ details[open] > .kq-motion--disclosure {
   details[open] > .kq-motion--disclosure {
     animation: none;
   }
+}
+
+.kq-transfer-progress {
+  display: block;
+  appearance: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--muted);
+}
+.kq-transfer-progress::-webkit-progress-bar {
+  background: var(--muted);
+}
+.kq-transfer-progress::-webkit-progress-value {
+  background: currentColor;
+}
+.kq-transfer-progress::-moz-progress-bar {
+  background: currentColor;
+}
+
+.kq-storage-meter {
+  appearance: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--muted);
+}
+.kq-storage-meter::-webkit-meter-bar {
+  border: 0;
+  background: var(--muted);
+}
+.kq-storage-meter::-webkit-meter-optimum-value {
+  background: var(--brand);
+}
+.kq-storage-meter::-moz-meter-bar {
+  background: var(--brand);
 }
 
 @layer base {

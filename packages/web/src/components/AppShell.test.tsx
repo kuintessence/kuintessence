@@ -236,7 +236,7 @@ describe("AppShell sidebar — Server mode", () => {
       (query) =>
         ({
           addEventListener: vi.fn(),
-          matches: query === "(max-width: 767px)",
+          matches: query === "(max-width: 1023px)",
           removeEventListener: vi.fn(),
         }) as unknown as MediaQueryList,
     );
@@ -263,7 +263,7 @@ describe("AppShell sidebar — Server mode", () => {
     const { container } = render(<AppShell />);
 
     const content = container.querySelector(".flex.min-h-screen.flex-col");
-    expect(content?.className).toContain("md:pl-64");
+    expect(content?.className).toContain("lg:pl-64");
     expect(content?.className).toContain("xl:pl-72");
     expect(content?.className).not.toContain("xl:pl-96");
   });

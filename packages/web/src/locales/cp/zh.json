@@ -409,6 +409,7 @@
         "catalogNoDescription": "暂无描述。",
         "catalogNoMetadata": "暂无元数据",
         "catalogMeta": "{{versions}} 版本 · {{variants}} variants",
+        "catalogSelected": "已选择",
         "catalogChoose": "选择",
         "catalogSpecTitle": "Spack spec",
         "catalogSpecEmpty": "先从左侧选择一个软件包。",

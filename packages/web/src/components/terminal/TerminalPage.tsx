@@ -1,10 +1,18 @@
 import type { TerminalSession } from "@kuintessence/shared/browser";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Plus, RefreshCw, Server, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import {
+  ArrowRight,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Server,
+  ShieldCheck,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 import { ApiError, api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
@@ -43,6 +51,8 @@ export function TerminalPage() {
   const closingFocus = useRef<ClosingFocus | null>(null);
   const openShellRef = useRef<HTMLButtonElement>(null);
   const refreshRef = useRef<HTMLButtonElement>(null);
+
+  const [closeErrors, setCloseErrors] = useState<Record<string, string>>({});
 
   const sessionsQ = useQuery({
     queryKey: ["terminal-sessions"],
@@ -145,6 +155,11 @@ export function TerminalPage() {
     const { id } = session;
     const pending = pendingCloseIds.current;
     if (sessionsLoadError || pending.has(id)) return;
+    setCloseErrors((previous) => {
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
     rememberClosingFocus(id);
     pending.add(id);
     setClosingIds(new Set(pending));
@@ -157,7 +172,8 @@ export function TerminalPage() {
       await refresh();
     } catch (err) {
       if (closingFocus.current?.id === id) closingFocus.current.restoreOrigin = true;
-      toast.error(toUserFacingError(err, t("terminal.closeFailed")));
+      const message = toUserFacingError(err, t("terminal.closeFailed"));
+      setCloseErrors((previous) => ({ ...previous, [id]: message }));
     } finally {
       pending.delete(id);
       setClosingIds(new Set(pending));
@@ -181,10 +197,12 @@ export function TerminalPage() {
               <ShieldCheck className="h-3.5 w-3.5" />
               {t("terminal.auditBadge")}
             </span>
-            <span className="inline-flex items-center gap-1.5 border-border px-2.5 py-1 text-muted-foreground">
-              <Server className="h-3.5 w-3.5" />
-              {t("terminal.activeCount", { count: open.length })}
-            </span>
+            {sessionsQ.data && !sessionsLoadError ? (
+              <span className="inline-flex items-center gap-1.5 border-border px-2.5 py-1 text-muted-foreground">
+                <Server className="h-3.5 w-3.5" />
+                {t("terminal.activeCount", { count: open.length })}
+              </span>
+            ) : null}
           </div>
         }
         actions={
@@ -223,8 +241,17 @@ export function TerminalPage() {
         }
       />
 
-      {sessionsLoadError ? (
-        <div className=" p-3 text-sm text-status-failed" data-testid="terminal-sessions-error">
+      {sessionsQ.isLoading ? (
+        <p role="status" className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          {t("terminal.loadingSessions")}
+        </p>
+      ) : sessionsLoadError ? (
+        <div
+          role="alert"
+          className="py-3 text-sm text-status-failed"
+          data-testid="terminal-sessions-error"
+        >
           {toUserFacingError(sessionsLoadError, t("terminal.sessionsLoadFailed"))}
         </div>
       ) : open.length === 0 ? (
@@ -237,19 +264,6 @@ export function TerminalPage() {
             <p className="font-medium text-foreground">{t("terminal.noSessions")}</p>
             <p>{t("terminal.emptyHint")}</p>
           </div>
-          <div className="flex flex-wrap justify-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setNewOpen(true)}
-              disabled={Boolean(sessionsLoadError)}
-            >
-              {t("terminal.openShell")}
-            </Button>
-            <Button asChild size="sm" variant="ghost">
-              <a href="/agents">{t("terminal.liveSsh")}</a>
-            </Button>
-          </div>
         </div>
       ) : (
         <>
@@ -261,13 +275,16 @@ export function TerminalPage() {
           >
             {open.map((s, index) => {
               const selected = active?.id === s.id;
+              const closing = closingIds.has(s.id);
               return (
                 <div
                   key={s.id}
                   data-terminal-session={`${tabsId}-${s.id}`}
                   className={cn(
-                    "flex min-w-max items-center gap-2 px-2 py-1 text-xs transition-colors",
-                    selected ? " text-foreground" : "border-border text-muted-foreground ",
+                    "flex min-w-max items-center gap-2 border-b-2 px-2 py-1 text-xs transition-colors",
+                    selected
+                      ? "border-brand font-semibold text-brand"
+                      : "border-transparent text-muted-foreground",
                   )}
                 >
                   <button
@@ -295,16 +312,38 @@ export function TerminalPage() {
                     aria-label={t("terminal.closeSession", { siteId: s.siteId })}
                     data-testid={`terminal-tab-close-${s.id}`}
                     onClick={() => void onSessionClose(s)}
-                    disabled={closingIds.has(s.id)}
-                    className="text-muted-foreground hover:text-foreground"
+                    disabled={closing}
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
-                    <X className="h-3 w-3" />
+                    {closing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <X className="size-4" />
+                    )}
                   </button>
                 </div>
               );
             })}
           </div>
 
+          {open.map((session) => {
+            const message = closeErrors[session.id];
+            if (!message) return null;
+            return (
+              <p
+                key={session.id}
+                role="alert"
+                className="text-sm text-status-failed [overflow-wrap:anywhere]"
+                data-testid={`terminal-close-error-${session.id}`}
+              >
+                {t("terminal.sessionCloseError", {
+                  account: session.remoteUser,
+                  site: session.siteId,
+                  message,
+                })}
+              </p>
+            );
+          })}
           {open.map((session) => (
             <div
               key={session.id}

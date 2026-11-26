@@ -46,7 +46,6 @@ export function SoftwareCard({
   view,
 }: SoftwareCardProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { template } = view;
   return (
     <article
@@ -163,26 +162,40 @@ export function SoftwareCard({
               {t("software.manage.edit")}
             </Button>
           ) : null}
-          <Button
-            size="sm"
-            data-testid={`software-use-${template.id}`}
-            disabled={!view.isValidWorkflow}
-            title={view.isValidWorkflow ? undefined : t("software.card.invalidUseUnavailable")}
-            onClick={() => {
-              if (!view.isValidWorkflow) return;
-              stashPendingTemplate({ yaml: template.yamlContent, source: template.name });
-              toast.success(
-                t("software.card.loaded", { name: template.name, version: template.version }),
-              );
-              navigate({ to: "/workflows/new" });
-            }}
-          >
-            <GitBranch />
-            {t("software.card.use")}
-          </Button>
+          <UseWorkflowTemplateButton template={template} valid={view.isValidWorkflow} />
         </div>
       </CardContent>
     </article>
+  );
+}
+
+export function UseWorkflowTemplateButton({
+  template,
+  valid,
+}: {
+  template: WorkflowTemplate;
+  valid: boolean;
+}) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  return (
+    <Button
+      size="sm"
+      data-testid={`software-use-${template.id}`}
+      disabled={!valid}
+      title={valid ? undefined : t("software.card.invalidUseUnavailable")}
+      onClick={() => {
+        if (!valid) return;
+        stashPendingTemplate({ yaml: template.yamlContent, source: template.name });
+        toast.success(
+          t("software.card.loaded", { name: template.name, version: template.version }),
+        );
+        navigate({ to: "/workflows/new" });
+      }}
+    >
+      <GitBranch />
+      {t("software.card.use")}
+    </Button>
   );
 }
 

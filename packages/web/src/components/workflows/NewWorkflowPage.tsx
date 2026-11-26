@@ -45,6 +45,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { Input } from "../ui/input";
 import { WorkflowEditorShell } from "../workflow/WorkflowEditorShell";
 import { WorkflowCreationLayout } from "./WorkflowCreationLayout";
 import { type WorkflowCreationStep, WorkflowCreationStepper } from "./WorkflowCreationStepper";
@@ -149,11 +150,11 @@ interface QueueReference {
 type ParsedWorkflow = ReturnType<typeof parseWorkflowYaml>;
 type WorkflowSpec = Extract<ParsedWorkflow, { ok: true }>["workflow"]["spec"];
 
-function defaultWorkflowName(now = new Date()): string {
+function workflowDateStamp(now = new Date()): string {
   const year = String(now.getFullYear()).slice(-2);
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
-  return `工作流${year}${month}${day}-1`;
+  return `${year}${month}${day}`;
 }
 
 function emptyWorkflowYaml(name: string): string {
@@ -192,7 +193,7 @@ export function NewWorkflowPage() {
   const queryClient = useQueryClient();
   const [initialDraft] = useState(() => {
     const pending = consumePendingTemplate();
-    const name = defaultWorkflowName();
+    const name = t("workflows.creation.defaultName", { date: workflowDateStamp() });
     return {
       yaml: pending?.yaml ?? emptyWorkflowYaml(name),
       name,
@@ -651,7 +652,7 @@ export function NewWorkflowPage() {
         data-testid="workflow-draft-load-state"
         aria-busy={draftLoading}
       >
-        <h2 className="text-xl font-semibold">{t("workflows.drafts.openTitle")}</h2>
+        <h1 className="text-2xl font-semibold tracking-tight">{t("workflows.drafts.openTitle")}</h1>
         {draftLoading ? (
           <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
@@ -679,11 +680,20 @@ export function NewWorkflowPage() {
   return (
     <WorkflowCreationLayout
       header={
-        <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0 flex-[1_1_12rem]">
-            <input
-              aria-label={t("workflows.creation.workflowName")}
-              className="min-w-0 max-w-full border-0 bg-transparent p-0 text-2xl font-semibold tracking-tight rounded-sm outline-none ring-0 focus-visible:ring-2 focus-visible:ring-ring sm:text-3xl"
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {t("workflows.newWorkflowTitle")}
+            </h1>
+            <label
+              htmlFor="workflow-name"
+              className="mb-1 mt-2 block text-xs font-medium text-muted-foreground"
+            >
+              {t("workflows.creation.workflowName")}
+            </label>
+            <Input
+              id="workflow-name"
+              className="w-full sm:max-w-80"
               value={workflowName}
               onChange={(event) => setWorkflowName(event.target.value)}
               onBlur={commitWorkflowName}
@@ -697,15 +707,17 @@ export function NewWorkflowPage() {
             className="flex max-w-full flex-wrap items-center gap-2"
             data-testid="workflow-title-actions"
           >
-            <SubmissionReadinessStatus
-              blocking={!parsed.ok || Boolean(queuesQ.error) || Boolean(byVersionInputsQ.error)}
-              loading={
-                byVersionInputsQ.isLoading || (queueReferences.length > 0 && queuesQ.isLoading)
-              }
-              message={readinessMessage}
-              ready={workflowReady}
-              t={t}
-            />
+            {(!startOverlayOpen || !workflowName.trim()) && (
+              <SubmissionReadinessStatus
+                blocking={!parsed.ok || Boolean(queuesQ.error) || Boolean(byVersionInputsQ.error)}
+                loading={
+                  byVersionInputsQ.isLoading || (queueReferences.length > 0 && queuesQ.isLoading)
+                }
+                message={readinessMessage}
+                ready={workflowReady}
+                t={t}
+              />
+            )}
             <Button
               type="button"
               size="sm"
@@ -813,6 +825,7 @@ export function NewWorkflowPage() {
     >
       <WorkflowTemplatePickerDialog
         error={templatesQ.error ?? null}
+        onRetry={() => void templatesQ.refetch()}
         hasNext={templatesQ.data?.hasNext ?? false}
         loading={templatesQ.isLoading}
         onApply={applyTemplate}
@@ -1011,7 +1024,7 @@ function SubmissionReadinessStatus({
     return (
       <Badge
         variant="outline"
-        className="h-9 whitespace-nowrap px-3"
+        className="min-h-9 max-w-full px-3 [overflow-wrap:anywhere] [&>svg]:shrink-0"
         data-testid="workflow-readiness-loading"
       >
         <Loader2 className="animate-spin" />
@@ -1022,7 +1035,7 @@ function SubmissionReadinessStatus({
   return (
     <Badge
       variant={ready ? "succeeded" : blocking ? "failed" : "pending"}
-      className="h-9 whitespace-nowrap px-3"
+      className="min-h-9 max-w-full px-3 [overflow-wrap:anywhere] [&>svg]:shrink-0"
       data-testid="workflow-readiness"
     >
       {ready ? <CheckCircle2 /> : blocking ? <AlertTriangle /> : null}

@@ -88,8 +88,14 @@ function mount(
   );
   return { client, router };
 }
+async function expandMap() {
+  const toggle = await screen.findByRole("button", { name: "展开" });
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(toggle);
+}
 test("explains nodes before navigation and retains project/region scope", async () => {
   const { router } = mount(["D01"]);
+  await expandMap();
   const node = await screen.findAllByRole("button", { name: /作业/ });
   fireEvent.click(node[0] as HTMLElement);
   expect(screen.getByRole("heading", { name: "作业" })).toBeTruthy();
@@ -101,6 +107,7 @@ test("explains nodes before navigation and retains project/region scope", async 
 test("opens an existing form callback without navigation or production mutation", async () => {
   const onOpen = vi.fn(() => true);
   const { router } = mount(["G01"], onOpen);
+  await expandMap();
   const nodes = await screen.findAllByRole("button", { name: /资源选择/ });
   fireEvent.click(nodes[0] as HTMLElement);
   fireEvent.click(screen.getByRole("button", { name: "打开已有入口" }));
@@ -112,6 +119,7 @@ test("opens an existing form callback without navigation or production mutation"
 });
 test("replaces selection immediately on organization change and waits for that organization's grants", async () => {
   mount(["G21"]);
+  await expandMap();
   const nodes = await screen.findAllByRole("button", { name: /提交委派/ });
   fireEvent.click(nodes[0] as HTMLElement);
   expect(screen.getByRole("heading", { name: "提交委派" })).toBeTruthy();
@@ -130,6 +138,7 @@ test("replaces selection immediately on organization change and waits for that o
 });
 test("removes revoked nodes and their explanation after a permission refresh fails", async () => {
   const { client } = mount(["G21"]);
+  await expandMap();
   const nodes = await screen.findAllByRole("button", { name: /取回云盘/ });
   fireEvent.click(nodes[0] as HTMLElement);
   vi.mocked(fetch).mockImplementation(async (input) => {

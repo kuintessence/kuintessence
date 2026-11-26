@@ -206,18 +206,23 @@ export function OperationsMap({
       <CardHeader>
         <CardTitle>{t("settings.operations.title")}</CardTitle>
       </CardHeader>
-      <CardContent className={cn("grid gap-4", !focused && "xl:grid-cols-4")}>
+      <CardContent className={cn("grid grid-cols-1 gap-4", !focused && "xl:grid-cols-4")}>
         {areas.map((area) => (
           <div
             key={area}
             id={area}
             data-testid={`operations-area-${area}`}
-            className="scroll-mt-4 space-y-2"
+            className="min-w-0 scroll-mt-4 space-y-2"
           >
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               {t(`settings.operations.area.${area}`)}
             </div>
-            <div className={cn("grid gap-2", focused && "md:grid-cols-2 xl:grid-cols-3")}>
+            <div
+              className={cn(
+                "grid min-w-0 grid-cols-1 gap-2",
+                focused && "md:grid-cols-2 xl:grid-cols-3",
+              )}
+            >
               {OPERATIONS_LINKS.filter((item) => item.area === area).map((item) => (
                 <OperationLink key={item.key} item={item} role={role} capabilities={capabilities} />
               ))}
@@ -241,28 +246,28 @@ function OperationLink({ item, role, capabilities }: OperationLinkProps) {
   const Icon = item.icon;
   const content = (
     <>
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center ">
+      <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
         <Icon className="h-4 w-4" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">
+        <div className="text-sm font-medium [overflow-wrap:anywhere]">
           {t(`settings.operations.link.${item.key}.title`)}
         </div>
-        <div className="line-clamp-2 text-xs text-muted-foreground">
+        <div className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
           {t(`settings.operations.link.${item.key}.description`)}
         </div>
+        {!allowed ? (
+          <Badge variant="outline" className="mt-1">
+            {t("settings.operations.requiresRole", { role: item.requiredRole })}
+          </Badge>
+        ) : null}
       </div>
-      {!allowed ? (
-        <Badge variant="outline" className="shrink-0">
-          {t("settings.operations.requiresRole", { role: item.requiredRole })}
-        </Badge>
-      ) : null}
       {allowed ? <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
     </>
   );
 
   if (!allowed) {
-    return <div className="flex min-h-20 items-center gap-3 p-3 opacity-70">{content}</div>;
+    return <div className="flex min-w-0 items-start gap-2 py-3 opacity-70">{content}</div>;
   }
 
   return (
@@ -270,7 +275,7 @@ function OperationLink({ item, role, capabilities }: OperationLinkProps) {
       href={operationsHrefForRole(role, item, capabilities)}
       target="_blank"
       rel="noreferrer"
-      className="flex min-h-20 items-center gap-3 border-b border-border p-3 transition-colors hover:text-brand"
+      className="flex min-w-0 items-start gap-2 border-b border-border py-3 transition-colors hover:text-brand"
       data-testid={`settings-ops-link-${item.key}`}
     >
       {content}
