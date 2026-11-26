@@ -611,9 +611,9 @@ describe("SubmitJobDialog queue placement", () => {
     fireEvent.change(nativeControl(queueSelect), { target: { value: "queue-named" } });
     fireEvent.click(screen.getByTestId("submit-job-confirm"));
 
-    expect((await screen.findByTestId("submit-job-queue-submit-error")).textContent).toContain(
-      expectedMessage,
-    );
+    const error = await screen.findByTestId("submit-job-queue-submit-error");
+    expect(error.textContent).toContain(expectedMessage);
+    expect(document.activeElement).toBe(error);
     expect(screen.getByTestId("submit-job-placement-named")).toHaveProperty("checked", true);
     expect((queueSelect as HTMLSelectElement).value).toBe("queue-named");
     expect((screen.getByTestId("submit-job-name") as HTMLInputElement).value).toBe(

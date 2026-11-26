@@ -15,7 +15,7 @@ function lifecycleColor(lifecycle: string): string {
 
 function SoftwareRow({ item, selected }: { item: TuiSoftware; selected: boolean }) {
   return (
-    <Text inverse={selected}>
+    <Text bold={selected} underline={selected}>
       {"  "}
       {padCell(item.source, COLS.source)} {padCell(item.name, COLS.name)}{" "}
       {padCell(item.versions.join(", ") || "-", COLS.versions)}{" "}

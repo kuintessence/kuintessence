@@ -33,6 +33,7 @@ import { NewTransferSheet } from "./NewTransferSheet";
 import {
   canNavigateClusterUp,
   findClusterRoot,
+  fmtBytes,
   isClusterPathWithinRoots,
   parentCloudPrefix,
 } from "./path-picker-utils";
@@ -427,9 +428,10 @@ export function FilesPage() {
     }
   };
 
-  const totalBytes = storageSummaryQ.data?.usedBytes ?? 0;
-  const quotaBytes = storageSummaryQ.data?.quotaBytes ?? 0;
-  const pct = Math.min(100, Math.round(storageSummaryQ.data?.usagePercent ?? 0));
+  const storage = storageSummaryQ.isSuccess ? storageSummaryQ.data : null;
+  const storageLabel = storage
+    ? t("files.storage", { used: fmtBytes(storage.usedBytes), total: fmtBytes(storage.quotaBytes) })
+    : t(storageSummaryQ.isLoading ? "files.quota.loadingUsage" : "files.quota.usageUnavailable");
 
   return (
     <PageShell data-testid="files-page">
@@ -443,16 +445,18 @@ export function FilesPage() {
               title={t("files.netdriveUsageTitle")}
             >
               <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-                {t("files.storage", {
-                  used: (totalBytes / 1024 / 1024 / 1024).toFixed(1),
-                  total: storageSummaryQ.isLoading
-                    ? "—"
-                    : (quotaBytes / 1024 / 1024 / 1024).toFixed(1),
-                })}
+                {storageLabel}
               </span>
-              <span className="h-1 w-32 overflow-hidden ">
-                <span className="block h-full " style={{ width: `${pct}%` }} />
-              </span>
+              {storage && storage.quotaBytes > 0 ? (
+                <meter
+                  min={0}
+                  max={storage.quotaBytes}
+                  value={Math.min(storage.usedBytes, storage.quotaBytes)}
+                  aria-label={t("files.netdriveUsageTitle")}
+                  aria-valuetext={storageLabel}
+                  className="kq-storage-meter h-1.5 w-32"
+                />
+              ) : null}
             </div>
             <Button variant="outline" onClick={() => setQuotaDialogOpen(true)}>
               <DatabaseZap />
@@ -641,10 +645,14 @@ export function FilesPage() {
             <span className="text-sm font-semibold">{t("files.transfers.recentTitle")}</span>
             {!showTransfers ? (
               <span className="font-mono text-[11px] text-muted-foreground">
-                {t("files.transfers.totalActive", {
-                  total: transfers.length,
-                  active: activeTransferCount,
-                })}
+                {transfersQ.isSuccess
+                  ? t("files.transfers.totalActive", {
+                      total: transfers.length,
+                      active: activeTransferCount,
+                    })
+                  : transfersLoadError
+                    ? t("files.transfers.loadFailed")
+                    : t("common.loading")}
               </span>
             ) : null}
           </span>

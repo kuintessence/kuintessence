@@ -114,7 +114,7 @@ function ScopedMaps({ ids, runtime, onOpen, hiddenNodeIds = [] }: FunctionMapsPr
   );
   return (
     <section
-      className="min-w-0 border-b border-border pb-4"
+      className="min-w-0 border-b border-border"
       aria-label={t("functionMaps.portal")}
       data-function-maps={ids.join(" ")}
     >
@@ -141,6 +141,7 @@ function ScopedMaps({ ids, runtime, onOpen, hiddenNodeIds = [] }: FunctionMapsPr
       ) : null}
       <FunctionMapView
         key={`${model.id}:${graph.nodes.map((node) => node.id).join(",")}`}
+        initiallyOpen={model.type === "runtime"}
         model={graph}
         language={i18n.language}
         runtime={model.type === "runtime" ? runtime : undefined}

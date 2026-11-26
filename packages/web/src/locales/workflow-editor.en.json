@@ -50,6 +50,8 @@
         "subWorkflowRef": "Reference: {{kind}}"
       },
       "usecasePicker": {
+        "loadFailed": "Could not load software usecases.",
+        "invalidRevision": "No published software revision is linked to this usecase.",
         "title": "Choose software usecase",
         "description": "Select a published runnable entry point from Software Center and bind it to the new node.",
         "pendingSelection": "Ready to add: {{name}}",
@@ -58,6 +60,8 @@
         "add": "Add to workflow"
       },
       "scriptPicker": {
+        "checking": "Checking revision…",
+        "revisionLoadFailed": "Could not read the selected script revision. Try again.",
         "title": "Choose data transformation script",
         "description": "Select a managed revision from Software Center and pin its hash, runtime, and I/O manifest.",
         "search": "Search name, entrypoint, or I/O…",
@@ -74,7 +78,7 @@
         "description": "Map upstream outputs to downstream inputs. Double-click an existing edge to edit it.",
         "visualMode": "Visual",
         "standardMode": "Form",
-        "visualHint": "Drag to a compatible slot",
+        "visualHint": "Choose an output, then a compatible input, or drag between them.",
         "output": "Upstream output slot",
         "input": "Downstream input slot",
         "transfer": "Transfer method",
@@ -121,7 +125,7 @@
         "when": "When guard (CEL)",
         "whenHint": "Enter a CEL condition; this node runs only when it evaluates to true",
         "body": "Node body",
-        "bodyHint": "Edit the full node body in the YAML pane",
+        "bodyHint": "Edit the node definition in a workflow YAML file, then import the file.",
         "usecaseVersionId": "Software usecase version ID",
         "softwareVersionId": "Software version ID",
         "requirements": "Resource requirements",
@@ -133,6 +137,7 @@
         "bodyExtraHint": "Fine-tune scheduling and slot mappings in YAML",
         "scriptSource": "Script source",
         "sourceInline": "Inline script",
+        "scriptAssetId": "Script asset ID",
         "sourceAssetRevision": "Pinned library revision",
         "scriptRuntime": "Runtime environment",
         "scriptOriginHint": "A platform-built managed runtime pinned by image digest",
@@ -165,7 +170,40 @@
           "Persistent": "Persistent"
         },
         "delete": "Delete node",
-        "save": "Apply changes"
+        "save": "Apply changes",
+        "milestoneUrl": "Notify URL",
+        "milestoneUrlHint": "Endpoint notified when the milestone is reached",
+        "milestoneMessage": "Custom message",
+        "controlFlowBodyHint": "Edit nested steps and rules in the workflow YAML file, then import it.",
+        "switchCases": "Cases",
+        "switchCasesHint": "Each case routes to a node when its CEL guard holds",
+        "remove": "Remove",
+        "switchAddCase": "Add case",
+        "switchDefault": "Default target",
+        "switchDefaultHint": "Node id taken when no case matches: leave blank to omit",
+        "loopMode": "Mode",
+        "loopMaxIterations": "Max iterations",
+        "loopMaxIterationsHint": "A positive integer or a CEL expression",
+        "loopOver": "Over (CEL)",
+        "loopUntil": "Until (CEL)",
+        "loopOnExhausted": "On exhausted",
+        "loopMaxParallel": "Max parallel",
+        "reduceFromLoop": "From loop",
+        "reduceFromLoopHint": "Loop node id whose aggregated output feeds this reduce",
+        "reduceFromOutput": "From output",
+        "reduceOrdering": "Ordering",
+        "reduceOutputKind": "Output kind",
+        "reduceOutputDescriptor": "Output descriptor",
+        "subworkflowRefKind": "Reference",
+        "subworkflowRefKindHint": "ByVersion points at a published workflow; Inline embeds a body",
+        "subworkflowVersionId": "Workflow version id",
+        "subworkflowInlineBody": "Inline body",
+        "subworkflowInlineBodyHint": "Edit the embedded workflow in the YAML file, then import it.",
+        "subworkflowMaxDepth": "Max depth",
+        "subworkflowOnDepthExceeded": "On depth exceeded",
+        "generateOutputDescriptor": "Output descriptor",
+        "generateOutputAs": "Output as",
+        "defaultOption": "Use default"
       },
       "canvas": {
         "empty": "Empty graph: drag a node from the palette to start.",
@@ -207,7 +245,8 @@
         "arbitrationPolicyDigest": "Arbitration policy digest",
         "invalid": "Check IDs, digests, amount, resources and deadline.",
         "apply": "Apply configuration"
-      }
+      },
+      "validationDetails": "View workflow configuration errors"
     }
   }
 }

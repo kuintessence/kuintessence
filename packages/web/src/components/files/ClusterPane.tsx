@@ -268,7 +268,7 @@ export function ClusterPane({
                         kind: e.kind,
                       });
                     }}
-                    className={`cursor-pointer border-b border-border ${isSelected ? "text-brand font-semibold" : ""}`}
+                    className={`cursor-pointer border-b border-border ${isSelected ? "bg-brand-soft text-brand" : ""}`}
                   >
                     <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
@@ -279,7 +279,7 @@ export function ClusterPane({
                         )}
                         <button
                           type="button"
-                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] aria-pressed:font-semibold aria-pressed:underline aria-pressed:underline-offset-4 focus-visible:outline-2 focus-visible:outline-brand"
                           title={e.name}
                           aria-pressed={isFile ? isSelected : undefined}
                           onClick={(event) => {

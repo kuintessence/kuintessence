@@ -324,7 +324,7 @@ describe("CommandWorkdirDialog", () => {
     expect(onApply.mock.calls[0]?.[1]).toEqual(["scratch/"]);
   });
 
-  test("keeps long paths inside truncating rows", () => {
+  test("wraps the full cloud path and preserves the editable stage path", () => {
     const longPath = [
       "workflow-runs",
       "ab708862-477d-4e48-a004-cad47e27408d",
@@ -350,7 +350,10 @@ describe("CommandWorkdirDialog", () => {
 
     const row = screen.getByTestId("command-workdir-entry-long");
     expect(row.className).toContain("min-w-0");
-    expect(screen.getByTestId("command-workdir-entry-cloud-long").className).toContain("truncate");
+    const cloudPath = screen.getByTestId("command-workdir-entry-cloud-long");
+    expect(cloudPath.textContent).toBe(longPath);
+    expect(cloudPath.className).toContain("[overflow-wrap:anywhere]");
+    expect(screen.getByTestId("command-workdir-stage-long")).toHaveProperty("value", longStagePath);
     expect(screen.getByTestId("command-workdir-stage-long").className).toContain("truncate");
   });
 

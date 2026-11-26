@@ -72,7 +72,7 @@ export function Footer({
   } else if (view === "detail") {
     keys = `esc back${cancel} · q quit`;
   } else {
-    keys = `↑/↓ select · enter detail${cancel}${mark}${submit}${logs}${ssh}${catalogPages} · / filter · ${sort} · tab pane · ? help · q quit`;
+    keys = `↑/↓ select · enter detail${cancel}${mark}${submit}${logs}${ssh}${catalogPages}`;
   }
   const freshness =
     lastUpdatedAt !== undefined && now !== undefined
@@ -81,10 +81,16 @@ export function Footer({
   return (
     <Box flexDirection="column">
       {notice ? <Text color="yellow">{notice}</Text> : null}
-      <Text color="gray">
+      <Text>
         {keys}
-        {freshness}
+        {view !== "list" && <Text color="gray">{freshness}</Text>}
       </Text>
+      {view === "list" ? (
+        <Text color="gray">
+          {`/ filter · ${sort} · tab pane · ? help · q quit`}
+          {freshness}
+        </Text>
+      ) : null}
     </Box>
   );
 }

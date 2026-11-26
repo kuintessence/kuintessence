@@ -970,15 +970,13 @@ function SoftwareStickyControls({
           >
             {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
               (item) => (
-                <Button
+                <TagButton
                   key={item}
-                  type="button"
-                  variant={spackCatalogSource === item ? "default" : "outline"}
-                  size="sm"
+                  active={spackCatalogSource === item}
                   onClick={() => setSpackCatalogSource(item)}
                 >
                   {sourceLabel(t, item)}
-                </Button>
+                </TagButton>
               ),
             )}
           </CatalogToolbar>
@@ -1280,7 +1278,8 @@ function TagButton({
   return (
     <Button
       type="button"
-      variant={active ? "default" : "outline"}
+      variant="ghost"
+      className="aria-pressed:bg-brand-soft aria-pressed:font-semibold aria-pressed:text-brand"
       size="sm"
       aria-pressed={active}
       onClick={onClick}
@@ -1333,11 +1332,13 @@ function CatalogToolbar({
           ) : null
         }
       />
-      {tags.length > 0 || children ? (
-        <div className="kq-fill-row gap-1.5" data-testid={tagTestId}>
-          <TagButton active={activeTag === null} onClick={() => setActiveTag(null)}>
-            {t("common.all", { defaultValue: "全部" })}
-          </TagButton>
+      {tags.length > 0 || activeTag || children ? (
+        <div className="kq-fill-row gap-1.5 sm:[&>button]:flex-none" data-testid={tagTestId}>
+          {tags.length > 0 || activeTag ? (
+            <TagButton active={activeTag === null} onClick={() => setActiveTag(null)}>
+              {t("common.all", { defaultValue: "全部" })}
+            </TagButton>
+          ) : null}
           {tags.map((tag) => (
             <TagButton key={tag} active={activeTag === tag} onClick={() => setActiveTag(tag)}>
               {tag}
@@ -1407,7 +1408,8 @@ function FavoriteButton({ active, onClick }: { active: boolean; onClick: () => v
   return (
     <Button
       type="button"
-      variant={active ? "default" : "outline"}
+      variant="ghost"
+      className="aria-pressed:bg-brand-soft aria-pressed:font-semibold aria-pressed:text-brand"
       size="sm"
       onClick={onClick}
       aria-pressed={active}
@@ -1573,7 +1575,6 @@ export function WorkflowTemplateForm({
         });
       }}
     >
-      <FormHeader icon={<PackagePlus />} title={t("software.manage.publishTemplate")} />
       <div className="grid gap-2 md:grid-cols-[1fr_140px]">
         <FormField id={`${id}-name`} label={t("software.manage.templateName")}>
           {(field) => <Input {...field} value={name} onChange={(e) => setName(e.target.value)} />}
@@ -1906,7 +1907,6 @@ export function UsecasePackageForm({
         });
       }}
     >
-      <FormHeader icon={<FlaskConical />} title={t("software.manage.createUsecase")} />
       {catalogError ? (
         <div
           className="flex min-w-0 items-start gap-2 p-3 text-sm text-status-failed"
@@ -3525,15 +3525,6 @@ function UsecasePackageEditForm({
         </Button>
       </div>
     </form>
-  );
-}
-
-function FormHeader({ icon, title }: { icon: ReactNode; title: string }) {
-  return (
-    <div className="flex items-center gap-2 text-sm font-medium">
-      <span className="[&_svg]:h-4 [&_svg]:w-4 [&_svg]:text-muted-foreground">{icon}</span>
-      {title}
-    </div>
   );
 }
 

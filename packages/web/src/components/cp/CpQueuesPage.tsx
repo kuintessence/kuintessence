@@ -928,10 +928,11 @@ export function CpQueuesPage() {
 
   return (
     <div className="min-w-0 space-y-4" data-testid="cp-queues-page">
-      <FunctionMaps ids={["G06"]} />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.queues.title")}</h2>
+          <h1 className="break-words text-2xl font-semibold tracking-tight">
+            {t("cp.queues.title")}
+          </h1>
           <p className="text-sm text-muted-foreground">{t("cp.queues.subtitle")}</p>
         </div>
         <Button
@@ -944,6 +945,7 @@ export function CpQueuesPage() {
           {t("cp.queues.create")}
         </Button>
       </div>
+      <FunctionMaps ids={["G06"]} />
 
       {loadError ? (
         <div className=" p-3 text-sm" data-testid="cp-queues-error" role="alert">

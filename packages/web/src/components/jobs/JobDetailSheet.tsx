@@ -144,21 +144,25 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent data-testid="job-detail-sheet">
-        <SheetHeader className="min-w-0">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <SheetTitle className="min-w-0 flex-1 truncate" title={visibleJob?.name}>
-              {visibleJob?.name ??
-                t(detailQ.error ? "jobs.error.generic" : "jobs.detail.loadingTitle")}
-            </SheetTitle>
+        <SheetHeader className="max-h-[45dvh] min-w-0 space-y-2 overflow-y-auto">
+          <SheetTitle>
+            {visibleJob?.name ??
+              t(detailQ.error ? "jobs.error.generic" : "jobs.detail.loadingTitle")}
+          </SheetTitle>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 empty:hidden">
             {visibleJob?.status ? (
               <Badge variant={statusToBadgeVariant(visibleJob.status)}>
                 {statusLabel(visibleJob.status, i18n?.resolvedLanguage ?? i18n?.language)}
               </Badge>
             ) : null}
+            {visibleJob?.accessScope ? (
+              <Badge variant="outline">{t(`jobs.scope.${visibleJob.accessScope}`)}</Badge>
+            ) : null}
             {canCancel ? (
               <Button
                 type="button"
-                variant="destructive"
+                variant="outline"
+                className="ml-auto text-status-failed"
                 size="sm"
                 disabled={cancelJob.isPending}
                 onClick={() => {
@@ -174,9 +178,6 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
                 <CircleStop />
                 {cancelJob.isPending ? t("jobs.cancelling") : t("jobs.cancel")}
               </Button>
-            ) : null}
-            {visibleJob?.accessScope ? (
-              <Badge variant="outline">{t(`jobs.scope.${visibleJob.accessScope}`)}</Badge>
             ) : null}
           </div>
           <SheetDescription className="sr-only">{jobId ?? ""}</SheetDescription>

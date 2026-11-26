@@ -1,5 +1,5 @@
 import dagre from "@dagrejs/dagre";
-import { ArrowUpRight, ChevronDown, RefreshCw } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, RefreshCw } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
@@ -70,10 +70,12 @@ export function FunctionMapView({
   model,
   language,
   runtime,
+  initiallyOpen = true,
   onOpen,
 }: {
   model: FunctionMap;
   language: string;
+  initiallyOpen?: boolean;
   runtime?: MapRuntime;
   onOpen: (node: MapNode) => void;
 }) {
@@ -90,10 +92,15 @@ export function FunctionMapView({
     : [];
   const text = (value: Parameters<typeof mapText>[0]) => mapText(value, language);
   return (
-    <details className="function-map group" open data-map-id={model.id}>
+    <details className="function-map group/map" open={initiallyOpen} data-map-id={model.id}>
       <summary className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 py-3 text-sm focus-visible:outline-2 focus-visible:outline-ring">
-        <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" />
-        <span className="font-semibold">{text(model.title)}</span>
+        <span className="inline-flex min-w-0 items-start gap-3 font-semibold">
+          <ChevronDown
+            className="mt-0.5 h-4 w-4 shrink-0 -rotate-90 group-open/map:rotate-0"
+            aria-hidden="true"
+          />
+          <span className="min-w-0 break-words">{text(model.title)}</span>
+        </span>
         <span className="text-muted-foreground">{t(`functionMaps.types.${model.type}`)}</span>
       </summary>
       <p className="mb-3 max-w-prose text-sm text-muted-foreground">{text(model.summary)}</p>
@@ -282,6 +289,9 @@ export function FunctionMapView({
                     </span>
                   )}
                 </span>
+                {selected === item.id && (
+                  <Check className="ml-auto size-4 shrink-0" aria-hidden="true" />
+                )}
               </button>
             ))}
           </section>

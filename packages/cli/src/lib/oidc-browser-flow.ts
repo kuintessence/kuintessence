@@ -91,6 +91,30 @@ function startCallbackListener(fixedPort?: number): Promise<{ server: Server; po
   });
 }
 
+function sendCallbackPage(response: ServerResponse, received: boolean): void {
+  const heading = received ? "Return to the CLI" : "Sign-in interrupted";
+  const message = received
+    ? "You can close this tab. Check your terminal for the sign-in result."
+    : "The sign-in response is missing a code or state. Return to your terminal and start sign-in again.";
+  response.writeHead(received ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+  response.end(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>${heading} · Kuintessence</title>
+  <style>
+    body { margin: 0; font: 1rem/1.6 system-ui, sans-serif; }
+    main { max-width: 32rem; margin: clamp(2rem, 14vh, 9rem) auto; padding: 0 1.5rem; }
+    h1 { margin: 0; font-size: clamp(1.75rem, 5vw, 2.25rem); line-height: 1.2; }
+    p { margin: .75rem 0 0; }
+  </style>
+</head>
+<body><main><h1>${heading}</h1><p>${message}</p></main></body>
+</html>`);
+}
+
 function waitForCallback(server: Server, timeoutMs: number): Promise<CallbackPayload> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -114,17 +138,11 @@ function waitForCallback(server: Server, timeoutMs: number): Promise<CallbackPay
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       if (!code || !state) {
-        response.statusCode = 400;
-        response.end("Missing code or state");
+        sendCallbackPage(response, false);
         finish(new Error("missing code/state in callback"));
         return;
       }
-      response.statusCode = 200;
-      response.setHeader("content-type", "text/html");
-      response.end(`<html><body style="font-family:system-ui;padding:40px;">
-<h2>Sign-in complete</h2>
-<p>You can close this tab and return to the CLI.</p>
-</body></html>`);
+      sendCallbackPage(response, true);
       finish({ code, state });
     };
     const timer = setTimeout(

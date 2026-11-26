@@ -181,9 +181,9 @@ export function AgentRegistrationPage() {
     <div className="space-y-4" data-testid="cp-agent-registration-page">
       <div className="flex items-baseline justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">
+          <h1 className="break-words text-2xl font-semibold tracking-tight">
             {t("cp.agentRegistration.title")}
-          </h2>
+          </h1>
           <p className="text-sm text-muted-foreground">{t("cp.agentRegistration.subtitle")}</p>
         </div>
       </div>

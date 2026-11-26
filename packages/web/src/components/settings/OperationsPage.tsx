@@ -82,16 +82,16 @@ export function OperationsPage() {
   ) {
     return (
       <PageShell data-testid="operations-page">
-        {resourceArea === "accounts" ? <FunctionMaps ids={["G29"]} /> : null}
         <OperationsResources
           area={isOperationsResourceArea(resourceArea) ? resourceArea : "overview"}
         />
+        {resourceArea === "accounts" ? <FunctionMaps ids={["G29"]} /> : null}
       </PageShell>
     );
   }
   return (
     <PageShell data-testid="operations-page">
-      {activeArea !== "metering" && (
+      {(activeArea !== "metering" || !capabilities.has("metering.report.view")) && (
         <PageHeader
           id="overview"
           className="scroll-mt-4"

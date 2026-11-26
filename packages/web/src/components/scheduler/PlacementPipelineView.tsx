@@ -141,7 +141,7 @@ function FinalDecisionBanner({
       <div className="min-w-0 flex-1">
         <div className="font-medium">
           {t("scheduler.placement.finalDecision.label", { defaultValue: "Final decision" })}:{" "}
-          <span className="break-all font-mono">{id}</span>
+          <span className="block font-mono [overflow-wrap:anywhere] sm:inline">{id}</span>
         </div>
         {trace.finalDecision.siteName ? (
           <div className="text-xs text-muted-foreground">{trace.finalDecision.siteName}</div>
@@ -198,7 +198,7 @@ function StageRow({
         <span className="min-w-0 flex-1 font-medium">
           {t(`scheduler.placement.stages.${stage.name}`, { defaultValue: stage.name })}
         </span>
-        <span className="flex flex-wrap justify-end gap-1.5">
+        <span className="flex basis-full flex-wrap gap-x-3 gap-y-1 pl-7 sm:basis-auto sm:justify-end sm:pl-0">
           <Badge variant="default">
             {t("scheduler.placement.input.label", { defaultValue: "in" })}: {stage.inputCount}
           </Badge>

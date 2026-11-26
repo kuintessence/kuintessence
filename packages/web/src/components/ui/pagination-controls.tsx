@@ -29,12 +29,14 @@ export function PaginationControls({
       {...props}
     >
       {children}
-      <Button type="button" variant="outline" size="sm" {...previous}>
-        {previous.children ?? t("common.pagination.previous")}
-      </Button>
-      <Button type="button" variant="outline" size="sm" {...next}>
-        {next.children ?? t("common.pagination.next")}
-      </Button>
+      <div className="flex flex-wrap items-center gap-2 [&>button]:flex-1 sm:flex-none">
+        <Button type="button" variant="outline" size="sm" {...previous}>
+          {previous.children ?? t("common.pagination.previous")}
+        </Button>
+        <Button type="button" variant="outline" size="sm" {...next}>
+          {next.children ?? t("common.pagination.next")}
+        </Button>
+      </div>
     </div>
   );
 }

@@ -30,11 +30,13 @@ export function PageHeader({
           </h1>
           {meta ? <div className="mt-2 flex flex-wrap items-center gap-2">{meta}</div> : null}
           {subtitle ? (
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{subtitle}</p>
+            <p className="mt-1 max-w-prose break-words [overflow-wrap:anywhere] text-sm leading-6 text-muted-foreground">
+              {subtitle}
+            </p>
           ) : null}
         </div>
         {actions ? (
-          <div className="kq-fill-row max-w-full flex-[1_1_auto] sm:justify-end [&>span]:flex-none">
+          <div className="kq-fill-row max-w-full flex-[1_1_auto] sm:flex-initial sm:justify-end [&>span]:flex-none">
             {actions}
           </div>
         ) : null}

@@ -1,6 +1,6 @@
 import type { TerminalSession } from "@kuintessence/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
@@ -160,7 +160,9 @@ describe("TerminalPage", () => {
       "terminal.mode",
     );
     expect(screen.getByTestId("terminal-live-ssh-link").getAttribute("href")).toBe("/agents");
-    expect(screen.getByTestId("terminal-empty").textContent).toContain("terminal.emptyHint");
+    expect((await screen.findByTestId("terminal-empty")).textContent).toContain(
+      "terminal.emptyHint",
+    );
   });
 
   test("surfaces command session list errors without rendering an empty page", async () => {
@@ -172,6 +174,7 @@ describe("TerminalPage", () => {
     render(withQueryClient(<TerminalPage />));
 
     await screen.findByTestId("terminal-sessions-error");
+    expect(screen.queryByText("0 active sessions")).toBeNull();
     expect(screen.getByTestId("terminal-sessions-error").textContent).not.toContain(
       "session list denied",
     );
@@ -291,6 +294,48 @@ describe("TerminalPage", () => {
     fireEvent.click(screen.getByTestId("terminal-open-submit"));
 
     expect(api.post).not.toHaveBeenCalled();
+  });
+
+  test("keeps the active session on a close failure from either close control", async () => {
+    const sessions = [makeSession(), makeSession({ id: "session-2", siteId: "Second site" })];
+    vi.mocked(api.get).mockResolvedValue({ sessions });
+    vi.mocked(api.delete).mockRejectedValue(new Error("unavailable"));
+    render(withQueryClient(<TerminalPage />));
+    const tab = await screen.findByTestId("terminal-tab-session-2");
+    fireEvent.click(tab);
+    fireEvent.click(screen.getByTestId("terminal-tab-close-session-2"));
+    await screen.findByTestId("terminal-close-error-session-2");
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(
+      within(screen.getByTestId("terminal-panel-session-2")).getByTestId("terminal-close"),
+    );
+    await waitFor(() => expect(api.delete).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("terminal-close-error-session-2")).toBeTruthy();
+  });
+
+  test("only enables audit export after a successful read with frames", async () => {
+    let available = false;
+    vi.mocked(api.get).mockImplementation(async (path) => {
+      if (path === "/terminal/sessions") return { sessions: [makeSession()] };
+      if (path.endsWith("/audit") && available) {
+        return { frames: [{ kind: "stderr", ts: "2026-11-20T00:00:00Z", data: "警告\n详细信息" }] };
+      }
+      throw new Error("offline");
+    });
+    render(withQueryClient(<TerminalPage />));
+    fireEvent.click(await screen.findByTestId("terminal-open-audit"));
+    const drawer = within(await screen.findByTestId("terminal-audit-drawer"));
+    await drawer.findByRole("alert");
+    expect(drawer.queryByTestId("terminal-audit-summary")).toBeNull();
+    expect(drawer.getByTestId("terminal-audit-export")).toHaveProperty("disabled", true);
+    available = true;
+    fireEvent.click(drawer.getByRole("button", { name: "common.retry" }));
+    await drawer.findByText("警告");
+    expect(drawer.getByTestId("terminal-audit-export")).toHaveProperty("disabled", false);
+    fireEvent.change(drawer.getByRole("searchbox"), { target: { value: "missing" } });
+    fireEvent.click(drawer.getByRole("button", { name: "terminal.auditClearFilters" }));
+    expect(drawer.getByRole("searchbox")).toHaveProperty("value", "");
+    expect(drawer.getByText("警告")).toBeTruthy();
   });
 
   test("keeps every session pane mounted while switching tabs", async () => {

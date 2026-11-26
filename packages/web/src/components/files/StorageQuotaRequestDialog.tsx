@@ -4,7 +4,7 @@ import {
   type StorageScope,
 } from "@kuintessence/shared/browser";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, CalendarClock, Database, Loader2, RefreshCw, Send } from "lucide-react";
+import { AlertCircle, CalendarClock, ChevronRight, Loader2, RefreshCw, Send } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { fmtBytes } from "./path-picker-utils";
 
 interface StorageQuotaRequestDialogProps {
   open: boolean;
@@ -52,13 +53,21 @@ export function StorageQuotaRequestDialog({
   summaryError = null,
   onRetrySummary,
 }: StorageQuotaRequestDialogProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [quotaGb, setQuotaGb] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const [fieldError, setFieldError] = useState<{ field: string; key: string } | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const close = () => {
+    if (submittingRef.current) return;
+    setFieldError(null);
+    setSubmitError(null);
+    onOpenChange(false);
+  };
   const requestsQ = useQuery({
     queryKey: ["storage-quota-requests"],
     queryFn: () => api.get<{ requests: QuotaRequestRow[] }>("/storage/quota-requests"),
@@ -73,16 +82,21 @@ export function StorageQuotaRequestDialog({
     Boolean(summaryError) ||
     !summary ||
     summary.policy.requestMode === "disabled";
-  const submit = async () => {
+  const submit = async (form: HTMLFormElement) => {
     if (submittingRef.current || summaryUnavailable || !summary) return;
+    const invalid = (field: string, key: string) => {
+      setFieldError({ field, key });
+      form.querySelector<HTMLElement>(`#storage-quota-${field}`)?.focus();
+    };
+    setSubmitError(null);
     const requestedGb = Number(quotaGb);
     if (!Number.isInteger(requestedGb) || requestedGb < 1) {
-      toast.error(t("files.quota.formIncomplete"));
+      invalid("gb", "files.quota.invalidQuota");
       return;
     }
     const expiry = expiresAt ? new Date(expiresAt) : null;
     if (expiry && (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now())) {
-      toast.error(t("files.quota.expiryMustBeFuture"));
+      invalid("expires-at", "files.quota.expiryMustBeFuture");
       return;
     }
     const input = StorageQuotaRequestCreateSchema.safeParse({
@@ -93,16 +107,21 @@ export function StorageQuotaRequestDialog({
       reason: reason.trim(),
     });
     if (!input.success) {
-      toast.error(t("files.quota.formIncomplete"));
+      if (input.error.issues[0]?.path[0] === "reason") {
+        invalid("reason", "files.quota.reasonRequired");
+      } else {
+        invalid("gb", "files.quota.invalidQuota");
+      }
       return;
     }
     if (
       summary.policy.maxQuotaBytes != null &&
       input.data.requestedQuotaBytes > summary.policy.maxQuotaBytes
     ) {
-      toast.error(t("files.quota.exceedsLimit"));
+      invalid("gb", "files.quota.exceedsLimit");
       return;
     }
+    setFieldError(null);
     submittingRef.current = true;
     setSubmitting(true);
     try {
@@ -114,18 +133,22 @@ export function StorageQuotaRequestDialog({
       queryClient.invalidateQueries({ queryKey: ["storage-quota-requests"] });
       queryClient.invalidateQueries({ queryKey: ["storage-summary"] });
     } catch (error) {
-      toast.error(toUserFacingError(error, t("files.quota.requestFailed")));
+      setSubmitError(toUserFacingError(error, t("files.quota.requestFailed")));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
     }
   };
 
+  const errorFor = (field: string) => fieldError?.field === field;
+  const errorMessage = (field: string) =>
+    errorFor(field) && fieldError ? (
+      <p role="alert" id={`storage-quota-${field}-error`} className="text-xs text-status-failed">
+        {t(fieldError.key)}
+      </p>
+    ) : null;
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => (!submittingRef.current ? onOpenChange(nextOpen) : undefined)}
-    >
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && close()}>
       <DialogContent outsideDismissPolicy="when-pristine" dirty={dirty} dismissible={!submitting}>
         <DialogHeader>
           <DialogTitle>{t("files.quota.title")}</DialogTitle>
@@ -133,7 +156,7 @@ export function StorageQuotaRequestDialog({
         </DialogHeader>
         <DialogBody className="space-y-5">
           {summaryLoading ? (
-            <StatusMessage icon={<Loader2 className="animate-spin" />}>
+            <StatusMessage icon={<Loader2 className="animate-spin motion-reduce:animate-none" />}>
               {t("files.quota.summaryLoading")}
             </StatusMessage>
           ) : summaryError || !summary ? (
@@ -147,74 +170,117 @@ export function StorageQuotaRequestDialog({
               ) : null}
             </StatusMessage>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Metric label={t("files.quota.used")} value={formatBytes(summary.usedBytes)} />
-              <Metric label={t("files.quota.current")} value={formatBytes(summary.quotaBytes)} />
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2 border-b border-border pb-3 sm:grid-cols-3">
+              <Metric label={t("files.quota.used")} value={fmtBytes(summary.usedBytes)} />
+              <Metric label={t("files.quota.current")} value={fmtBytes(summary.quotaBytes)} />
               <Metric
                 label={t("files.quota.approval")}
                 value={t(`files.quota.mode.${summary.policy.requestMode}`)}
               />
             </div>
           )}
-          <fieldset disabled={submitting} className="space-y-3 disabled:opacity-70">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5 text-sm">
-                <label className="font-medium" htmlFor="storage-quota-gb">
-                  {t("files.quota.requestedGb")}
-                </label>
-                <Input
-                  id="storage-quota-gb"
-                  aria-describedby={
-                    !summaryUnavailable && summary?.policy.maxQuotaBytes != null
-                      ? "storage-quota-limit"
-                      : undefined
-                  }
-                  type="number"
-                  min="1"
-                  step="1"
-                  max={
-                    summary?.policy.maxQuotaBytes != null
-                      ? summary.policy.maxQuotaBytes / 1024 ** 3
-                      : undefined
-                  }
-                  value={quotaGb}
-                  onChange={(event) => setQuotaGb(event.target.value)}
-                />
-                {!summaryUnavailable && summary?.policy.maxQuotaBytes != null ? (
-                  <span id="storage-quota-limit" className="block text-xs text-muted-foreground">
-                    {t("files.quota.limit", { value: formatBytes(summary.policy.maxQuotaBytes) })}
-                  </span>
-                ) : null}
+          <form
+            id="storage-quota-form"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submit(event.currentTarget);
+            }}
+          >
+            <fieldset
+              disabled={submitting || summary?.policy.requestMode === "disabled"}
+              className="space-y-3 disabled:opacity-70"
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5 text-sm">
+                  <label className="font-medium" htmlFor="storage-quota-gb">
+                    {t("files.quota.requestedGb")}
+                  </label>
+                  <Input
+                    id="storage-quota-gb"
+                    aria-describedby={
+                      [
+                        !summaryUnavailable &&
+                          summary?.policy.maxQuotaBytes != null &&
+                          "storage-quota-limit",
+                        errorFor("gb") && "storage-quota-gb-error",
+                      ]
+                        .filter(Boolean)
+                        .join(" ") || undefined
+                    }
+                    type="number"
+                    min="1"
+                    step="1"
+                    max={
+                      summary?.policy.maxQuotaBytes != null
+                        ? summary.policy.maxQuotaBytes / 1024 ** 3
+                        : undefined
+                    }
+                    value={quotaGb}
+                    required
+                    aria-invalid={errorFor("gb")}
+                    onChange={(event) => {
+                      setQuotaGb(event.target.value);
+                      if (errorFor("gb")) setFieldError(null);
+                    }}
+                  />
+                  {!summaryUnavailable && summary?.policy.maxQuotaBytes != null ? (
+                    <span id="storage-quota-limit" className="block text-xs text-muted-foreground">
+                      {t("files.quota.limit", { value: fmtBytes(summary.policy.maxQuotaBytes) })}
+                    </span>
+                  ) : null}
+                  {errorMessage("gb")}
+                </div>
+                <div className="space-y-1.5 text-sm">
+                  <label
+                    htmlFor="storage-quota-expires-at"
+                    className="flex items-center gap-1.5 font-medium"
+                  >
+                    <CalendarClock className="h-4 w-4" />
+                    {t("files.quota.expiresAt")}
+                  </label>
+                  <Input
+                    id="storage-quota-expires-at"
+                    type="datetime-local"
+                    value={expiresAt}
+                    aria-invalid={errorFor("expires-at")}
+                    aria-describedby={
+                      errorFor("expires-at") ? "storage-quota-expires-at-error" : undefined
+                    }
+                    onChange={(event) => {
+                      setExpiresAt(event.target.value);
+                      if (errorFor("expires-at")) setFieldError(null);
+                    }}
+                  />
+                  {errorMessage("expires-at")}
+                </div>
               </div>
-              <label className="space-y-1.5 text-sm" htmlFor="storage-quota-expires-at">
-                <span className="flex items-center gap-1.5 font-medium">
-                  <CalendarClock className="h-4 w-4" />
-                  {t("files.quota.expiresAt")}
-                </span>
-                <Input
-                  id="storage-quota-expires-at"
-                  type="datetime-local"
-                  value={expiresAt}
-                  onChange={(event) => setExpiresAt(event.target.value)}
+              <div className="space-y-1.5 text-sm">
+                <label htmlFor="storage-quota-reason" className="font-medium">
+                  {t("files.quota.reason")}
+                </label>
+                <Textarea
+                  id="storage-quota-reason"
+                  className="min-h-20 w-full"
+                  maxLength={2000}
+                  value={reason}
+                  required
+                  aria-invalid={errorFor("reason")}
+                  aria-describedby={errorFor("reason") ? "storage-quota-reason-error" : undefined}
+                  onChange={(event) => {
+                    setReason(event.target.value);
+                    if (errorFor("reason")) setFieldError(null);
+                  }}
+                  placeholder={t("files.quota.reasonPlaceholder")}
                 />
-              </label>
-            </div>
-            <label className="block space-y-1.5 text-sm" htmlFor="storage-quota-reason">
-              <span className="font-medium">{t("files.quota.reason")}</span>
-              <Textarea
-                id="storage-quota-reason"
-                className="min-h-20 w-full"
-                maxLength={2000}
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                placeholder={t("files.quota.reasonPlaceholder")}
-              />
-            </label>
-          </fieldset>
+                {errorMessage("reason")}
+              </div>
+            </fieldset>
+          </form>
           <div className="space-y-2">
             <div className="text-sm font-medium">{t("files.quota.history")}</div>
             {requestsQ.isLoading ? (
-              <StatusMessage icon={<Loader2 className="animate-spin" />}>
+              <StatusMessage icon={<Loader2 className="animate-spin motion-reduce:animate-none" />}>
                 {t("files.quota.historyLoading")}
               </StatusMessage>
             ) : requestsQ.error ? (
@@ -237,28 +303,68 @@ export function StorageQuotaRequestDialog({
                 {t("files.quota.noRequests")}
               </div>
             ) : (
-              <div className="divide-y overflow-hidden ">
+              <div className="divide-y divide-border">
                 {cloudRequests.slice(0, 5).map((request) => (
-                  <div key={request.id} className="flex items-center gap-3 px-3 py-2 text-xs">
-                    <Database className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium">{formatBytes(request.requestedQuotaBytes)}</div>
-                      <div className="truncate text-muted-foreground">{request.reason}</div>
-                    </div>
-                    <Badge variant="outline">{t(`files.quota.status.${request.status}`)}</Badge>
-                  </div>
+                  <details key={request.id} className="group">
+                    <summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-sm focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+                      <ChevronRight className="size-4 shrink-0 text-muted-foreground group-open:rotate-90" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium tabular-nums">
+                          {fmtBytes(request.requestedQuotaBytes)}
+                        </span>
+                        <time
+                          dateTime={request.createdAt}
+                          className="block text-xs text-muted-foreground"
+                        >
+                          {new Date(request.createdAt).toLocaleString(
+                            i18n?.resolvedLanguage ?? i18n?.language,
+                          )}
+                        </time>
+                      </span>
+                      <Badge
+                        variant={
+                          request.status === "approved"
+                            ? "succeeded"
+                            : request.status === "rejected"
+                              ? "failed"
+                              : "outline"
+                        }
+                      >
+                        {t(`files.quota.status.${request.status}`)}
+                      </Badge>
+                    </summary>
+                    <p className="whitespace-pre-wrap pb-2 pl-6 text-sm [overflow-wrap:anywhere]">
+                      {request.reason}
+                    </p>
+                  </details>
                 ))}
               </div>
             )}
           </div>
         </DialogBody>
-        <DialogFooter className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+        <DialogFooter className="flex flex-wrap justify-end gap-2">
+          {submitError ? (
+            <p
+              role="alert"
+              className="basis-full text-sm text-status-failed [overflow-wrap:anywhere]"
+            >
+              {submitError}
+            </p>
+          ) : null}
+          <Button variant="outline" onClick={close} disabled={submitting}>
             {t("common.cancel")}
           </Button>
-          <Button onClick={() => void submit()} disabled={submitting || summaryUnavailable}>
-            {submitting ? <Loader2 className="animate-spin" /> : <Send />}
-            {t("files.quota.submit")}
+          <Button
+            type="submit"
+            form="storage-quota-form"
+            disabled={submitting || summaryUnavailable}
+          >
+            {submitting ? (
+              <Loader2 className="animate-spin motion-reduce:animate-none" />
+            ) : (
+              <Send />
+            )}
+            {t(submitting ? "files.quota.submitting" : "files.quota.submit")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -291,15 +397,9 @@ function StatusMessage({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className=" p-3">
+    <div className="min-w-0">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="mt-1 font-mono text-sm font-semibold tabular-nums">{value}</div>
     </div>
   );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${Math.round(bytes / 1024)} KB`;
 }

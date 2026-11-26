@@ -260,7 +260,12 @@ spec:
 
     fireEvent.click(screen.getByTestId("rf-palette-SoftwareUsecaseComputing"));
     const option = await screen.findByTestId(`workflow-usecase-option-${packageId}`);
-    fireEvent.doubleClick(option);
+    fireEvent.click(option);
+    const search = screen.getByTestId("workflow-usecase-search");
+    fireEvent.change(search, { target: { value: "no matching package" } });
+    expect((screen.getByTestId("workflow-usecase-apply") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.doubleClick(await screen.findByTestId(`workflow-usecase-option-${packageId}`));
 
     const yaml = String(onChange.mock.calls.at(-1)?.[0]);
     expect(yaml).toContain("分子动力学分析");
@@ -432,7 +437,11 @@ spec:
     const option = await screen.findByTestId(`workflow-script-option-${assetId}`);
     if (method === "double click") fireEvent.doubleClick(option);
     else {
+      getSandboxScript.mockResolvedValueOnce({ asset, attestations: [], revisions: [] });
       fireEvent.click(option);
+      fireEvent.click(screen.getByTestId("workflow-script-apply"));
+      await screen.findByText("workflow.editor.scriptPicker.invalidRevision");
+      expect(onChange).not.toHaveBeenCalled();
       fireEvent.click(screen.getByTestId("workflow-script-apply"));
     }
 

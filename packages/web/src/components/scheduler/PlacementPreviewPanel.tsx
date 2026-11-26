@@ -57,9 +57,6 @@ export function PlacementPreviewPanel({
     <div className="space-y-2" data-testid="placement-preview-panel">
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
         <div className="min-w-0">
-          <div className="text-sm font-medium">
-            {t("scheduler.placement.preview.title", { defaultValue: "Placement preview" })}
-          </div>
           <div className="text-xs text-muted-foreground">
             {trace?.federation
               ? t("federation.clusters.placementNotice")

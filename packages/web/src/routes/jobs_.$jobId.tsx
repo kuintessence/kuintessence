@@ -51,7 +51,11 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
       queryClient.setQueryData(["job-detail", cancelId], job);
       void queryClient.invalidateQueries({ queryKey: ["jobs-list"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast.success(t("jobs.cancelled", { name: job.name }));
+      toast.success(
+        t(job.status.toLowerCase() === "cancelled" ? "jobs.cancelled" : "jobs.cancelRequested", {
+          name: job.name,
+        }),
+      );
     },
     onError: (error) => {
       toast.error(toUserFacingError(error, t("jobs.cancelFailed")));
@@ -79,36 +83,41 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
     <PageShell data-testid="job-detail-page">
       <PageHeader
         title={job.name}
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
+        meta={
+          <>
             <Badge variant={statusToBadgeVariant(job.status)}>
               {statusLabel(job.status, i18n?.resolvedLanguage ?? i18n?.language)}
             </Badge>
             {job.accessScope ? (
               <Badge variant="outline">{t(`jobs.scope.${job.accessScope}`)}</Badge>
             ) : null}
-            {canCancel ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                disabled={cancelJob.isPending}
-                onClick={() => {
-                  if (window.confirm(t("jobs.cancelConfirm", { name: job.name })))
-                    cancelJob.mutate(jobId);
-                }}
-              >
-                <CircleStop />
-                {cancelJob.isPending ? t("jobs.cancelling") : t("jobs.cancel")}
-              </Button>
-            ) : null}
-          </div>
+          </>
+        }
+        actions={
+          canCancel ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-none text-status-failed"
+              size="sm"
+              disabled={cancelJob.isPending}
+              onClick={() => {
+                if (window.confirm(t("jobs.cancelConfirm", { name: job.name })))
+                  cancelJob.mutate(jobId);
+              }}
+            >
+              <CircleStop />
+              {cancelJob.isPending ? t("jobs.cancelling") : t("jobs.cancel")}
+            </Button>
+          ) : null
         }
       />
       <Tabs defaultValue="overview" className="space-y-4">
         <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="overview">{t("jobs.tab.overview")}</TabsTrigger>
-          <TabsTrigger value="logs">{t("jobs.tab.logs")}</TabsTrigger>
+          {!job.federationRunId ? (
+            <TabsTrigger value="logs">{t("jobs.tab.logs")}</TabsTrigger>
+          ) : null}
           <TabsTrigger value="resources">{t("jobs.tab.resources")}</TabsTrigger>
           <TabsTrigger value="files">{t("jobs.tab.files")}</TabsTrigger>
           {traceQ.data ? (
@@ -118,9 +127,11 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
         <TabsContent value="overview">
           <JobOverviewTab job={job} loading={false} />
         </TabsContent>
-        <TabsContent value="logs">
-          <JobLogsTab jobId={jobId} />
-        </TabsContent>
+        {!job.federationRunId ? (
+          <TabsContent value="logs">
+            <JobLogsTab jobId={jobId} />
+          </TabsContent>
+        ) : null}
         <TabsContent value="resources">
           <JobResourcesTab job={job} loading={false} />
         </TabsContent>

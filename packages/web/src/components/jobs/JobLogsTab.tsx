@@ -32,13 +32,12 @@ export function JobLogsTab({ jobId }: { jobId: string }) {
         ? t("jobs.logs.notImplemented")
         : toUserFacingError(logsQ.error, t("jobs.logs.loadFailed"))
     : null;
-  const showTerminal = !error;
   const text = logsQ.data?.text ?? "";
 
   return (
     <div className="space-y-2" data-testid="job-logs-tab">
       {logsQ.isPending ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" /> {t("jobs.logs.connecting")}
         </div>
       ) : null}
@@ -60,7 +59,12 @@ export function JobLogsTab({ jobId }: { jobId: string }) {
           </Button>
         </div>
       ) : null}
-      {showTerminal ? (
+      {logsQ.isSuccess && !text ? (
+        <p role="status" className="py-3 text-sm text-muted-foreground">
+          {t("jobs.logs.empty")}
+        </p>
+      ) : null}
+      {logsQ.isSuccess && text ? (
         <LogTerminal key={`${jobId}:${resolved}`} theme={resolved} text={text} />
       ) : null}
     </div>

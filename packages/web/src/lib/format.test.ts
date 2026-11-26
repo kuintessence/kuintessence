@@ -73,6 +73,7 @@ describe("statusLabel", () => {
       expect(statusLabel(status, "zh-CN")).toBe("已完成");
     }
     expect(statusLabel("RUNNING", "zh")).toBe("运行中");
+    expect(statusLabel("Skipped", "zh")).toBe("已跳过");
     expect(statusLabel("online", "zh")).toBe("在线");
     expect(statusLabel("vendor-state", "zh")).toBe("Vendor-state");
   });

@@ -390,7 +390,9 @@ describe("PropertiesPanel", () => {
   test("Script node shows canonical source, runtime, identity, and content", () => {
     render(<PropertiesPanel selected={scriptNode("sc")} onPatch={() => {}} />);
 
-    expect((screen.getByTestId("rf-prop-script-source") as HTMLSelectElement).value).toBe("Inline");
+    expect(screen.getByTestId("rf-prop-script-source").textContent).toContain(
+      "workflow.editor.properties.sourceInline",
+    );
     expect((screen.getByTestId("rf-prop-script-language") as HTMLInputElement).value).toBe(
       "python",
     );
@@ -451,11 +453,13 @@ describe("PropertiesPanel", () => {
 
     render(<PropertiesPanel selected={node} onPatch={() => {}} />);
 
-    expect((screen.getByTestId("rf-prop-script-source") as HTMLSelectElement).value).toBe(
-      "AssetRevision",
+    expect(screen.getByTestId("rf-prop-script-source").textContent).toContain(
+      "ecosystem / gromacs.summary@1.0.0",
     );
-    expect((screen.getByTestId("rf-prop-script-runtime") as HTMLInputElement).value).toBe("");
-    expect((screen.getByTestId("rf-prop-script-runtime") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByTestId("rf-prop-script-contract").textContent).toBe(
+      "python-3.12-stdlib-v1@1",
+    );
+    expect(screen.queryByTestId("rf-prop-script-runtime")).toBeNull();
     expect(screen.queryByTestId("rf-prop-script-content")).toBeNull();
   });
 

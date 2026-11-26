@@ -65,8 +65,11 @@ describe("Footer", () => {
   };
 
   test("jobs pane shows job actions; logs/workflow/agent-only hints are scoped", async () => {
-    const { lastFrame } = await render(<Footer {...base} view="list" pane="jobs" />);
+    const { lastFrame } = await render(<Footer {...base} view="list" pane="jobs" />, 80, 24);
     const frame = lastFrame() ?? "";
+    expect(frame.split("\n").find((line) => line.includes("tab pane"))).toContain(
+      "? help · q quit",
+    );
     expect(frame).toContain("x cancel");
     expect(frame).toContain("space mark"); // multi-select hint (jobs)
     expect(frame).toContain("s submit");

@@ -113,6 +113,10 @@ function initialState(yaml: string): { graph: GraphState; error: ParseError | nu
 export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditorShellProps) {
   const { t } = useTranslation();
   const [{ graph, error }, setState] = useState(() => initialState(value));
+  const [toolFeedback, setToolFeedback] = useState<{
+    key: string;
+    failed?: boolean;
+  } | null>(null);
   const [loadedGraphRevision, setLoadedGraphRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -132,6 +136,10 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   const [propertiesWidth, setPropertiesWidth] = useState(PROPERTIES_WIDTH.default);
   const [pendingNode, setPendingNode] = useState<NodeCreationRequest | null>(null);
   const [scriptBindingBusy, setScriptBindingBusy] = useState(false);
+  const [scriptBindingError, setScriptBindingError] = useState<{
+    value: string;
+    message: string;
+  } | null>(null);
   const gridTemplateColumns = `${paletteCollapsed ? "36px 0px" : `${paletteWidth}px 6px`} minmax(0,1fr) ${
     propsCollapsed ? "0px 36px" : `6px ${propertiesWidth}px`
   }`;
@@ -175,6 +183,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   useEffect(() => {
     if (value === lastEmittedRef.current) return;
     lastEmittedRef.current = value;
+    setToolFeedback(null);
     const parsed = yamlToGraph(value);
     if (parsed.ok) {
       setLoadedGraphRevision((revision) => revision + 1);
@@ -201,6 +210,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   // graph -> YAML emission. Synchronous: every canvas edit produces a fresh
   // string for the parent to persist on submit.
   function handleGraphChange(nextNodes: GraphNode[], nextEdges: GraphEdge[]) {
+    setToolFeedback(null);
     const nextGraph: GraphState = {
       header: graph.header,
       nodes: nextNodes,
@@ -287,19 +297,19 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
   function formatWorkflow() {
     const normalized = yamlToGraph(graphToYaml(graph.header, graph.nodes, graph.edges));
     if (!normalized.ok) {
-      toast.error(t("workflow.editor.formatFailed"));
+      setToolFeedback({ key: "workflow.editor.formatFailed", failed: true });
       return;
     }
     handleGraphChange(normalized.graph.nodes, normalized.graph.edges);
-    toast.success(t("workflow.editor.formatted"));
+    setToolFeedback({ key: "workflow.editor.formatted" });
   }
 
   async function copyYaml() {
     try {
       await navigator.clipboard.writeText(value);
-      toast.success(t("workflow.editor.yamlCopied"));
+      setToolFeedback({ key: "workflow.editor.yamlCopied" });
     } catch {
-      toast.error(t("workflow.editor.yamlCopyFailed"));
+      setToolFeedback({ key: "workflow.editor.yamlCopyFailed", failed: true });
     }
   }
 
@@ -308,7 +318,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
     const imported = await file.text();
     const parsed = yamlToGraph(imported);
     if (!parsed.ok) {
-      toast.error(t("workflow.editor.yamlImportFailed"));
+      setToolFeedback({ key: "workflow.editor.yamlImportFailed", failed: true });
       return;
     }
     setLoadedGraphRevision((revision) => revision + 1);
@@ -322,7 +332,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
     });
     lastEmittedRef.current = imported;
     onChange(imported);
-    toast.success(t("workflow.editor.yamlImported"));
+    setToolFeedback({ key: "workflow.editor.yamlImported" });
   }
 
   const selectedNode = useMemo<GraphNode | null>(
@@ -368,6 +378,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
 
   function requestNodeCreation(request: NodeCreationRequest) {
     if (request.kind === "SoftwareUsecaseComputing" || request.kind === "Script") {
+      setScriptBindingError(null);
       setPendingNode(request);
       return;
     }
@@ -396,19 +407,22 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
 
   async function addScriptNode(asset: SandboxScriptAsset) {
     if (!pendingNode || pendingNode.kind !== "Script") return;
+    setScriptBindingError(null);
     setScriptBindingBusy(true);
     try {
       const detail = await getSandboxScript(asset.id);
       const revision = detail.revisions.toSorted(
         (left, right) => right.revision - left.revision,
       )[0];
-      if (!revision?.contentSha256) {
-        throw new Error(t("workflow.editor.scriptPicker.invalidRevision"));
+      const parsed = SoftwareAssetPayloadSchema.safeParse(revision?.payload);
+      if (!revision?.contentSha256 || !parsed.success || parsed.data.kind !== "sandbox-script") {
+        setScriptBindingError({
+          value: asset.id,
+          message: t("workflow.editor.scriptPicker.invalidRevision"),
+        });
+        return;
       }
-      const payload = SoftwareAssetPayloadSchema.parse(revision.payload);
-      if (payload.kind !== "sandbox-script") {
-        throw new Error(t("workflow.editor.scriptPicker.invalidRevision"));
-      }
+      const payload = parsed.data;
       addRequestedNode(pendingNode, asset.name, undefined, {
         source: {
           type: "AssetRevision",
@@ -424,7 +438,10 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
       });
       setPendingNode(null);
     } catch (error) {
-      toast.error(toUserFacingError(error, t("workflow.editor.scriptPicker.loadFailed")));
+      setScriptBindingError({
+        value: asset.id,
+        message: toUserFacingError(error, t("workflow.editor.scriptPicker.revisionLoadFailed")),
+      });
     } finally {
       setScriptBindingBusy(false);
     }
@@ -437,6 +454,19 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           <h3 className="text-base font-semibold">
             {t("workflow.editor.title", { defaultValue: "Workflow editor" })}
           </h3>
+          <div role="status" aria-live="polite" aria-atomic="true">
+            {toolFeedback && (
+              <p
+                className={
+                  toolFeedback.failed
+                    ? "text-sm text-status-failed"
+                    : "text-xs text-muted-foreground"
+                }
+              >
+                {t(toolFeedback.key)}
+              </p>
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {error ? (
@@ -563,6 +593,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
               nodes={graph.nodes}
               edges={graph.edges}
               onChange={handleGraphChange}
+              inspectedNodeId={selectedId}
               onSelectionChange={setSelectedId}
               onEdgeSelectionChange={setSelectedEdgeId}
               onRequestCreate={requestNodeCreation}
@@ -616,19 +647,33 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
         />
       </div>
       {!error && !graphValidation.ok ? (
-        <p
+        <div
           role="alert"
           data-testid="rf-shell-reference-error"
-          className="break-words border-b border-border p-3 text-xs text-status-failed"
+          className="border-b border-border p-3 text-sm"
         >
-          {graphValidation.message}
-          {graphValidation.issues
-            ?.map((issue) => ` ${issue.path.join(".")}: ${issue.message}`)
-            .join(";")}
-        </p>
+          <details>
+            <summary className="cursor-pointer font-medium text-status-failed">
+              {t("workflow.editor.validationDetails")}
+            </summary>
+            <p className="mt-2 break-words text-xs text-muted-foreground">
+              {graphValidation.message}
+            </p>
+            {graphValidation.issues?.length ? (
+              <ul className="mt-1 list-inside list-disc break-words text-xs text-muted-foreground">
+                {graphValidation.issues.map((issue) => (
+                  <li key={`${issue.path.join(".")}:${issue.message}`}>
+                    {issue.path.join(".")} · {issue.message}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </details>
+        </div>
       ) : null}
       <WorkflowUsecasePickerDialog
         error={usecasesQ.error ?? null}
+        onRetry={() => void usecasesQ.refetch()}
         loading={usecasesQ.isLoading}
         onApply={addUsecaseNode}
         onOpenChange={(open) => {
@@ -639,7 +684,13 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
       />
       <WorkflowScriptPickerDialog
         busy={scriptBindingBusy}
-        error={!!scriptsQ.error}
+        error={
+          scriptsQ.error
+            ? toUserFacingError(scriptsQ.error, t("workflow.editor.scriptPicker.loadFailed"))
+            : undefined
+        }
+        selectionError={scriptBindingError}
+        onRetry={() => void scriptsQ.refetch()}
         loading={scriptsQ.isLoading}
         onApply={addScriptNode}
         onOpenChange={(open) => {

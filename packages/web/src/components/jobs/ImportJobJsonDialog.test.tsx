@@ -119,6 +119,8 @@ describe("ImportJobJsonDialog", () => {
     Object.defineProperty(slowFile, "text", { value: vi.fn(() => slowRead.promise) });
 
     chooseFile(slowFile);
+    expect(screen.getByRole("status").textContent).toContain("jobs.importJson.reading");
+    expect(screen.getByText("slow.json")).toBeTruthy();
     chooseFile(jsonFile(jobJson({ name: "latest-selection" }), "latest.json"));
     expect((await screen.findByTestId("import-job-json-name")).textContent).toBe(
       "latest-selection",
@@ -166,6 +168,8 @@ describe("ImportJobJsonDialog", () => {
     expect(advanced.textContent).toContain("envVars");
     expect(advanced.textContent).toContain("softwareRequirements");
     expect(advanced.textContent).toContain("expectedOutputs");
+    expect(advanced.textContent).toContain("inputs/topology.tpr");
+    expect(advanced.textContent).not.toContain("presigned");
 
     fireEvent.click(screen.getByTestId("import-job-json-submit"));
 
@@ -244,6 +248,24 @@ describe("ImportJobJsonDialog", () => {
     expect(screen.queryByTestId("import-job-json-preview")).toBeNull();
     expect(apiClient.api.post).not.toHaveBeenCalled();
     expect(screen.getByTestId("import-job-json-submit").hasAttribute("disabled")).toBe(true);
+  });
+
+  test("rechecks the selected queue after a read failure and retains the preview on submit failure", async () => {
+    apiClient.api.get.mockRejectedValueOnce(new Error("offline"));
+    apiClient.api.post.mockRejectedValueOnce(new Error("failed"));
+    render(<ImportJobJsonDialog open onOpenChange={() => {}} />, { wrapper: wrapper() });
+    chooseFile(jsonFile(jobJson()));
+    const submit = screen.getByTestId("import-job-json-submit");
+    const retry = await screen.findByRole("button", { name: "common.retry" });
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(retry);
+    await waitFor(() => expect(submit.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(submit);
+    expect(await screen.findByTestId("import-job-json-submit-error")).toBeTruthy();
+    expect(screen.getByTestId("import-job-json-name").textContent).toBe("imported-analysis");
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiClient.api.post).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("import-job-json-submit-error")).toBeNull();
   });
 
   test("clears the imported file when cancelled and reopened", async () => {

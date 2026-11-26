@@ -124,7 +124,7 @@ export function PathPickerField({
     <>
       <div className="flex items-center gap-2 border-border px-3 py-2">
         <span
-          className="min-w-0 flex-1 truncate font-mono text-xs"
+          className="min-w-0 flex-1 font-mono text-xs [overflow-wrap:anywhere]"
           title={value || fallbackEmptyValue}
           data-testid={testId}
         >
@@ -134,7 +134,8 @@ export function PathPickerField({
           type="button"
           variant="outline"
           size="sm"
-          className="min-h-11 sm:min-h-0"
+          className="min-h-11 shrink-0 sm:min-h-0"
+          aria-label={pickerProps.title}
           onClick={() => setOpen(true)}
           data-testid={`${testId}-picker`}
         >
@@ -409,7 +410,7 @@ export function PathPickerSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent width="max-w-4xl" data-testid="path-picker-sheet">
+      <SheetContent width="max-w-4xl" className="bg-card" data-testid="path-picker-sheet">
         <SheetHeader>
           <SheetTitle>{title}</SheetTitle>
           <SheetDescription>{description}</SheetDescription>
@@ -543,9 +544,9 @@ export function PathPickerSheet({
             />
           )}
         </SheetBody>
-        <SheetFooter className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <SheetFooter className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
           <div
-            className="min-w-0 truncate font-mono text-xs text-muted-foreground"
+            className="max-h-[18dvh] min-w-0 overflow-y-auto font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]"
             data-testid="path-picker-current"
             title={selection?.path ?? (location === "cloud" ? cloudPrefix || "/" : clusterPath)}
           >
@@ -610,10 +611,11 @@ function CloudBrowser({
   onPrefixChange,
   onSelect,
 }: CloudBrowserProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   return (
     <div className="flex min-h-[420px] flex-col overflow-hidden border-border">
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border px-3">
+      <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="flex min-w-0 items-center gap-1">
           {prefix ? (
             <Button
@@ -628,7 +630,7 @@ function CloudBrowser({
             </Button>
           ) : null}
           <span
-            className="truncate font-mono text-[11px] text-muted-foreground"
+            className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]"
             title={prefix || "/"}
           >
             {prefix || "/"}
@@ -676,7 +678,7 @@ function CloudBrowser({
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <button
                             type="button"
-                            className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                            className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere] font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${row.name}/`}
                           >
                             {row.name}/
@@ -687,7 +689,7 @@ function CloudBrowser({
                         {fmtBytes(row.totalSize)}
                       </TableCell>
                       <TableCell className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
-                        {relativeFromNow(row.latestModifiedAt)}
+                        {relativeFromNow(row.latestModifiedAt, undefined, language)}
                       </TableCell>
                       {mode === "directory" ? (
                         <TableCell className="px-3 py-2 text-right">
@@ -716,6 +718,7 @@ function CloudBrowser({
                 }
                 const selected = selectedPath === row.obj.key;
                 const usable = cloudObjectCanUse(row.obj);
+                const FileIcon = selected ? Check : File;
                 return (
                   <TableRow
                     key={row.obj.id}
@@ -737,12 +740,17 @@ function CloudBrowser({
                   >
                     <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
-                        <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <FileIcon
+                          className={cn(
+                            "h-3.5 w-3.5 shrink-0",
+                            selected ? "text-brand" : "text-muted-foreground",
+                          )}
+                        />
                         <button
                           type="button"
                           disabled={mode !== "file" || !usable}
                           aria-pressed={mode === "file" ? selected : undefined}
-                          className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere] font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                           title={row.displayName}
                         >
                           {row.displayName}
@@ -758,7 +766,7 @@ function CloudBrowser({
                       {fmtBytes(row.obj.size)}
                     </TableCell>
                     <TableCell className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
-                      {relativeFromNow(row.obj.modifiedAt)}
+                      {relativeFromNow(row.obj.modifiedAt, undefined, language)}
                     </TableCell>
                     {mode === "directory" ? <TableCell className="px-3 py-2" /> : null}
                   </TableRow>
@@ -809,10 +817,11 @@ function ClusterBrowser({
   onPathChange,
   onSelect,
 }: ClusterBrowserProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   return (
     <div className="flex min-h-[420px] flex-col overflow-hidden border-border">
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border px-3">
+      <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="flex min-w-0 items-center gap-1">
           <Button
             type="button"
@@ -825,18 +834,21 @@ function ClusterBrowser({
           >
             <ArrowUp />
           </Button>
-          <span className="truncate font-mono text-[11px] text-muted-foreground" title={path}>
+          <span
+            className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]"
+            title={path}
+          >
             {path}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
           {agents.length > 0 ? (
             <ResourceSelectField
               resourceType="agents"
               recent
               expandable
               data-testid="path-picker-agent-select"
-              className="font-mono text-[11px]"
+              className="min-w-0 max-w-full font-mono text-[11px]"
               aria-label={t("files.clusterAgent")}
               value={agent?.agentId ?? ""}
               onChange={(event) => onAgentChange(event.target.value)}
@@ -913,6 +925,7 @@ function ClusterBrowser({
               {entries.map((entry) => {
                 const fullPath = joinClusterPath(path, entry.name);
                 const selected = selectedPath === fullPath;
+                const EntryIcon = entry.kind === "dir" ? Folder : selected ? Check : File;
                 return (
                   <TableRow
                     key={entry.name}
@@ -941,18 +954,19 @@ function ClusterBrowser({
                   >
                     <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
-                        {entry.kind === "dir" ? (
-                          <Folder className="h-3.5 w-3.5 text-muted-foreground" />
-                        ) : (
-                          <File className="h-3.5 w-3.5 text-muted-foreground" />
-                        )}
+                        <EntryIcon
+                          className={cn(
+                            "h-3.5 w-3.5 shrink-0",
+                            selected ? "text-brand" : "text-muted-foreground",
+                          )}
+                        />
                         <button
                           type="button"
                           disabled={entry.kind === "file" && (mode !== "file" || !agent)}
                           aria-pressed={
                             entry.kind === "file" && mode === "file" ? selected : undefined
                           }
-                          className="min-w-0 truncate text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere] font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                           title={entry.name}
                         >
                           {entry.name}
@@ -964,7 +978,7 @@ function ClusterBrowser({
                       {fmtBytes(entry.size)}
                     </TableCell>
                     <TableCell className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
-                      {relativeFromNow(entry.modifiedAt)}
+                      {relativeFromNow(entry.modifiedAt, undefined, language)}
                     </TableCell>
                     {mode === "directory" ? (
                       <TableCell className="px-3 py-2 text-right">
@@ -1080,6 +1094,6 @@ function rowClassName(selected: boolean, enabled = true): string {
   return cn(
     "border-t border-border",
     enabled ? "cursor-pointer hover:bg-muted/40" : "text-muted-foreground",
-    selected ? "bg-brand-soft/40" : "",
+    selected ? "bg-brand-soft hover:bg-brand-soft" : "",
   );
 }

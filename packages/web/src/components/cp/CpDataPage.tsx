@@ -227,7 +227,7 @@ export function CpDataPage() {
       {!activeOrganizationId ? (
         <p className="text-sm text-muted-foreground">{t("cp.data.organizationRequired")}</p>
       ) : null}
-      <div className="grid gap-5 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <section>
           <CardHeader>
             <CardTitle>

@@ -15,7 +15,6 @@ import "@xyflow/react/dist/style.css";
 import {
   Boxes,
   Braces,
-  Check,
   ChevronLeft,
   Clipboard,
   ExternalLink,
@@ -42,18 +41,23 @@ import {
   type SpackPackageMetadata,
   type SpackSoftwareSpec,
   type UsecasePackage,
-  type WorkflowTemplate,
 } from "../../lib/software-client";
 import { type SoftwareSection, softwareCatalogDestination } from "../../lib/software-navigation";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
-import { parseWorkflowYaml, summarize } from "../../lib/workflow-parser";
+import {
+  type ParseSuccess,
+  parsePublishedWorkflowTemplate,
+  summarize,
+} from "../../lib/workflow-parser";
 import { useTheme } from "../ThemeProvider";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
+import { UseWorkflowTemplateButton } from "./SoftwareCard";
 
 interface DetailShellProps {
+  action?: React.ReactNode;
   children: React.ReactNode;
   description?: string | null;
   icon: React.ReactNode;
@@ -61,7 +65,7 @@ interface DetailShellProps {
   title: string;
 }
 
-function DetailShell({ children, description, icon, section, title }: DetailShellProps) {
+function DetailShell({ action, children, description, icon, section, title }: DetailShellProps) {
   const { t } = useTranslation();
   return (
     <PageShell data-testid="software-detail-page">
@@ -69,17 +73,20 @@ function DetailShell({ children, description, icon, section, title }: DetailShel
         title={
           <span className="flex min-w-0 items-center gap-2">
             <span className="[&_svg]:h-5 [&_svg]:w-5 [&_svg]:text-muted-foreground">{icon}</span>
-            <span className="break-words">{title}</span>
+            <span className="min-w-0 [overflow-wrap:anywhere]">{title}</span>
           </span>
         }
         subtitle={description}
         actions={
-          <Button asChild variant="outline" size="sm">
-            <Link {...softwareCatalogDestination(section)}>
-              <ChevronLeft />
-              {t("software.manage.backToSoftware")}
-            </Link>
-          </Button>
+          <>
+            <Button asChild variant="outline" size="sm">
+              <Link {...softwareCatalogDestination(section)}>
+                <ChevronLeft />
+                {t("software.manage.backToSoftware")}
+              </Link>
+            </Button>
+            {action}
+          </>
         }
       />
       {children}
@@ -138,7 +145,7 @@ function LicensePolicyPanel({ policy }: { policy?: LicensePolicy }) {
   if (!policy) {
     return (
       <DetailSection title={t("software.detail.license")}>
-        <DetailEmpty text={t("software.detail.licenseUnavailable")} />
+        <p className="text-sm text-muted-foreground">{t("software.detail.licenseUnavailable")}</p>
       </DetailSection>
     );
   }
@@ -280,18 +287,16 @@ function layoutTemplateGraph(nodes: { id: string }[], edges: { source: string; t
   return positions;
 }
 
-function WorkflowTemplateFlow({ template }: { template: WorkflowTemplate }) {
+function WorkflowTemplateFlow({ workflow }: { workflow: ParseSuccess["workflow"] }) {
   const { t } = useTranslation();
   const { resolved } = useTheme();
-  const parsed = useMemo(() => parseWorkflowYaml(template.yamlContent), [template.yamlContent]);
   const graph = useMemo(() => {
-    if (!parsed.ok) return null;
-    const nodes = parsed.workflow.spec.nodeDrafts.map((node) => ({
+    const nodes = workflow.spec.nodeDrafts.map((node) => ({
       id: node.id,
       kind: node.type,
       name: node.name,
     }));
-    const edges = parsed.workflow.spec.nodeRelations.map((edge, index) => ({
+    const edges = workflow.spec.nodeRelations.map((edge, index) => ({
       id: `${edge.fromId}->${edge.toId}-${index}`,
       source: edge.fromId,
       target: edge.toId,
@@ -307,29 +312,46 @@ function WorkflowTemplateFlow({ template }: { template: WorkflowTemplate }) {
         data: { kind: node.kind, label: node.name },
       })),
     };
-  }, [parsed]);
+  }, [workflow]);
 
-  if (!parsed.ok || !graph) {
-    return <DetailEmpty text={parsed.ok ? t("software.detail.noGraph") : parsed.message} />;
-  }
+  if (!graph.nodes.length)
+    return <p className="text-sm text-muted-foreground">{t("software.detail.noGraph")}</p>;
 
   return (
-    <div className="h-[520px] overflow-hidden border-border " data-testid="software-template-flow">
-      <ReactFlow
-        colorMode={resolved}
-        nodes={graph.nodes satisfies Node<TemplateGraphNodeData>[]}
-        edges={graph.edges satisfies Edge[]}
-        nodeTypes={TEMPLATE_NODE_TYPES}
-        minZoom={0.1}
-        fitView
-        nodesDraggable={false}
-        nodesConnectable={false}
-        proOptions={{ hideAttribution: true }}
+    <>
+      <div
+        className="h-[clamp(14rem,55dvh,32.5rem)] overflow-hidden border-border"
+        data-testid="software-template-flow"
       >
-        <Background gap={16} size={1} />
-        <Controls showInteractive={false} />
-      </ReactFlow>
-    </div>
+        <ReactFlow
+          colorMode={resolved}
+          nodes={graph.nodes satisfies Node<TemplateGraphNodeData>[]}
+          edges={graph.edges satisfies Edge[]}
+          nodeTypes={TEMPLATE_NODE_TYPES}
+          minZoom={0.1}
+          fitView
+          nodesDraggable={false}
+          nodesConnectable={false}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background gap={16} size={1} />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </div>
+      <details className="text-sm">
+        <summary className="cursor-pointer font-medium">{t("software.detail.nodeList")}</summary>
+        <ul className="mt-2 divide-y divide-border">
+          {graph.nodes.map((node) => (
+            <li key={node.id} className="space-y-1 py-2 [overflow-wrap:anywhere]">
+              <p>{node.data.label}</p>
+              <p className="font-mono text-xs text-muted-foreground">
+                {node.id} · {node.data.kind}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </>
   );
 }
 
@@ -341,22 +363,19 @@ export function SoftwareWorkflowTemplateDetailPage({ templateId }: { templateId:
     retry: false,
   });
   const template = templateQ.data ?? null;
-  const templateSummary = useMemo(() => {
-    if (!template) return null;
-    const parsed = parseWorkflowYaml(template.yamlContent);
-    if (!parsed.ok) {
-      return {
-        edgeCount: 0,
-        isValid: false,
-        nodeCount: 0,
-        nodeTypes: [] as string[],
-      };
-    }
-    const summary = summarize(parsed.workflow);
-    return { ...summary, isValid: true };
-  }, [template]);
+  const yaml = template?.yamlContent;
+  const parsed = useMemo(
+    () => (yaml === undefined ? null : parsePublishedWorkflowTemplate(yaml)),
+    [yaml],
+  );
+  const summary = useMemo(() => (parsed?.ok ? summarize(parsed.workflow) : null), [parsed]);
   return (
     <DetailShell
+      action={
+        template && !templateQ.isError ? (
+          <UseWorkflowTemplateButton template={template} valid={parsed?.ok === true} />
+        ) : undefined
+      }
       description={template?.description}
       icon={<Workflow />}
       section="templates"
@@ -372,9 +391,9 @@ export function SoftwareWorkflowTemplateDetailPage({ templateId }: { templateId:
         <div className="grid gap-5">
           <section className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_420px]">
             <div className="min-w-0 border-border p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={templateSummary?.isValid ? "succeeded" : "failed"}>
-                  {templateSummary?.isValid
+              <div className="flex flex-wrap items-center gap-2 [&>span]:max-w-full [overflow-wrap:anywhere]">
+                <Badge variant={parsed?.ok ? "succeeded" : "failed"}>
+                  {parsed?.ok
                     ? t("software.detail.validWorkflow")
                     : t("software.detail.invalidWorkflow")}
                 </Badge>
@@ -396,37 +415,47 @@ export function SoftwareWorkflowTemplateDetailPage({ templateId }: { templateId:
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <DetailMetricTile
-                icon={<Workflow />}
-                label={t("software.detail.nodes")}
-                value={templateSummary?.nodeCount ?? 0}
-              />
-              <DetailMetricTile
-                icon={<GitBranch />}
-                label={t("software.detail.edges")}
-                value={templateSummary?.edgeCount ?? 0}
-              />
-              <DetailMetricTile
-                icon={<Braces />}
-                label={t("software.detail.nodeTypes")}
-                value={templateSummary?.nodeTypes.length ?? 0}
-              />
-              <DetailMetricTile
-                icon={<Check />}
-                label={t("software.detail.validation")}
-                value={
-                  templateSummary?.isValid
-                    ? t("software.detail.valid")
-                    : t("software.detail.invalid")
-                }
-              />
-            </div>
+            {summary ? (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <DetailMetricTile
+                  icon={<Workflow />}
+                  label={t("software.detail.nodes")}
+                  value={summary.nodeCount}
+                />
+                <DetailMetricTile
+                  icon={<GitBranch />}
+                  label={t("software.detail.edges")}
+                  value={summary.edgeCount}
+                />
+                <DetailMetricTile
+                  icon={<Braces />}
+                  label={t("software.detail.nodeTypes")}
+                  value={summary.nodeTypes.length}
+                />
+              </div>
+            ) : null}
           </section>
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
-            <DetailSection title={t("software.detail.renderedGraph")}>
-              <WorkflowTemplateFlow template={template} />
-            </DetailSection>
+            {parsed?.ok ? (
+              <DetailSection title={t("software.detail.renderedGraph")}>
+                <WorkflowTemplateFlow workflow={parsed.workflow} />
+              </DetailSection>
+            ) : parsed ? (
+              <DetailSection title={t("software.detail.validation")}>
+                <div role="alert" className="space-y-2 text-sm [overflow-wrap:anywhere]">
+                  <p>{parsed.message}</p>
+                  {parsed.issues?.length ? (
+                    <ul className="list-disc space-y-1 ps-5">
+                      {parsed.issues.map((issue) => (
+                        <li key={`${issue.path.map(String).join(".")}:${issue.message}`}>
+                          <code>{issue.path.map(String).join(".")}</code> {issue.message}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              </DetailSection>
+            ) : null}
             <DetailSection title={t("software.detail.yamlSource")}>
               <pre className="max-h-[520px] overflow-auto border-border p-3 text-xs">
                 {template.yamlContent}
@@ -735,85 +764,100 @@ function SpackAvailabilityPanel({ installSpec }: { installSpec: string }) {
   const data = availabilityQ.data;
   return (
     <DetailSection title={t("software.detail.availability")}>
-      <div className="grid gap-3 border-border p-4 lg:grid-cols-3">
-        <AvailabilityColumn
-          items={data?.installedAvailable ?? []}
-          loading={availabilityQ.isLoading}
-          title={t("software.detail.installedAvailable")}
-        />
-        <AvailabilityColumn
-          items={data?.installableAvailable ?? []}
-          loading={availabilityQ.isLoading}
-          title={t("software.detail.installableAvailable")}
-        />
-        <AvailabilityColumn
-          items={data?.blocked ?? []}
-          loading={availabilityQ.isLoading}
-          title={t("software.detail.blockedNodes")}
-        />
-        {availabilityQ.isError ? (
-          <div className="lg:col-span-3 px-3 py-2 text-xs text-status-failed">
-            {t("software.detail.availabilityFailed")}
-          </div>
-        ) : null}
-      </div>
+      {availabilityQ.isError ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <p role="alert" className="text-sm text-status-failed">
+            {toUserFacingError(availabilityQ.error, t("software.detail.availabilityFailed"))}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void availabilityQ.refetch()}
+          >
+            {t("common.retry")}
+          </Button>
+        </div>
+      ) : data ? (
+        <div className="grid gap-5 lg:grid-cols-3">
+          <AvailabilityColumn
+            items={data.installedAvailable}
+            title={t("software.detail.installedAvailable")}
+          />
+          <AvailabilityColumn
+            items={data.installableAvailable}
+            title={t("software.detail.installableAvailable")}
+          />
+          <AvailabilityColumn items={data.blocked} title={t("software.detail.blockedNodes")} />
+        </div>
+      ) : (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t("common.loading")}
+        </p>
+      )}
     </DetailSection>
   );
 }
 
 function AvailabilityColumn({
   items,
-  loading,
   title,
 }: {
   items: Array<{ agentId: string; siteName: string; installMode?: string; reasons: string[] }>;
-  loading: boolean;
   title: string;
 }) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const previewCount = 6;
   return (
-    <div className="min-w-0 border-border p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-medium text-foreground">{title}</div>
-        <Badge variant="outline">{items.length}</Badge>
-      </div>
-      {loading ? (
-        <div className="mt-3 text-xs text-muted-foreground">{t("common.loading")}</div>
-      ) : items.length === 0 ? (
-        <div className="mt-3 text-xs text-muted-foreground">{t("software.detail.none")}</div>
+    <div className="min-w-0">
+      <h4 className="flex items-baseline gap-2 border-b border-border pb-2 text-sm font-medium">
+        {title}
+        <span className="font-mono text-xs tabular-nums text-muted-foreground">{items.length}</span>
+      </h4>
+      {items.length === 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">{t("software.detail.none")}</p>
       ) : (
-        <div className="mt-3 grid gap-2">
-          {items.slice(0, 6).map((item) => (
-            <div key={item.agentId} className=" border-border px-3 py-2">
-              <div className="truncate font-mono text-xs font-semibold text-foreground">
-                {item.siteName || item.agentId}
-              </div>
+        <ul className="divide-y divide-border">
+          {(expanded ? items : items.slice(0, previewCount)).map((item) => (
+            <li key={item.agentId} className="min-w-0 space-y-1 py-2 [overflow-wrap:anywhere]">
+              <p className="text-sm font-medium">{item.siteName || item.agentId}</p>
+              {item.siteName && item.siteName !== item.agentId ? (
+                <p className="font-mono text-xs text-muted-foreground">{item.agentId}</p>
+              ) : null}
               {item.installMode ? (
-                <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                  {item.installMode}
-                </div>
+                <p className="text-xs text-muted-foreground">
+                  {t(`cp.software.installMode.${item.installMode}`, {
+                    defaultValue: item.installMode,
+                  })}
+                </p>
               ) : null}
               {item.reasons.length > 0 ? (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {item.reasons.slice(0, 2).map((reason) => (
-                    <Badge
-                      key={reason}
-                      variant={title === t("software.detail.blockedNodes") ? "failed" : "outline"}
-                    >
-                      {softwareAvailabilityReason(reason, t)}
-                    </Badge>
+                <ul className="list-disc space-y-1 ps-4 text-xs">
+                  {[
+                    ...new Set(item.reasons.map((reason) => softwareAvailabilityReason(reason, t))),
+                  ].map((label) => (
+                    <li key={label}>{label}</li>
                   ))}
-                </div>
+                </ul>
               ) : null}
-            </div>
+            </li>
           ))}
-          {items.length > 6 ? (
-            <div className="text-[11px] text-muted-foreground">
-              {t("software.detail.moreNodes", { count: items.length - 6 })}
-            </div>
-          ) : null}
-        </div>
+        </ul>
       )}
+      {items.length > previewCount ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded
+            ? t("software.detail.fewerNodes")
+            : t("software.detail.moreNodes", { count: items.length - previewCount })}
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -835,7 +879,14 @@ function MetadataBadges({
       {items.map((item) => {
         const linkTarget = linkForItem?.(item) ?? null;
         const badge = (
-          <Badge key={item} variant="outline" className={cn(linkTarget && "transition-colors ")}>
+          <Badge
+            key={item}
+            variant="outline"
+            className={cn(
+              "max-w-full [overflow-wrap:anywhere]",
+              linkTarget && "underline underline-offset-2",
+            )}
+          >
             {item}
           </Badge>
         );
@@ -843,6 +894,7 @@ function MetadataBadges({
         return (
           <Link
             key={item}
+            className="min-w-0 max-w-full"
             to="/software/spack/$source/$name"
             params={{ source: linkTarget.source, name: linkTarget.name }}
           >
@@ -865,7 +917,7 @@ function SpackPackageHero({
 }) {
   const { t } = useTranslation();
   return (
-    <section className="grid gap-3 md:grid-cols-[minmax(0,1fr)_360px]">
+    <section className={cn("grid min-w-0 gap-3", metadata && "xl:grid-cols-[minmax(0,1fr)_360px]")}>
       <div className="min-w-0 space-y-4 border-border p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="brand">{pkg.source}</Badge>
@@ -881,35 +933,37 @@ function SpackPackageHero({
             {t("software.detail.installSpec")}
           </div>
           <div className="mt-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-            <code className="min-w-0 flex-1 border-b border-border px-3 py-2 font-mono text-sm text-foreground">
+            <code className="min-w-0 flex-1 border-b border-border px-3 py-2 font-mono text-sm text-foreground [overflow-wrap:anywhere]">
               {installSpec}
             </code>
             <CopySpecButton value={installSpec} />
           </div>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-2">
-        <SpackMetricTile
-          icon={<GitBranch />}
-          label={t("software.detail.versions")}
-          value={metadata?.versions.length ?? 0}
-        />
-        <SpackMetricTile
-          icon={<Puzzle />}
-          label={t("software.detail.variants")}
-          value={metadata?.variants.length ?? 0}
-        />
-        <SpackMetricTile
-          icon={<PackageCheck />}
-          label={t("software.detail.dependencies")}
-          value={metadata?.dependencies.length ?? 0}
-        />
-        <SpackMetricTile
-          icon={<ShieldCheck />}
-          label={t("software.detail.conflicts")}
-          value={metadata?.conflicts.length ?? 0}
-        />
-      </div>
+      {metadata ? (
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-2">
+          <SpackMetricTile
+            icon={<GitBranch />}
+            label={t("software.detail.versions")}
+            value={metadata.versions.length}
+          />
+          <SpackMetricTile
+            icon={<Puzzle />}
+            label={t("software.detail.variants")}
+            value={metadata.variants.length}
+          />
+          <SpackMetricTile
+            icon={<PackageCheck />}
+            label={t("software.detail.dependencies")}
+            value={metadata.dependencies.length}
+          />
+          <SpackMetricTile
+            icon={<ShieldCheck />}
+            label={t("software.detail.conflicts")}
+            value={metadata.conflicts.length}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -949,10 +1003,10 @@ function SpackMetricTile({
   value: number;
 }) {
   return (
-    <div className="min-w-0 border-border p-3">
+    <div className="min-w-0 border-border px-1 py-2 sm:p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{icon}</span>
-        <span className="truncate">{label}</span>
+        <span className="min-w-0 [overflow-wrap:anywhere]">{label}</span>
       </div>
       <div className="mt-2 font-mono text-xl font-semibold text-foreground">{value}</div>
     </div>
@@ -969,18 +1023,31 @@ function SpackMetadataDetail({
   pkg: SpackCatalogPackage;
 }) {
   const { t } = useTranslation();
-  const latestVersions = metadata.versions.slice(0, 12);
-  const hiddenVersionCount = Math.max(0, metadata.versions.length - latestVersions.length);
+  const [showAllVersions, setShowAllVersions] = useState(false);
+  const previewCount = 12;
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-      <div className="grid gap-5">
+    <div className="grid min-w-0 gap-5 [overflow-wrap:anywhere] xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid min-w-0 gap-5">
         <DetailSection title={t("software.detail.versions")}>
           <div className=" border-border p-4">
-            <MetadataBadges items={latestVersions} />
-            {hiddenVersionCount > 0 ? (
-              <div className="mt-3 text-xs text-muted-foreground">
-                {t("software.detail.moreVersions", { count: hiddenVersionCount })}
-              </div>
+            <MetadataBadges
+              items={showAllVersions ? metadata.versions : metadata.versions.slice(0, previewCount)}
+            />
+            {metadata.versions.length > previewCount ? (
+              <Button
+                className="mt-3"
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-expanded={showAllVersions}
+                onClick={() => setShowAllVersions(!showAllVersions)}
+              >
+                {showAllVersions
+                  ? t("software.detail.fewerVersions")
+                  : t("software.detail.moreVersions", {
+                      count: metadata.versions.length - previewCount,
+                    })}
+              </Button>
             ) : null}
           </div>
         </DetailSection>
@@ -999,10 +1066,10 @@ function SpackMetadataDetail({
           <SpackTokenPanel items={metadata.conflicts} title={t("software.detail.conflicts")} />
         </div>
       </div>
-      <aside className="grid content-start gap-3">
+      <aside className="grid min-w-0 content-start gap-3">
         <DetailSection title={t("software.detail.packageIdentity")}>
           <div className="grid gap-3 border-border p-4">
-            <DetailInfoTile label={t("software.manage.packageName")} value={pkg.name} />
+            <DetailInfoTile label={t("software.detail.packageName")} value={pkg.name} />
             <DetailInfoTile label="package.py" value={metadata.name ?? "—"} />
             <DetailInfoTile label={t("software.manage.catalogPackageSource")} value={pkg.source} />
             <DetailInfoTile label={t("software.detail.installSpec")} value={installSpec} />
@@ -1046,7 +1113,11 @@ function SpackVariantPanel({ variants }: { variants: SpackPackageMetadata["varia
                 <span className="font-mono text-xs font-semibold text-foreground">
                   {variant.name}
                 </span>
-                {variant.default ? <Badge variant="brand">default={variant.default}</Badge> : null}
+                {variant.default ? (
+                  <span className="text-xs text-muted-foreground">
+                    {t("software.detail.variantDefault", { value: variant.default })}
+                  </span>
+                ) : null}
               </div>
               {variant.description ? (
                 <div className="text-xs text-muted-foreground">{variant.description}</div>

@@ -471,7 +471,7 @@ function PropertiesForm({
         <FieldRow
           label={t("workflow.editor.properties.body", { defaultValue: "Node body" })}
           hint={t("workflow.editor.properties.bodyHint", {
-            defaultValue: "Edit the full node body in the YAML pane",
+            defaultValue: "Edit the node definition in a workflow YAML file, then import the file.",
           })}
         >
           <pre
@@ -641,7 +641,7 @@ function UsecaseFields({ id, raw, onPatch, usecases, catalogState }: UsecaseFiel
       <FieldRow
         label={t("workflow.editor.properties.inputSlots", { defaultValue: "Input slots" })}
         hint={t("workflow.editor.properties.inputSlotsHint", {
-          defaultValue: "Slot binding is edited in the YAML pane for now",
+          defaultValue: "Connect nodes to map their output and input slots",
         })}
       >
         <pre
@@ -656,7 +656,7 @@ function UsecaseFields({ id, raw, onPatch, usecases, catalogState }: UsecaseFiel
       <FieldRow
         label={t("workflow.editor.properties.bodyExtra", { defaultValue: "Other fields" })}
         hint={t("workflow.editor.properties.bodyExtraHint", {
-          defaultValue: "Scheduling strategy and slot wiring are edited in the YAML pane",
+          defaultValue: "Fine-tune scheduling and slot mappings in YAML",
         })}
       >
         <pre
@@ -708,32 +708,61 @@ function ScriptFields({ id, raw, onPatch, runtimes, catalogState }: ScriptFields
         label={t("workflow.editor.properties.scriptSource", { defaultValue: "Script source" })}
         testId="rf-prop-script-kind-row"
       >
-        <NativeSelect
-          data-testid="rf-prop-script-source"
-          className="text-xs"
-          value={source?.type ?? "AssetRevision"}
-          disabled
-        >
-          <option value="Inline">{t("workflow.editor.properties.sourceInline")}</option>
-          <option value="AssetRevision">
-            {t("workflow.editor.properties.sourceAssetRevision")}
-          </option>
-        </NativeSelect>
+        <div data-testid="rf-prop-script-source" className="text-sm [overflow-wrap:anywhere]">
+          {source?.type === "AssetRevision" ? (
+            <details data-testid="rf-prop-pinned-source">
+              <summary className="cursor-pointer">
+                {t("workflow.editor.nodeDetails.assetScript", { revision: source.revision })}
+              </summary>
+              <dl className="mt-2 grid gap-2 text-xs">
+                <div>
+                  <dt className="text-muted-foreground">
+                    {t("workflow.editor.properties.scriptAssetId")}
+                  </dt>
+                  <dd className="select-all font-mono">{source.assetId}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">SHA-256</dt>
+                  <dd className="select-all font-mono">{source.sha256}</dd>
+                </div>
+              </dl>
+            </details>
+          ) : raw.scriptRef ? (
+            <p className="font-mono text-xs">
+              {raw.scriptRef.source} / {raw.scriptRef.name}@{raw.scriptRef.version}
+              {raw.scriptRef.providerOrgId ? ` · ${raw.scriptRef.providerOrgId}` : ""}
+            </p>
+          ) : inline ? (
+            t("workflow.editor.properties.sourceInline")
+          ) : (
+            "—"
+          )}
+        </div>
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.scriptRuntime", { defaultValue: "Runtime profile" })}
-        hint={t("workflow.editor.properties.scriptOriginHint", {
-          defaultValue: "Platform-managed, digest-pinned runtime profile",
-        })}
+        hint={
+          raw.runtimeContractRef
+            ? undefined
+            : t("workflow.editor.properties.scriptOriginHint", {
+                defaultValue: "Platform-managed, digest-pinned runtime profile",
+              })
+        }
       >
-        {runtimes ? (
+        {raw.runtimeContractRef ? (
+          <p
+            data-testid="rf-prop-script-contract"
+            className="select-all font-mono text-xs [overflow-wrap:anywhere]"
+          >
+            {raw.runtimeContractRef.name}@{raw.runtimeContractRef.version}
+          </p>
+        ) : runtimes ? (
           <ResourceSelect
             label={t("workflow.editor.properties.scriptRuntime")}
             data-testid="rf-prop-script-runtime-select"
             {...catalogState}
             options={runtimes}
             value={runtimeProfileId}
-            disabled={raw.runtimeContractRef !== undefined}
             recent
             resourceType="workflow-runtime"
             expandable
@@ -746,7 +775,6 @@ function ScriptFields({ id, raw, onPatch, runtimes, catalogState }: ScriptFields
           <Input
             data-testid="rf-prop-script-runtime"
             value={runtimeProfileId}
-            disabled={raw.runtimeContractRef !== undefined}
             className="font-mono text-[11px]"
             onChange={(event) => setRuntimeProfileId(event.target.value)}
             onBlur={commitRuntimeProfileId}
@@ -757,9 +785,12 @@ function ScriptFields({ id, raw, onPatch, runtimes, catalogState }: ScriptFields
         label={t("workflow.editor.properties.scriptIdentity", {
           defaultValue: "Execution identity",
         })}
-        hint={t("workflow.editor.properties.scriptIdentityHint", {
-          defaultValue: "Inline scripts always use a mapped cluster account",
-        })}
+        hint={
+          inline &&
+          t("workflow.editor.properties.scriptIdentityHint", {
+            defaultValue: "Inline scripts always use a mapped cluster account",
+          })
+        }
       >
         <Input
           data-testid="rf-prop-script-identity"
@@ -796,7 +827,7 @@ function ScriptFields({ id, raw, onPatch, runtimes, catalogState }: ScriptFields
       <FieldRow
         label={t("workflow.editor.properties.manifest")}
         hint={t("workflow.editor.properties.scriptBodyExtraHint", {
-          defaultValue: "Input/output paths and slot wiring are edited in the YAML pane",
+          defaultValue: "Declared input paths, output paths and persistence requirements",
         })}
       >
         <ManifestSummary raw={raw} />
@@ -870,13 +901,14 @@ function MilestoneFields({ id, raw, onPatch }: MilestoneFieldsProps) {
 const PRE_CLASS = "max-h-48 overflow-auto px-3 py-1 font-mono text-[11px]";
 
 /** Read-only block for nested sub-graph bodies / complex rules authored in YAML. */
-function ReadOnlyBody({ value }: { value: unknown }) {
+function ReadOnlyBody({ value }: { value: Record<string, unknown> }) {
   const { t } = useTranslation();
+  if (Object.values(value).every((item) => item === undefined)) return null;
   return (
     <FieldRow
       label={t("workflow.editor.properties.bodyExtra", { defaultValue: "Other fields" })}
       hint={t("workflow.editor.properties.controlFlowBodyHint", {
-        defaultValue: "Nested bodies and complex rules are edited in the YAML pane",
+        defaultValue: "Edit nested steps and rules in the workflow YAML file, then import it.",
       })}
     >
       <pre data-testid="rf-prop-body" className={PRE_CLASS}>
@@ -968,7 +1000,7 @@ function SwitchFields({ id, raw, onPatch, nodes }: SwitchFieldsProps) {
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setCaseWhen(index, e.target.value)}
                 onBlur={() => commitCaseField(index)}
               />
-              <div className="flex items-center gap-2">
+              <div className="grid min-w-0 gap-1">
                 {nodes ? (
                   <ResourceSelect
                     label={t("workflow.editor.properties.switchCases")}
@@ -1004,6 +1036,7 @@ function SwitchFields({ id, raw, onPatch, nodes }: SwitchFieldsProps) {
                     type="button"
                     variant="ghost"
                     size="sm"
+                    className="justify-self-end"
                     data-testid={`rf-prop-switch-remove-case-${index}`}
                     onClick={() => removeCase(index)}
                   >
@@ -1203,7 +1236,7 @@ function LoopFields({ id, raw, onPatch }: LoopFieldsProps) {
           value={raw.onExhausted ?? ""}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOnExhausted(e.target.value)}
         >
-          <option value="">(default)</option>
+          <option value="">{t("workflow.editor.properties.defaultOption")}</option>
           <option value="Fail">Fail</option>
           <option value="SucceedWithLast">SucceedWithLast</option>
         </NativeSelect>
@@ -1348,7 +1381,7 @@ function ReduceFields({ id, raw, onPatch, nodes }: ReduceFieldsProps) {
           value={raw.ordering ?? ""}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOrdering(e.target.value)}
         >
-          <option value="">(default)</option>
+          <option value="">{t("workflow.editor.properties.defaultOption")}</option>
           <option value="ByIndex">ByIndex</option>
           <option value="Unordered">Unordered</option>
         </NativeSelect>
@@ -1480,7 +1513,7 @@ function SubWorkflowFields({ id, raw, onPatch }: SubWorkflowFieldsProps) {
             defaultValue: "Inline body",
           })}
           hint={t("workflow.editor.properties.subworkflowInlineBodyHint", {
-            defaultValue: "The embedded workflow body is edited in the YAML pane",
+            defaultValue: "Edit the embedded workflow in the YAML file, then import it.",
           })}
         >
           <pre data-testid="rf-prop-subworkflow-body" className={PRE_CLASS}>
@@ -1510,7 +1543,7 @@ function SubWorkflowFields({ id, raw, onPatch }: SubWorkflowFieldsProps) {
           value={raw.onDepthExceeded ?? ""}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOnDepthExceeded(e.target.value)}
         >
-          <option value="">(default)</option>
+          <option value="">{t("workflow.editor.properties.defaultOption")}</option>
           <option value="Fail">Fail</option>
           <option value="SucceedWithLast">SucceedWithLast</option>
         </NativeSelect>

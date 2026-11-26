@@ -101,7 +101,7 @@ describe("JobDetailSheet error UI", () => {
     expect(screen.queryByTestId("job-detail-error")).toBeNull();
   });
 
-  test("renders successful job detail with truncation-safe title and resource tab", async () => {
+  test("renders the full job title above its details", async () => {
     const jobId = "867d9e1e-c725-4a09-b258-e6073e0c75b7";
     const longName =
       "mock-bash-batch-multischeduler-smoke-run-with-a-very-long-human-readable-name";
@@ -137,8 +137,8 @@ describe("JobDetailSheet error UI", () => {
     });
 
     const title = await screen.findByRole("heading", { name: longName });
-    expect(title.className).toContain("truncate");
-    expect(title.getAttribute("title")).toBe(longName);
+    expect(title.className).toContain("[overflow-wrap:anywhere]");
+    expect(title.className).not.toContain("truncate");
     expect(await screen.findByTestId("job-overview-tab")).toBeTruthy();
   });
 

@@ -11,6 +11,8 @@ import { Button } from "../ui/button";
 
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 
+import { basenameFromPath, fmtBytes } from "./path-picker-utils";
+
 type Filter = "ACTIVE" | "FAILED" | "COMPLETED" | "ALL";
 
 const TRANSFER_ERROR_KEYS: Record<string, string> = {
@@ -24,8 +26,8 @@ const TRANSFER_ERROR_KEYS: Record<string, string> = {
   NETDRIVE_SOURCE_PATH_AMBIGUOUS: "files.transfers.error.invalidFileReferenceKind",
   TRANSFER_INTERRUPTED_BY_SERVER_RESTART: "files.transfers.error.interruptedByServerRestart",
   TRANSFER_PATH_OUTSIDE_ALLOWED_ROOT: "files.transfers.error.transferPathOutsideAllowedRoot",
-  TRANSFER_ROOT_AUTHORIZATION_REVOKED: "files.transfers.error.rootAuthorizationRevoked",
-  TRANSFER_ROOT_AUTHORIZATION_UNAVAILABLE: "files.transfers.error.rootAuthorizationUnavailable",
+  TRANSFER_ROOT_AUTHORIZATION_REVOKED: "files.transfer.error.rootAuthorizationRevoked",
+  TRANSFER_ROOT_AUTHORIZATION_UNAVAILABLE: "files.transfer.error.rootAuthorizationUnavailable",
 };
 
 export interface TransfersTrayProps {
@@ -46,18 +48,6 @@ const STATE_DOT: Record<string, string> = {
   failed: "bg-[var(--status-failed)]",
   cancelled: "bg-[var(--status-cancelled)]",
 };
-
-function fmtBytes(b: number | null | undefined): string {
-  if (b == null || b === 0) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let v = b;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
-}
 
 export function TransfersTray({
   transfers,
@@ -98,7 +88,8 @@ export function TransfersTray({
     }
   };
 
-  const verifiedTransfers = loadError || isLoading ? [] : transfers;
+  const countsAvailable = !loadError && !isLoading;
+  const verifiedTransfers = countsAvailable ? transfers : [];
   const counts = {
     ACTIVE: verifiedTransfers.filter((t) => t.state === "running" || t.state === "queued").length,
     FAILED: verifiedTransfers.filter((t) => t.state === "failed").length,
@@ -144,7 +135,8 @@ export function TransfersTray({
               data-testid={`files-transfers-filter-${f.toLowerCase()}`}
               className="min-h-11 px-2 text-xs sm:min-h-0"
             >
-              {filterLabel(f, t)} ({counts[f]})
+              {filterLabel(f, t)}
+              {countsAvailable ? ` (${counts[f]})` : ""}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
@@ -192,6 +184,7 @@ export function TransfersTray({
             {orderedVisible.map((transfer) => {
               const cancelActionKey = `cancel:${transfer.id}`;
               const retryActionKey = `retry:${transfer.id}`;
+              const fileName = basenameFromPath(transfer.source) || transfer.source;
               const cancelling = pendingActions.has(cancelActionKey);
               const retrying = pendingActions.has(retryActionKey);
               return (
@@ -199,20 +192,20 @@ export function TransfersTray({
                   key={transfer.id}
                   data-testid={`files-transfer-${transfer.id}`}
                   className={cn(
-                    transfer.id === highlightTransferId ? "kq-motion kq-motion--item" : "",
                     "space-y-1 px-3 py-2 text-xs",
-                    transfer.id === highlightTransferId ? "" : "",
+                    transfer.id === highlightTransferId &&
+                      "kq-motion kq-motion--item bg-brand-soft",
                   )}
                   data-state={transfer.id === highlightTransferId ? "open" : undefined}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="flex min-w-0 flex-wrap items-center gap-1.5">
                       {transfer.state === "succeeded" ? (
                         <CheckCircle2 className="h-3 w-3 text-[var(--status-succeeded)]" />
                       ) : (
                         <span className={cn("h-1.5 w-1.5 shrink-0 ", STATE_DOT[transfer.state])} />
                       )}
-                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+                      <span className="text-xs font-medium">
                         {t(`files.transfers.state.${transfer.state}`)}
                       </span>
                       {isInterruptedTransfer(transfer) ? (
@@ -245,7 +238,7 @@ export function TransfersTray({
                         variant="ghost"
                         size="icon"
                         className="min-h-11 min-w-11 sm:min-h-9 sm:min-w-9"
-                        aria-label={t("files.transfers.cancel")}
+                        aria-label={`${t("files.transfers.cancel")} · ${transfer.source} → ${transfer.target}`}
                         data-testid={`files-transfer-cancel-${transfer.id}`}
                         disabled={cancelling}
                         onClick={() =>
@@ -264,7 +257,7 @@ export function TransfersTray({
                         variant="ghost"
                         size="icon"
                         className="min-h-11 min-w-11 sm:min-h-9 sm:min-w-9"
-                        aria-label={t("files.transfers.retry")}
+                        aria-label={`${t("files.transfers.retry")} · ${transfer.source} → ${transfer.target}`}
                         data-testid={`files-transfer-retry-${transfer.id}`}
                         disabled={retrying}
                         onClick={() =>
@@ -290,34 +283,39 @@ export function TransfersTray({
                       </Button>
                     ) : null}
                   </div>
-                  <div
-                    className="truncate font-mono text-[11px]"
-                    title={`${transfer.source} → ${transfer.target}`}
-                  >
-                    {transfer.source} → {transfer.target}
-                  </div>
-                  {transfer.totalBytes != null ? (
-                    <div className="h-1 overflow-hidden ">
-                      <div
-                        className="h-full "
-                        style={{
-                          width: `${
-                            transfer.totalBytes > 0
-                              ? Math.min(
-                                  100,
-                                  Math.round((transfer.copiedBytes / transfer.totalBytes) * 100),
-                                )
-                              : 0
-                          }%`,
-                        }}
-                      />
-                    </div>
+                  <details>
+                    <summary className="cursor-pointer rounded-sm py-1 text-sm font-medium [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-ring">
+                      {fileName}
+                    </summary>
+                    <dl className="my-1 grid gap-1 border-l border-border pl-3">
+                      <div>
+                        <dt className="text-muted-foreground">{t("files.transfer.source")}</dt>
+                        <dd className="font-mono [overflow-wrap:anywhere]">{transfer.source}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">{t("files.transfer.targetPath")}</dt>
+                        <dd className="font-mono [overflow-wrap:anywhere]">{transfer.target}</dd>
+                      </div>
+                    </dl>
+                  </details>
+                  {transfer.totalBytes != null && transfer.totalBytes > 0 ? (
+                    <progress
+                      className={cn(
+                        "kq-transfer-progress h-1.5 w-full",
+                        transfer.state === "running"
+                          ? "text-status-running"
+                          : "text-muted-foreground",
+                      )}
+                      value={Math.min(transfer.copiedBytes, transfer.totalBytes)}
+                      max={transfer.totalBytes}
+                      aria-label={t("files.transfers.progress", { name: fileName })}
+                    />
                   ) : null}
-                  <div className="flex justify-between font-mono text-[10px] text-muted-foreground tabular-nums">
+                  <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
                     <span>
                       {fmtBytes(transfer.copiedBytes)} / {fmtBytes(transfer.totalBytes)}
                     </span>
-                    <span title={transfer.startedAt ?? undefined}>
+                    <span title={transfer.finishedAt ?? transfer.startedAt ?? undefined}>
                       {transfer.finishedAt
                         ? t("files.transfers.finishedAt", {
                             time: relativeFromNow(transfer.finishedAt, undefined, language),
@@ -330,7 +328,7 @@ export function TransfersTray({
                     </span>
                   </div>
                   {transfer.error ? (
-                    <div className="text-[10px] text-status-failed">
+                    <div className="text-xs text-status-failed">
                       {formatTransferError(transfer.error, t)}
                     </div>
                   ) : null}
@@ -349,7 +347,7 @@ export function TransfersTray({
         )}
       </div>
 
-      {!embedded ? (
+      {!embedded && countsAvailable ? (
         <div className=" border-border px-3 py-2 text-[11px] text-muted-foreground">
           <span className="font-mono tabular-nums">
             {t("files.transfers.totalActive", {

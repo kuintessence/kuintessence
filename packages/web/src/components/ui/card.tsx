@@ -35,7 +35,7 @@ export const CardTitle = forwardRef<HTMLHeadingElement, HTMLAttributes<HTMLHeadi
   ({ className, ...props }, ref) => (
     <h3
       ref={ref}
-      className={cn("text-sm font-medium text-muted-foreground", className)}
+      className={cn("break-words text-base font-semibold text-card-foreground", className)}
       {...props}
     />
   ),

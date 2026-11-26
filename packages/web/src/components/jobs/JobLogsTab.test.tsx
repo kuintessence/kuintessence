@@ -155,5 +155,14 @@ test("clears the previous job's terminal while the next job is loading", async (
   await waitFor(() => expect(terminal.buffers.at(-1)?.text).toBe("private old logs\n"));
   apiClient.api.get.mockImplementation(() => new Promise(() => {}));
   rerender(<JobLogsTab jobId="job-2" />);
-  await waitFor(() => expect(terminal.buffers.at(-1)?.text).toBe(""));
+  await screen.findByText("jobs.logs.connecting");
+  expect(screen.queryByTestId("job-logs-terminal")).toBeNull();
+});
+
+test("distinguishes an empty log from a pending request", async () => {
+  apiClient.api.get.mockResolvedValue({ text: "" });
+  render(<JobLogsTab jobId="job-1" />, { wrapper: Wrapper });
+  expect(await screen.findByText("jobs.logs.empty")).toBeTruthy();
+  expect(screen.queryByText("jobs.logs.connecting")).toBeNull();
+  expect(screen.queryByTestId("job-logs-terminal")).toBeNull();
 });

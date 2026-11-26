@@ -430,7 +430,7 @@ describe("TransfersTray", () => {
 
     fireEvent.click(screen.getByTestId("files-transfers-filter-failed"));
 
-    expect(await screen.findByText("files.transfers.error.rootAuthorizationRevoked")).toBeTruthy();
+    expect(await screen.findByText("files.transfer.error.rootAuthorizationRevoked")).toBeTruthy();
     expect(screen.queryByTestId("files-transfer-retry-transfer-1")).toBeNull();
   });
 
@@ -561,7 +561,9 @@ describe("transfer list freshness and accessibility", () => {
     expect(screen.queryByTestId("files-transfer-transfer-1")).toBeNull();
     expect(screen.queryByTestId("files-transfer-cancel-transfer-1")).toBeNull();
     expect(screen.queryByTestId("files-transfer-retry-transfer-1")).toBeNull();
-    expect(screen.getByTestId("files-transfers-filter-all").textContent).toContain("(0)");
+    expect(screen.getByTestId("files-transfers-filter-all").textContent).toBe(
+      "files.transfers.all",
+    );
     rerender(<TransfersTray {...props} />);
     expect(screen.getByTestId("files-transfer-transfer-1")).toBeTruthy();
   });
@@ -578,6 +580,21 @@ describe("transfer list freshness and accessibility", () => {
     expect(screen.getByTestId("files-transfers-filter-failed").getAttribute("aria-checked")).toBe(
       "true",
     );
+  });
+
+  test("shows progress only for a positive total and keeps zero-byte files identifiable", () => {
+    const transfer: Transfer = { ...baseTransfer, direction: "cluster_to_cloud", state: "running" };
+    const { rerender } = render(<TransfersTray transfers={[transfer]} onChanged={vi.fn()} />);
+    const progress = screen.getByRole("progressbar") as HTMLProgressElement;
+    expect(progress.value).toBe(0);
+    expect(progress.max).toBe(1);
+    for (const totalBytes of [0, null]) {
+      rerender(<TransfersTray transfers={[{ ...transfer, totalBytes }]} onChanged={vi.fn()} />);
+      expect(screen.queryByRole("progressbar")).toBeNull();
+      expect(screen.getByTestId("files-transfer-transfer-1").textContent).toContain(
+        totalBytes === 0 ? "0 B / 0 B" : "0 B / -",
+      );
+    }
   });
 
   test("formats transfer timestamps in the current UI language", () => {

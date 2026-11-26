@@ -24,8 +24,8 @@ export function WorkflowCreationStepper({
     <nav
       aria-label={t("workflows.creation.stepsLabel")}
       className={cn(
-        "grid grid-cols-2 overflow-hidden sm:grid-cols-4",
-        embedded ? " border-border" : " border-b border-border ",
+        "mt-3 grid grid-cols-2 overflow-hidden sm:grid-cols-4",
+        !embedded && "border-b border-border",
       )}
       data-testid="workflow-creation-steps"
     >
@@ -40,22 +40,23 @@ export function WorkflowCreationStepper({
             disabled={blocked}
             onClick={() => onChange(step)}
             className={cn(
-              "flex min-w-0 items-center gap-2 border-border px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 ",
-              active ? " text-brand" : "",
-              blocked && "cursor-not-allowed opacity-55 ",
+              "flex min-w-0 items-center gap-2 border-b-2 border-transparent px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 ",
+              active && "border-brand text-brand font-semibold",
+              blocked && "cursor-not-allowed",
+              blocked && !active && "text-muted-foreground",
             )}
             data-testid={`workflow-step-${step}`}
           >
             <span
               className={cn(
                 "flex h-7 w-7 shrink-0 items-center justify-center text-xs font-semibold",
-                active || complete ? " text-white" : "border-border text-muted-foreground",
+                active || complete ? "text-brand" : "text-muted-foreground",
               )}
             >
               {complete ? <Check className="h-4 w-4" /> : index + 1}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-medium">
+              <span className="block truncate text-sm">
                 {t(`workflows.creation.steps.${step}.title`)}
               </span>
             </span>

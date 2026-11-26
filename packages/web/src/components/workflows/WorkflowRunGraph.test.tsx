@@ -61,7 +61,9 @@ vi.mock("@xyflow/react", () => {
     Controls,
     Handle: () => React.createElement("span"),
     MarkerType: { ArrowClosed: "arrowclosed" },
-    Position: { Left: "left", Right: "right" },
+    Position: { Left: "left", Right: "right", Top: "top", Bottom: "bottom" },
+    useReactFlow: () => ({ fitView: vi.fn() }),
+    useStore: () => 0,
   };
 });
 

@@ -20,14 +20,14 @@ export function JobResourcesTab({ job, loading }: JobResourcesTabProps) {
   const r = job.resources ?? {};
   return (
     <div className="space-y-3" data-testid="job-resources-tab">
-      <div className="grid gap-3 text-sm sm:grid-cols-2">
-        <div className=" border-border p-3">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,8rem),1fr))] gap-3 text-sm">
+        <div className="min-w-0">
           <div className="text-xs uppercase text-muted-foreground">
             {t("jobs.resources.cpu", { defaultValue: "CPU" })}
           </div>
           <div className="mt-1 text-2xl font-semibold tabular-nums">{r.cpus ?? "—"}</div>
         </div>
-        <div className=" border-border p-3">
+        <div className="min-w-0">
           <div className="text-xs uppercase text-muted-foreground">
             {t("jobs.resources.memory", { defaultValue: "Memory" })}
           </div>

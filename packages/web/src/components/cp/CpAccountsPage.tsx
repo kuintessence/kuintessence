@@ -81,7 +81,9 @@ export function CpAccountsPage() {
     <div className="space-y-4" data-testid="cp-accounts-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.accounts.title")}</h2>
+          <h1 className="break-words text-2xl font-semibold tracking-tight">
+            {t("cp.accounts.title")}
+          </h1>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void accountsQuery.refetch()}>
@@ -298,12 +300,12 @@ function Summary({
   value: number | string;
 }) {
   return (
-    <div className="flex items-center justify-between p-3">
-      <div>
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
-      </div>
-      <Icon className="h-4 w-4 text-muted-foreground" />
-    </div>
+    <dl className="flex min-w-0 flex-col gap-1 px-1 py-3 sm:px-3">
+      <dt className="flex flex-1 items-start justify-between gap-2 text-xs text-muted-foreground">
+        {label}
+        <Icon className="hidden size-4 shrink-0 sm:block" aria-hidden="true" />
+      </dt>
+      <dd className="text-xl font-semibold tabular-nums">{value}</dd>
+    </dl>
   );
 }

@@ -31,7 +31,6 @@ interface JobResponse {
 }
 
 interface ImportedJob {
-  fileName: string;
   job: JobSubmit;
   removedSourceUrls: boolean;
 }
@@ -80,8 +79,8 @@ function sanitizeImportedJob(job: JobSubmit): Pick<ImportedJob, "job" | "removed
 
 const BASIC_REVIEW_FIELDS = new Set(["name", "command", "resources", "schedulingStrategy"]);
 
-function advancedFieldNames(job: JobSubmit): string[] {
-  return Object.keys(job).filter((field) => !BASIC_REVIEW_FIELDS.has(field));
+function advancedFieldsOf(job: JobSubmit) {
+  return Object.entries(job).filter(([field]) => !BASIC_REVIEW_FIELDS.has(field));
 }
 
 export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJobJsonDialogProps) {
@@ -91,6 +90,8 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
   const selectionRevisionRef = useRef(0);
   const activeOrganizationId = useActiveOrganizationId();
   const [importedJob, setImportedJob] = useState<ImportedJob | null>(null);
+  const [fileName, setFileName] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const queuesQuery = useQuery({
@@ -103,6 +104,8 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
   const reset = () => {
     selectionRevisionRef.current += 1;
     setImportedJob(null);
+    setFileName("");
+    setSubmitError(null);
     setError(null);
     setSubmitting(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -112,6 +115,8 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
     if (!open) {
       selectionRevisionRef.current += 1;
       setImportedJob(null);
+      setFileName("");
+      setSubmitError(null);
       setError(null);
       setSubmitting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -130,6 +135,8 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
     const selectionRevision = selectionRevisionRef.current + 1;
     selectionRevisionRef.current = selectionRevision;
 
+    setFileName(file.name);
+    setSubmitError(null);
     setError(null);
     setImportedJob(null);
     let content: string;
@@ -161,33 +168,12 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
       return;
     }
     const sanitized = sanitizeImportedJob(result.data);
-    setImportedJob({ fileName: file.name, ...sanitized });
+    setImportedJob(sanitized);
   };
 
   const submit = async () => {
-    if (!importedJob) return;
-    const queueId = importedJob.job.schedulingStrategy?.queueId;
-    const selectedQueue = queueId
-      ? (queuesQuery.data ?? []).find((queue) => queue.queueId === queueId)
-      : null;
-    if (queueId && (queuesQuery.isLoading || queuesQuery.error || !selectedQueue)) {
-      setError(
-        t("jobs.importJson.queueUnavailable", {
-          defaultValue:
-            "The imported queue target is unavailable. Choose a valid target before confirming.",
-        }),
-      );
-      return;
-    }
-    if (selectedQueue && queueEligibility(selectedQueue).state === "blocked") {
-      setError(
-        t("jobs.importJson.queueBlocked", {
-          defaultValue:
-            "The imported queue target cannot be submitted in the current organization.",
-        }),
-      );
-      return;
-    }
+    if (!importedJob || submitting || checkingQueue || importedQueueBlocked) return;
+    setSubmitError(null);
     setSubmitting(true);
     try {
       const response = await api.post<JobResponse>("/jobs", importedJob.job);
@@ -198,12 +184,9 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
       ]);
       onImported?.(response);
       close();
-    } catch (submitError) {
-      toast.error(
-        toUserFacingError(
-          submitError,
-          t("jobs.submitFailed", { defaultValue: "Failed to submit job" }),
-        ),
+    } catch (cause) {
+      setSubmitError(
+        toUserFacingError(cause, t("jobs.submitFailed", { defaultValue: "Failed to submit job" })),
       );
     } finally {
       setSubmitting(false);
@@ -222,7 +205,8 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
     (Boolean(queuesQuery.error) ||
       (!queuesQuery.isLoading && !importedQueue) ||
       importedQueueEligibility?.state === "blocked");
-  const advancedFields = job ? advancedFieldNames(job) : [];
+  const checkingQueue = Boolean(importedQueueId) && queuesQuery.isFetching;
+  const advancedFields = job ? advancedFieldsOf(job) : [];
 
   return (
     <Dialog
@@ -233,10 +217,7 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
         else close();
       }}
     >
-      <DialogContent
-        data-testid="import-job-json-dialog"
-        outsideDismissPolicy={submitting ? "never" : "always"}
-      >
+      <DialogContent data-testid="import-job-json-dialog" dismissible={!submitting}>
         <DialogHeader>
           <DialogTitle>
             {t("jobs.importJson.title", { defaultValue: "Import job JSON" })}
@@ -250,60 +231,61 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
         <DialogBody className="space-y-4">
           <input
             ref={fileInputRef}
-            className="sr-only"
+            className="hidden"
             type="file"
             accept="application/json,.json"
             onChange={onFileChange}
             data-testid="import-job-json-file"
             aria-label={t("jobs.importJson.fileLabel", { defaultValue: "Choose JSON file" })}
           />
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={submitting}
-            data-testid="import-job-json-choose"
-          >
-            <Upload />
-            {t(importedJob ? "jobs.importJson.replace" : "jobs.importJson.choose", {
-              defaultValue: importedJob ? "Replace file" : "Choose JSON file",
-            })}
-          </Button>
-
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <Button
+              type="button"
+              variant={fileName ? "outline" : "default"}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={submitting}
+              data-testid="import-job-json-choose"
+            >
+              <Upload />
+              {t(fileName ? "jobs.importJson.replace" : "jobs.importJson.choose", {
+                defaultValue: fileName ? "Replace file" : "Choose JSON file",
+              })}
+            </Button>
+            {fileName ? (
+              <div className="flex min-w-0 items-start gap-1.5 text-sm text-muted-foreground">
+                <FileJson className="mt-0.5 size-4 shrink-0" />
+                <span className="[overflow-wrap:anywhere]">{fileName}</span>
+              </div>
+            ) : null}
+          </div>
+          {fileName && !importedJob && !error ? (
+            <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              {t("jobs.importJson.reading")}
+            </p>
+          ) : null}
           {error ? (
-            <div
+            <p
               role="alert"
-              className=" px-3 py-2 text-sm text-status-failed"
+              className="text-sm text-status-failed [overflow-wrap:anywhere]"
               data-testid="import-job-json-error"
             >
               {error}
-            </div>
+            </p>
           ) : null}
 
           {importedJob && job ? (
-            <div className="space-y-3 border-border p-3" data-testid="import-job-json-preview">
-              <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
-                <FileJson className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="truncate" title={importedJob.fileName}>
-                  {importedJob.fileName}
-                </span>
-              </div>
-              <div className="text-xs font-medium uppercase text-muted-foreground">
-                {t("jobs.importJson.review", { defaultValue: "Review before submitting" })}
-              </div>
+            <section
+              className="space-y-4 border-t border-border pt-4"
+              data-testid="import-job-json-preview"
+            >
+              <h3
+                className="text-base font-semibold [overflow-wrap:anywhere]"
+                data-testid="import-job-json-name"
+              >
+                {job.name}
+              </h3>
               <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                <div className="min-w-0">
-                  <dt className="text-xs text-muted-foreground">{t("jobs.nameLabel")}</dt>
-                  <dd className="truncate font-medium" data-testid="import-job-json-name">
-                    {job.name}
-                  </dd>
-                </div>
-                <div className="min-w-0">
-                  <dt className="text-xs text-muted-foreground">{t("jobs.commandLabel")}</dt>
-                  <dd className="truncate font-mono text-xs" data-testid="import-job-json-command">
-                    {job.command}
-                  </dd>
-                </div>
                 <div>
                   <dt className="text-xs text-muted-foreground">
                     {t("jobs.importJson.resources", { defaultValue: "Resources" })}
@@ -311,58 +293,85 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
                   <dd data-testid="import-job-json-resources">
                     {job.resources.cpus} CPU · {job.resources.memoryMb} MiB
                     {job.resources.gpus ? ` · ${job.resources.gpus} GPU` : ""}
+                    {job.resources.wallTimeSec ? (
+                      <div>
+                        {t("jobs.importJson.wallTime", { count: job.resources.wallTimeSec })}
+                      </div>
+                    ) : null}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-xs text-muted-foreground">
                     {t("jobs.queueLabel", { defaultValue: "Queue" })}
                   </dt>
-                  <dd data-testid="import-job-json-queue">
+                  <dd className="[overflow-wrap:anywhere]" data-testid="import-job-json-queue">
                     {queue ?? t("jobs.queueAuto", { defaultValue: "Auto placement" })}
+                  </dd>
+                  {importedQueueId ? (
+                    <dd className="mt-1 text-sm" data-testid="import-job-json-queue-validation">
+                      {checkingQueue ? (
+                        <span role="status" className="text-muted-foreground">
+                          {t("jobs.importJson.queueChecking")}
+                        </span>
+                      ) : queuesQuery.isError ? (
+                        <>
+                          <p role="alert" className="text-status-failed">
+                            {t("jobs.importJson.queueLoadFailed")}
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2"
+                            onClick={() => void queuesQuery.refetch()}
+                          >
+                            {t("common.retry")}
+                          </Button>
+                        </>
+                      ) : importedQueueBlocked ? (
+                        <span role="alert" className="text-status-failed">
+                          {t(
+                            importedQueue
+                              ? "jobs.importJson.queueBlocked"
+                              : "jobs.importJson.queueUnavailable",
+                          )}
+                        </span>
+                      ) : importedQueueEligibility?.state === "warning" ? (
+                        <span className="text-status-warning">
+                          {t("jobs.importJson.queueWarning")}
+                        </span>
+                      ) : null}
+                    </dd>
+                  ) : null}
+                </div>
+                <div className="min-w-0 sm:col-span-2">
+                  <dt className="text-xs text-muted-foreground">{t("jobs.commandLabel")}</dt>
+                  <dd
+                    className="max-h-32 overflow-y-auto whitespace-pre-wrap font-mono text-xs leading-5 [overflow-wrap:anywhere]"
+                    data-testid="import-job-json-command"
+                  >
+                    {job.command}
                   </dd>
                 </div>
               </dl>
-              {importedQueueId ? (
-                <div className="text-xs" data-testid="import-job-json-queue-validation">
-                  {queuesQuery.isLoading ? (
-                    <span className="text-muted-foreground">
-                      {t("jobs.importJson.queueChecking", {
-                        defaultValue: "Checking queue target...",
-                      })}
-                    </span>
-                  ) : importedQueueBlocked ? (
-                    <span className="text-status-failed" role="alert">
-                      {t("jobs.importJson.queueUnavailable", {
-                        defaultValue:
-                          "The imported queue target is unavailable. Confirming this import is blocked.",
-                      })}
-                    </span>
-                  ) : importedQueueEligibility?.state === "warning" ? (
-                    <span className="text-muted-foreground">
-                      {t("jobs.importJson.queueWarning", {
-                        defaultValue:
-                          "The queue target has a warning and will be checked again before submit.",
-                      })}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
               {advancedFields.length > 0 ? (
-                <div className="space-y-2" data-testid="import-job-json-advanced-fields">
-                  <div className="text-xs font-medium text-muted-foreground">
-                    {t("jobs.importJson.advancedFields", {
-                      count: advancedFields.length,
-                      defaultValue: `${advancedFields.length} advanced configuration fields`,
-                    })}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {advancedFields.map((field) => (
-                      <code key={field} className="border-b border-border px-1.5 py-1 text-[11px]">
-                        {field}
-                      </code>
+                <details
+                  className="border-t border-border pt-2"
+                  data-testid="import-job-json-advanced-fields"
+                >
+                  <summary className="cursor-pointer py-1 text-sm font-medium">
+                    {t("jobs.importJson.advancedFields", { count: advancedFields.length })}
+                  </summary>
+                  <dl className="mt-2 space-y-3">
+                    {advancedFields.map(([field, value]) => (
+                      <div key={field}>
+                        <dt className="font-mono text-xs font-medium">{field}</dt>
+                        <dd className="mt-1 whitespace-pre-wrap font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                          {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+                        </dd>
+                      </div>
                     ))}
-                  </div>
-                </div>
+                  </dl>
+                </details>
               ) : null}
               {importedJob.removedSourceUrls ? (
                 <p className="text-xs text-muted-foreground">
@@ -372,9 +381,18 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
                   })}
                 </p>
               ) : null}
-            </div>
+            </section>
           ) : null}
         </DialogBody>
+        {submitError ? (
+          <p
+            role="alert"
+            className="shrink-0 border-t border-border px-4 py-2 text-sm text-status-failed [overflow-wrap:anywhere] sm:px-5"
+            data-testid="import-job-json-submit-error"
+          >
+            {submitError}
+          </p>
+        ) : null}
         <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button type="button" variant="outline" onClick={close} disabled={submitting}>
             {t("common.cancel", { defaultValue: "Cancel" })}
@@ -382,7 +400,7 @@ export function ImportJobJsonDialog({ open, onOpenChange, onImported }: ImportJo
           <Button
             type="button"
             onClick={submit}
-            disabled={!importedJob || submitting || queuesQuery.isLoading || importedQueueBlocked}
+            disabled={!importedJob || submitting || checkingQueue || importedQueueBlocked}
             data-testid="import-job-json-submit"
           >
             {submitting ? <Loader2 className="animate-spin" /> : null}

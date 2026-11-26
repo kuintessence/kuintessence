@@ -73,6 +73,8 @@ export function statusLabel(status: string, language = "en"): string {
       canceled: "已取消",
       cancelling: "取消中",
       stopped: "已停止",
+      skipped: "已跳过",
+      unknown: "未知",
       online: "在线",
       offline: "离线",
     };

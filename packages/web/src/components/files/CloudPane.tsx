@@ -376,7 +376,7 @@ export function CloudPane({
                     className={
                       (newEntryIds.has(r.obj.id) ? "kq-motion kq-motion--item " : "") +
                       "cursor-pointer border-border " +
-                      (isSelected ? "" : "")
+                      (isSelected ? "bg-brand-soft text-brand" : "")
                     }
                     data-state={newEntryIds.has(r.obj.id) ? "open" : undefined}
                   >
@@ -385,7 +385,7 @@ export function CloudPane({
                         <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <button
                           type="button"
-                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] aria-pressed:font-semibold aria-pressed:underline aria-pressed:underline-offset-4 focus-visible:outline-2 focus-visible:outline-brand"
                           title={r.displayName}
                           aria-pressed={isSelected}
                           onClick={(event) => {

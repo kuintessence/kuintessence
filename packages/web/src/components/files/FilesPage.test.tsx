@@ -12,7 +12,7 @@ const toastSuccess = vi.hoisted(() => vi.fn());
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
-      if (key === "files.storage") return `${opts?.used} / ${opts?.total} GiB`;
+      if (key === "files.storage") return `${opts?.used} / ${opts?.total}`;
       if (key === "files.globalCloud") return "云盘：全局 NetDrive";
       return key;
     },
@@ -107,7 +107,7 @@ describe("FilesPage transfer direction", () => {
 
     render(withQueryClient(<FilesPage />));
 
-    expect(await screen.findByText("5.0 / 80.0 GiB")).toBeTruthy();
+    expect(await screen.findByText("5.0 GB / 80 GB")).toBeTruthy();
     expect(screen.getByText("云盘：全局 NetDrive")).toBeTruthy();
   });
 

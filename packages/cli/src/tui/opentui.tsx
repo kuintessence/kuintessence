@@ -24,7 +24,7 @@ interface TextProps {
   color?: string;
   backgroundColor?: string;
   bold?: boolean;
-  inverse?: boolean;
+  underline?: boolean;
   dimColor?: boolean;
 }
 
@@ -59,11 +59,11 @@ export function Box({
   );
 }
 
-export function Text({ children, color, backgroundColor, bold, inverse, dimColor }: TextProps) {
+export function Text({ children, color, backgroundColor, bold, underline, dimColor }: TextProps) {
   const nested = useContext(TextParentContext);
   const attributes =
     (bold ? TextAttributes.BOLD : 0) |
-    (inverse ? TextAttributes.INVERSE : 0) |
+    (underline ? TextAttributes.UNDERLINE : 0) |
     (dimColor ? TextAttributes.DIM : 0);
   const props = {
     ...(color ? { fg: color } : {}),

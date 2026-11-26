@@ -245,10 +245,7 @@ export function WorkflowResourcesStep({
             <CardTitle>{t("workflows.creation.resources.nodeTitle")}</CardTitle>
           </div>
         </CardHeader>
-        <CardContent
-          className="grid min-h-96 items-stretch gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]"
-          style={{ height: "calc(100dvh - 20rem)" }}
-        >
+        <CardContent className="grid items-stretch gap-4 lg:min-h-[max(24rem,calc(100dvh-20rem))] lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
           <WorkflowReviewGraph
             mode="fill"
             yaml={yaml}

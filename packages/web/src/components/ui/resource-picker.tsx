@@ -65,6 +65,8 @@ interface ResourcePickerDialogProps<T extends ResourceOption> {
   busy?: boolean;
   closeOnConfirm?: boolean;
   confirmTestId?: string;
+  confirmLabel?: string;
+  selectionError?: { value: string; message: string } | null;
   rowTestId?: (option: T) => string;
   onDoubleClick?: (option: T) => void;
   "data-testid"?: string;
@@ -91,6 +93,8 @@ export function ResourcePickerDialog<T extends ResourceOption>({
   busy,
   closeOnConfirm = true,
   confirmTestId,
+  confirmLabel,
+  selectionError,
   rowTestId,
   onDoubleClick,
   "data-testid": testId,
@@ -248,11 +252,16 @@ export function ResourcePickerDialog<T extends ResourceOption>({
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border p-4">
           <div className="min-w-0 text-xs text-muted-foreground" aria-live="polite">
             {t("ui.selectedCount", { count: draft.length })}
-            <span className="ml-2 break-words">
+            <span className="ml-2 [overflow-wrap:anywhere]">
               {draft
                 .map((id) => options.find((option) => option.value === id)?.label ?? id)
                 .join(", ")}
             </span>
+            {!loading && !error && selectionError && draft.includes(selectionError.value) ? (
+              <p role="alert" className="mt-1 text-status-failed">
+                {selectionError.message}
+              </p>
+            ) : null}
           </div>
           <div className="flex gap-2">
             <Button
@@ -272,7 +281,7 @@ export function ResourcePickerDialog<T extends ResourceOption>({
                 if (closeOnConfirm) onOpenChange(false);
               }}
             >
-              {t("common.confirm")}
+              {confirmLabel ?? t("common.confirm")}
             </Button>
           </div>
         </div>

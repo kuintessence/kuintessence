@@ -397,11 +397,13 @@ function SummaryCards({ overview }: { overview: CpSoftwareOverview }) {
     { key: "overrides", value: overview.summary.overrides },
   ];
   return (
-    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-3 xl:grid-cols-6">
       {items.map((item) => (
         <Card key={item.key}>
           <CardHeader>
-            <CardTitle>{t(`cp.software.summary.${item.key}`)}</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              {t(`cp.software.summary.${item.key}`)}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-semibold tabular-nums">{item.value}</div>
@@ -2763,47 +2765,52 @@ function SpackCatalogPickerDialog({
                   {t("cp.software.operations.catalogEmpty")}
                 </div>
               ) : (
-                packages.map((pkg) => (
-                  <button
-                    key={`${pkg.source}:${pkg.name}`}
-                    type="button"
-                    className={`grid min-h-32 min-w-0 content-between gap-3 p-3 text-left transition-colors ${
-                      selectedPackage?.source === pkg.source && selectedPackage.name === pkg.name
-                        ? " "
-                        : "border-border"
-                    }`}
-                    onClick={() => choosePackage(pkg)}
-                    data-testid={`cp-software-catalog-package-${pkg.source}-${pkg.name}`}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex min-w-0 items-start justify-between gap-2">
-                        <span className="break-all font-mono text-sm font-semibold">
-                          {pkg.name}
-                        </span>
-                        <Badge variant={pkg.source === "upstream" ? "outline" : "brand"}>
-                          {t(`cp.software.operations.catalogSource.${pkg.source}`)}
-                        </Badge>
+                packages.map((pkg) => {
+                  const selected =
+                    selectedPackage?.source === pkg.source && selectedPackage.name === pkg.name;
+                  return (
+                    <button
+                      key={`${pkg.source}:${pkg.name}`}
+                      type="button"
+                      aria-pressed={selected}
+                      className="grid min-h-32 min-w-0 content-between gap-3 p-3 text-left transition-colors hover:bg-muted aria-pressed:bg-brand-soft"
+                      onClick={() => choosePackage(pkg)}
+                      data-testid={`cp-software-catalog-package-${pkg.source}-${pkg.name}`}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <span className="break-all font-mono text-sm font-semibold">
+                            {pkg.name}
+                          </span>
+                          <Badge variant={pkg.source === "upstream" ? "outline" : "brand"}>
+                            {t(`cp.software.operations.catalogSource.${pkg.source}`)}
+                          </Badge>
+                        </div>
+                        <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+                          {pkg.description ?? t("cp.software.operations.catalogNoDescription")}
+                        </p>
                       </div>
-                      <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
-                        {pkg.description ?? t("cp.software.operations.catalogNoDescription")}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <span className="text-muted-foreground">
-                        {pkg.metadata
-                          ? t("cp.software.operations.catalogMeta", {
-                              versions: pkg.metadata.versions.length,
-                              variants: pkg.metadata.variants.length,
-                            })
-                          : t("cp.software.operations.catalogNoMetadata")}
-                      </span>
-                      <span className="inline-flex items-center gap-1 font-medium text-brand">
-                        <Check className="h-3.5 w-3.5" />
-                        {t("cp.software.operations.catalogChoose")}
-                      </span>
-                    </div>
-                  </button>
-                ))
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className="text-muted-foreground">
+                          {pkg.metadata
+                            ? t("cp.software.operations.catalogMeta", {
+                                versions: pkg.metadata.versions.length,
+                                variants: pkg.metadata.variants.length,
+                              })
+                            : t("cp.software.operations.catalogNoMetadata")}
+                        </span>
+                        <span className="inline-flex items-center gap-1 font-medium text-brand">
+                          {selected && <Check aria-hidden="true" className="h-3.5 w-3.5" />}
+                          {t(
+                            selected
+                              ? "cp.software.operations.catalogSelected"
+                              : "cp.software.operations.catalogChoose",
+                          )}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })
               )}
             </div>
             <div className="flex min-h-0 flex-col gap-3 border-border p-3">

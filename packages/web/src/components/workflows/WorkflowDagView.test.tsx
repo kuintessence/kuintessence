@@ -68,7 +68,9 @@ vi.mock("@xyflow/react", () => {
     Controls,
     Handle: () => React.createElement("span"),
     MarkerType: { ArrowClosed: "arrowclosed" },
-    Position: { Left: "left", Right: "right" },
+    Position: { Left: "left", Right: "right", Top: "top", Bottom: "bottom" },
+    useStore: () => 0,
+    useReactFlow: () => ({ fitView: vi.fn() }),
   };
 });
 
@@ -404,7 +406,16 @@ describe("WorkflowDagView error UI", () => {
         status: "running",
         createdAt: "t",
         stepJobs: {},
-        result: { status: { a: "Succeeded", b: "Running" }, values: {} },
+        result: {
+          status: { a: "Succeeded", b: "Running" },
+          values: {
+            a: {
+              status: "Succeeded",
+              values: { residual: 0, converged: false, summary: "line 1\nline 2" },
+            },
+            __run__: { status: "Running", values: { internalMarker: true } },
+          },
+        },
         graph: {
           nodes: [
             { id: "a", name: "Solve", kind: "SoftwareUsecaseComputing" },
@@ -426,9 +437,32 @@ describe("WorkflowDagView error UI", () => {
     expect(screen.getByTestId("run-node-a").getAttribute("data-status")).toBe("Succeeded");
     expect(screen.getByTestId("run-node-b").getAttribute("data-status")).toBe("Running");
     expect(screen.getByTestId("run-edge-a-b")).toBeTruthy();
+    const outputs = screen.getByTestId("workflow-run-outputs");
+    expect(outputs.querySelector("summary")).toBeTruthy();
+    expect(outputs.querySelector("dt")?.textContent).toBe("residual");
+    expect(Array.from(outputs.querySelectorAll("dd"), (item) => item.textContent)).toEqual([
+      "0",
+      "false",
+      "line 1\nline 2",
+    ]);
+    expect(outputs.textContent).not.toContain("internalMarker");
     // A persisted graph takes precedence over the status-only view.
     expect(screen.queryByTestId("workflow-nodes-card")).toBeNull();
     expect(screen.queryByTestId("dag-canvas")).toBeNull();
+  });
+
+  test("leaves unreported node states unknown in a terminal run", async () => {
+    mockFetchOnce(
+      { ...workflowRunBody("completed"), result: null, stepJobs: {} },
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    render(<WorkflowDagView runId="finished-run" />, { wrapper: makeWrapper() });
+    expect((await screen.findByTestId("run-node-solve")).getAttribute("data-status")).toBe(
+      "Unknown",
+    );
   });
 
   test("localizes placement failures without exposing diagnostic fields", async () => {

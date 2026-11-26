@@ -4,7 +4,6 @@ import {
   Clock3,
   Cloud,
   Copy,
-  FileIcon,
   FileInput,
   FileOutput,
   Link2,
@@ -205,6 +204,27 @@ export function WorkflowReviewStep({
               </ul>
             </div>
           ) : null}
+          {model.values.length > 0 && (
+            <section className="space-y-2" data-testid="workflow-review-parameters">
+              <h3 className="text-sm font-semibold">{t("workflows.creation.review.parameters")}</h3>
+              <dl className="divide-y divide-border">
+                {model.values.map((parameter) => (
+                  <div
+                    key={parameter.key}
+                    className="grid min-w-0 gap-1 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:gap-3"
+                  >
+                    <dt className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                      {parameter.name}
+                    </dt>
+                    <dd className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">
+                      {(values[parameter.key] ?? parameter.initialValue) ||
+                        t("workflows.creation.inputs.notSet")}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
           <section className="space-y-2">
             <h3 className="text-sm font-semibold">{t("workflows.creation.review.graphTitle")}</h3>
             <WorkflowReviewGraph yaml={yaml} mode="resizable" />
@@ -219,10 +239,14 @@ export function WorkflowReviewStep({
                     if (inputs.length === 0 && outputs.length === 0) return null;
                     return (
                       <article key={node.id} className="overflow-hidden border-border ">
-                        <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+                        <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 border-b border-border px-3 py-2.5">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold">{node.data.name}</p>
-                            <p className="truncate text-[11px] text-muted-foreground">{node.id}</p>
+                            <p className="text-sm font-semibold [overflow-wrap:anywhere]">
+                              {node.data.name}
+                            </p>
+                            <p className="text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+                              {node.id}
+                            </p>
                           </div>
                           <Badge variant="outline">
                             {t(`workflow.editor.nodeTypes.${node.data.kind}`, {
@@ -405,14 +429,16 @@ function SlotSection({
               return (
                 <li
                   key={slot.descriptor}
-                  className="flex min-w-0 items-center gap-2 border-border px-2.5 py-2"
+                  className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1 px-2.5 py-2"
                   title={slot.description ?? slot.value}
                 >
                   <Badge variant="outline">Text</Badge>
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                  <span className="text-xs font-medium [overflow-wrap:anywhere]">
                     {slot.descriptor}
                   </span>
-                  <span className={`max-w-[55%] truncate px-2 py-1 text-[11px] ${stateClass}`}>
+                  <span
+                    className={`col-span-2 max-h-48 overflow-auto whitespace-pre-wrap px-2 py-1 text-xs [overflow-wrap:anywhere] ${stateClass}`}
+                  >
                     {slot.value}
                   </span>
                 </li>
@@ -423,13 +449,15 @@ function SlotSection({
                 <li key={slot.descriptor} className="min-w-0 border-border p-2.5">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">Dataset</Badge>
-                    <span className="truncate text-xs font-medium">{slot.descriptor}</span>
+                    <span className="text-xs font-medium [overflow-wrap:anywhere]">
+                      {slot.descriptor}
+                    </span>
                   </div>
                   <div className={`mt-2 space-y-1 px-2 py-1 text-[11px] ${stateClass}`}>
-                    <p className="truncate">
+                    <p className="[overflow-wrap:anywhere]">
                       {t("workflows.creation.review.datasetVersion", { version: slot.value })}
                     </p>
-                    <p className="truncate">
+                    <p className="[overflow-wrap:anywhere]">
                       {t("workflows.creation.review.datasetTargetPath", {
                         path:
                           slot.dataset?.targetPath ??
@@ -446,7 +474,9 @@ function SlotSection({
                   <Badge variant="outline">
                     File{slot.batch ? ` · ${t("workflows.creation.inputs.fileBatch")}` : ""}
                   </Badge>
-                  <span className="truncate text-xs font-medium">{slot.descriptor}</span>
+                  <span className="text-xs font-medium [overflow-wrap:anywhere]">
+                    {slot.descriptor}
+                  </span>
                 </div>
                 {slot.description ? (
                   <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
@@ -460,12 +490,13 @@ function SlotSection({
                       return (
                         <div
                           key={file.id}
-                          className="flex min-w-0 items-center gap-2 px-2 py-1.5 text-[11px] text-success"
+                          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 px-2 py-1.5"
                         >
                           <SourceIcon className="h-3.5 w-3.5 shrink-0" />
-                          <FileIcon className="h-3.5 w-3.5 shrink-0" />
-                          <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                          <span className="text-xs font-medium [overflow-wrap:anywhere]">
+                            {file.name}
+                          </span>
+                          <span className="col-start-2 text-[11px] text-muted-foreground">
                             {file.source === "local"
                               ? t("workflows.creation.review.localFile")
                               : t("workflows.creation.review.cloudFile")}
@@ -481,7 +512,7 @@ function SlotSection({
                     title={slot.value}
                   >
                     {slot.state === "connected" ? <Link2 className="h-3 w-3 shrink-0" /> : null}
-                    <span className="truncate">{slot.value}</span>
+                    <span className="min-w-0 [overflow-wrap:anywhere]">{slot.value}</span>
                   </div>
                 )}
               </li>

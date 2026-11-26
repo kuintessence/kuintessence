@@ -16,10 +16,11 @@ const softwareClient = vi.hoisted(() => ({
   listSpackCatalog: vi.fn(),
   listUsecasePackages: vi.fn(),
   listWorkflowTemplates: vi.fn(),
+  stashPendingTemplate: vi.fn(),
 }));
 
 vi.mock("../../lib/software-client", () => softwareClient);
-vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 const apiClient = vi.hoisted(() => ({
   resolveSoftwareAvailability: vi.fn(),
@@ -27,7 +28,9 @@ const apiClient = vi.hoisted(() => ({
 
 vi.mock("../../lib/api-client", () => apiClient);
 
+const navigate = vi.hoisted(() => vi.fn());
 vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => navigate,
   Link: ({
     children,
     hash,
@@ -262,12 +265,42 @@ describe("Software detail pages", () => {
     expect(await screen.findByText("Docker hello")).toBeDefined();
     expect(screen.getByTestId("mock-react-flow").textContent).toContain("Mesh");
     expect(screen.getByText("demo")).toBeDefined();
+    const list = screen.getByText("software.detail.nodeList").closest("details");
+    expect(list?.textContent).toContain("b · NoAction");
+    fireEvent.click(screen.getByTestId("software-use-tpl-1"));
+    expect(softwareClient.stashPendingTemplate).toHaveBeenCalledWith({
+      yaml,
+      source: "Docker hello",
+    });
+    expect(navigate).toHaveBeenCalledWith({ to: "/workflows/new" });
     expect(screen.getByText("Valid workflow")).toBeDefined();
     expect(screen.getByText("Nodes")).toBeDefined();
     expect(screen.getByText("Edges")).toBeDefined();
     expect(screen.getByRole("link", { name: "Back" }).getAttribute("href")).toBe(
       "/software#workflow-templates",
     );
+  });
+
+  test.each([
+    [yaml.replace("id: a", "id: invalid-slug"), "spec.nodeDrafts.0.id"],
+    [`${yaml}advanced: {skipStaticValidation: true}`, "cannot skip static validation"],
+  ])("shows a rejected template's diagnostic and prevents loading it", async (yamlContent, diagnostic) => {
+    softwareClient.getWorkflowTemplate.mockResolvedValueOnce({
+      id: "invalid",
+      name: "Calibration",
+      version: "1",
+      tags: [],
+      yamlContent,
+      createdAt: "2026-06-11",
+    });
+    render(<SoftwareWorkflowTemplateDetailPage templateId="invalid" />, { wrapper: wrapper() });
+    expect((await screen.findByRole("alert")).textContent).toContain(diagnostic);
+    expect(screen.queryByText("Nodes")).toBeNull();
+    expect(screen.queryByTestId("mock-react-flow")).toBeNull();
+    const button = screen.getByTestId("software-use-invalid") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(softwareClient.stashPendingTemplate).not.toHaveBeenCalled();
   });
 
   test("renders workflow template query errors instead of not found", async () => {
@@ -334,6 +367,84 @@ describe("Software detail pages", () => {
     expect(screen.getByRole("link", { name: "Back" }).getAttribute("href")).toBe("/software#spack");
   });
 
+  test("shows counts only after resolving availability and supports retry and all nodes", async () => {
+    let fail!: (error: Error) => void;
+    const nodes = Array.from({ length: 8 }, (_, i) => ({
+      siteName: "West campus",
+      agentId: `agent-${i}`,
+      reasons: [],
+    }));
+    apiClient.resolveSoftwareAvailability
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            fail = reject;
+          }),
+      )
+      .mockResolvedValueOnce({
+        installedAvailable: nodes,
+        installableAvailable: [],
+        blocked: [
+          {
+            siteName: "East campus",
+            agentId: "blocked",
+            reasons: [
+              "agent control channel is offline",
+              "principal lacks install permission",
+              "blocked by provider deny list",
+            ],
+          },
+        ],
+      });
+    render(<SoftwareSpackDetailPage name="openfoam" source="upstream" />, { wrapper: wrapper() });
+    expect((await screen.findByRole("status")).textContent).toBe("Loading");
+    expect(screen.queryByText("software.detail.installedAvailable")).toBeNull();
+    await act(() => fail(new Error("backend diagnostic")));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "software.detail.availabilityFailed",
+    );
+    expect(screen.queryByText("software.detail.installedAvailable")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+    await screen.findByText("agent-5");
+    expect(screen.queryByText("agent-7")).toBeNull();
+    expect(screen.getByText("software.availabilityReason.providerDenyList")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "software.detail.moreNodes" }));
+    expect(screen.getByText("agent-7")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "software.detail.fewerNodes" }));
+    expect(screen.queryByText("agent-7")).toBeNull();
+    expect(apiClient.resolveSoftwareAvailability).toHaveBeenCalledTimes(2);
+  });
+
+  test("exposes older recipe versions and can collapse the list again", async () => {
+    const versions = Array.from({ length: 15 }, (_, i) => `release-${i}`);
+    softwareClient.listSpackCatalog.mockResolvedValueOnce({
+      packages: [
+        {
+          name: "demo",
+          source: "official",
+          tags: [],
+          metadata: {
+            name: "demo",
+            versions,
+            variants: [],
+            licenses: [],
+            maintainers: [],
+            dependencies: [],
+            provides: [],
+            conflicts: [],
+          },
+        },
+      ],
+    });
+    render(<SoftwareSpackDetailPage name="demo" source="official" />, { wrapper: wrapper() });
+    const expand = await screen.findByRole("button", { name: "software.detail.moreVersions" });
+    expect(screen.queryByText("release-14")).toBeNull();
+    fireEvent.click(expand);
+    expect(screen.getByText("release-14")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "software.detail.fewerVersions" }));
+    expect(screen.queryByText("release-14")).toBeNull();
+  });
+
   test("uses the signed imported spec instead of deriving one from the display name", async () => {
     const defaultSpec = "hello@2.12.1+example target=x86_64";
     softwareClient.listSpackCatalog.mockResolvedValueOnce({
@@ -353,6 +464,7 @@ describe("Software detail pages", () => {
     });
     fireEvent.click(await screen.findByRole("button", { name: "Copy spec" }));
     expect(writeText).toHaveBeenCalledWith(defaultSpec);
+    expect(screen.queryByText("Versions")).toBeNull();
     expect(apiClient.resolveSoftwareAvailability).toHaveBeenCalledWith({
       rawSpec: defaultSpec,
       installable: true,

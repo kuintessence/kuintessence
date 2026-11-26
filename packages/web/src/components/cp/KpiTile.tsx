@@ -32,7 +32,7 @@ export function KpiTile({
   return (
     <Card data-testid={testId} className="flex min-h-24 flex-col">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3 pb-1">
-        <CardTitle className="min-w-0 leading-snug">
+        <CardTitle className="min-w-0 text-sm leading-snug font-medium text-muted-foreground">
           {title}
           {titleSuffix ? (
             <>

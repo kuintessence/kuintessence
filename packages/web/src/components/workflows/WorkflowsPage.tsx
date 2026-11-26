@@ -237,13 +237,18 @@ export function WorkflowsPage() {
             </div>
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {draftsQ.data?.drafts.map((draft) => (
-                <div key={draft.id} className="flex min-w-0 items-center gap-3 border-border p-3">
-                  <FilePenLine className="h-4 w-4 shrink-0 text-brand" />
+                <div
+                  key={draft.id}
+                  className="flex min-w-0 items-start gap-2 border-b border-border py-3"
+                >
+                  <FilePenLine className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
                   <a
                     className="min-w-0 flex-1"
                     href={`/workflows/new?draftId=${encodeURIComponent(draft.id)}`}
                   >
-                    <span className="block truncate text-sm font-medium">{draft.name}</span>
+                    <span className="block text-sm font-medium [overflow-wrap:anywhere]">
+                      {draft.name}
+                    </span>
                     <span className="block text-xs text-muted-foreground">
                       {new Date(draft.updatedAt).toLocaleString()}
                     </span>
@@ -252,7 +257,7 @@ export function WorkflowsPage() {
                     type="button"
                     size="icon"
                     variant="ghost"
-                    aria-label={t("common.delete")}
+                    aria-label={t("workflows.drafts.deleteNamed", { name: draft.name })}
                     data-testid={`workflow-draft-delete-${draft.id}`}
                     onClick={(event) => {
                       deleteTrigger.current = event.currentTarget;

@@ -150,8 +150,8 @@ export function DataTable<TData, TValue>({
           <TableBody>
             {table.getRowModel().rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columns.length} className="px-4 py-16">
-                  <div className="flex items-center justify-center px-4 py-8 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={columns.length} className="px-4 py-10 sm:py-12">
+                  <div className="flex items-center justify-center text-center text-sm text-muted-foreground">
                     {emptyState ?? t("common.empty")}
                   </div>
                 </TableCell>

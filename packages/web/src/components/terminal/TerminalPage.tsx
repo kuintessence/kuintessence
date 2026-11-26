@@ -1,6 +1,15 @@
 import type { TerminalSession } from "@kuintessence/shared/browser";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Plus, RefreshCw, Server, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import {
+  ArrowRight,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Server,
+  ShieldCheck,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, api } from "../../lib/api-client";
@@ -28,6 +37,10 @@ export function TerminalPage() {
   const [newOpen, setNewOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
+  const [closeStates, setCloseStates] = useState<
+    Record<string, { pending: true } | { error: string }>
+  >({});
+
   const sessionsQ = useQuery({
     queryKey: ["terminal-sessions"],
     queryFn: () => api.get<SessionsResp>("/terminal/sessions"),
@@ -48,21 +61,30 @@ export function TerminalPage() {
     refresh();
   }
 
-  function onTabClose(s: TerminalSession) {
-    if (sessionsLoadError) return;
-    api
-      .delete<TerminalSession>(`/terminal/sessions/${s.id}`)
-      .catch((err) => {
-        if (!(err instanceof ApiError) || err.status !== 404) throw err;
-      })
-      .finally(() => {
-        if (active?.id === s.id) setActiveId(null);
-        refresh();
-      });
-  }
-
-  function onPaneClose(s: TerminalSession) {
-    if (active?.id === s.id) setActiveId(null);
+  async function closeSession(session: TerminalSession) {
+    const current = closeStates[session.id];
+    if (sessionsLoadError || (current && "pending" in current)) return;
+    setCloseStates((previous) => ({ ...previous, [session.id]: { pending: true } }));
+    try {
+      await api.delete<TerminalSession>(`/terminal/sessions/${session.id}`);
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) {
+        const message = toUserFacingError(error, t("terminal.closeFailed"));
+        setCloseStates((previous) => ({ ...previous, [session.id]: { error: message } }));
+        return;
+      }
+    }
+    queryClient.setQueryData<SessionsResp>(
+      ["terminal-sessions"],
+      (previous) =>
+        previous && { sessions: previous.sessions.filter((item) => item.id !== session.id) },
+    );
+    setCloseStates((previous) => {
+      const next = { ...previous };
+      delete next[session.id];
+      return next;
+    });
+    setActiveId((previous) => (previous === session.id ? null : previous));
     refresh();
   }
 
@@ -84,10 +106,12 @@ export function TerminalPage() {
               <ShieldCheck className="h-3.5 w-3.5" />
               {t("terminal.auditBadge")}
             </span>
-            <span className="inline-flex items-center gap-1.5 border-border px-2.5 py-1 text-muted-foreground">
-              <Server className="h-3.5 w-3.5" />
-              {t("terminal.activeCount", { count: open.length })}
-            </span>
+            {sessionsQ.data && !sessionsLoadError ? (
+              <span className="inline-flex items-center gap-1.5 border-border px-2.5 py-1 text-muted-foreground">
+                <Server className="h-3.5 w-3.5" />
+                {t("terminal.activeCount", { count: open.length })}
+              </span>
+            ) : null}
           </div>
         }
         actions={
@@ -124,8 +148,17 @@ export function TerminalPage() {
         }
       />
 
-      {sessionsLoadError ? (
-        <div className=" p-3 text-sm text-status-failed" data-testid="terminal-sessions-error">
+      {sessionsQ.isLoading ? (
+        <p role="status" className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          {t("terminal.loadingSessions")}
+        </p>
+      ) : sessionsLoadError ? (
+        <div
+          role="alert"
+          className="py-3 text-sm text-status-failed"
+          data-testid="terminal-sessions-error"
+        >
           {toUserFacingError(sessionsLoadError, t("terminal.sessionsLoadFailed"))}
         </div>
       ) : open.length === 0 ? (
@@ -138,19 +171,6 @@ export function TerminalPage() {
             <p className="font-medium text-foreground">{t("terminal.noSessions")}</p>
             <p>{t("terminal.emptyHint")}</p>
           </div>
-          <div className="flex flex-wrap justify-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setNewOpen(true)}
-              disabled={Boolean(sessionsLoadError)}
-            >
-              {t("terminal.openShell")}
-            </Button>
-            <Button asChild size="sm" variant="ghost">
-              <a href="/agents">{t("terminal.liveSsh")}</a>
-            </Button>
-          </div>
         </div>
       ) : (
         <>
@@ -162,12 +182,16 @@ export function TerminalPage() {
           >
             {open.map((s) => {
               const selected = active?.id === s.id;
+              const state = closeStates[s.id];
+              const closing = Boolean(state && "pending" in state);
               return (
                 <div
                   key={s.id}
                   className={cn(
-                    "flex min-w-max items-center gap-2 px-2 py-1 text-xs transition-colors",
-                    selected ? " text-foreground" : "border-border text-muted-foreground ",
+                    "flex min-w-max items-center gap-2 border-b-2 px-2 py-1 text-xs transition-colors",
+                    selected
+                      ? "border-brand font-semibold text-brand"
+                      : "border-transparent text-muted-foreground",
                   )}
                 >
                   <button
@@ -190,16 +214,39 @@ export function TerminalPage() {
                     type="button"
                     aria-label={t("terminal.closeSession", { siteId: s.siteId })}
                     data-testid={`terminal-tab-close-${s.id}`}
-                    onClick={() => onTabClose(s)}
-                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => void closeSession(s)}
+                    disabled={closing}
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
-                    <X className="h-3 w-3" />
+                    {closing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <X className="size-4" />
+                    )}
                   </button>
                 </div>
               );
             })}
           </div>
 
+          {open.map((session) => {
+            const state = closeStates[session.id];
+            if (!state || !("error" in state)) return null;
+            return (
+              <p
+                key={session.id}
+                role="alert"
+                className="text-sm text-status-failed [overflow-wrap:anywhere]"
+                data-testid={`terminal-close-error-${session.id}`}
+              >
+                {t("terminal.sessionCloseError", {
+                  account: session.remoteUser,
+                  site: session.siteId,
+                  message: state.error,
+                })}
+              </p>
+            );
+          })}
           {open.map((session) => (
             <div
               key={session.id}
@@ -207,7 +254,11 @@ export function TerminalPage() {
               data-testid={`terminal-panel-${session.id}`}
               hidden={active?.id !== session.id}
             >
-              <SessionPane session={session} onClose={onPaneClose} />
+              <SessionPane
+                session={session}
+                onClose={closeSession}
+                closing={"pending" in (closeStates[session.id] ?? {})}
+              />
             </div>
           ))}
         </>

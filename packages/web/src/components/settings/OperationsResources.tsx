@@ -94,7 +94,7 @@ function OperationsOverview() {
           </div>
         ))}
       </dl>
-      <CpAgentsTable />
+      <CpAgentsTable embedded />
       <OperationsAttentionCards />
     </div>
   );

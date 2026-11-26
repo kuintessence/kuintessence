@@ -92,7 +92,7 @@ export function WorkspaceSidebar({
         "fixed inset-y-0 left-0 z-40 flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width,transform] duration-200",
         expanded
           ? "w-64 translate-x-0 xl:w-72"
-          : "invisible -translate-x-full md:visible md:w-16 md:translate-x-0",
+          : "invisible -translate-x-full lg:visible lg:w-16 lg:translate-x-0",
       )}
       aria-label={t("workspace.navigation")}
     >
