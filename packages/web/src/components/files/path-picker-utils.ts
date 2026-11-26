@@ -1,4 +1,4 @@
-import type { CloudObject } from "@kuintessence/shared/browser";
+import type { NetDriveListItem } from "@kuintessence/shared/browser";
 
 export interface CloudFolderRow {
   kind: "dir";
@@ -11,18 +11,21 @@ export interface CloudFolderRow {
 
 export interface CloudFileRow {
   kind: "file";
-  obj: CloudObject;
+  obj: NetDriveListItem;
   displayName: string;
 }
 
 export type CloudBrowserRow = CloudFolderRow | CloudFileRow;
 
-export function buildCloudBrowserRows(entries: CloudObject[], prefix: string): CloudBrowserRow[] {
+export function buildCloudBrowserRows(
+  entries: NetDriveListItem[],
+  prefix: string,
+): CloudBrowserRow[] {
   const folders = new Map<string, CloudFolderRow>();
   const files: CloudFileRow[] = [];
   for (const entry of entries) {
-    if (!entry.key.startsWith(prefix)) continue;
-    const rest = entry.key.slice(prefix.length);
+    if (!entry.path.startsWith(prefix)) continue;
+    const rest = entry.path.slice(prefix.length);
     if (!rest) continue;
     const slash = rest.indexOf("/");
     if (slash < 0) {
@@ -35,8 +38,8 @@ export function buildCloudBrowserRows(entries: CloudObject[], prefix: string): C
     if (existing) {
       existing.childCount += 1;
       existing.totalSize += entry.size;
-      if (entry.modifiedAt > existing.latestModifiedAt) {
-        existing.latestModifiedAt = entry.modifiedAt;
+      if (entry.mtime > existing.latestModifiedAt) {
+        existing.latestModifiedAt = entry.mtime;
       }
     } else {
       folders.set(fullPath, {
@@ -45,7 +48,7 @@ export function buildCloudBrowserRows(entries: CloudObject[], prefix: string): C
         fullPath,
         childCount: 1,
         totalSize: entry.size,
-        latestModifiedAt: entry.modifiedAt,
+        latestModifiedAt: entry.mtime,
       });
     }
   }

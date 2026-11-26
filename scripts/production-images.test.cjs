@@ -38,7 +38,13 @@ test("AIO CI builds an opt-in offline artifact without publication or deployment
 async function tags(eventName, ref, payload = {}, component = "server") {
   const outputs = {};
   await runInNewContext(`(async () => { ${resolver.with.script} })()`, {
-    context: { eventName, ref, payload, sha: revision, repo: { owner: "Example" } },
+    context: {
+      eventName,
+      ref,
+      payload,
+      sha: revision,
+      repo: { owner: "Example", repo: "Kuintessence" },
+    },
     process: { env: { COMPONENT: component } },
     core: {
       setOutput: (name, value) => {
@@ -46,6 +52,7 @@ async function tags(eventName, ref, payload = {}, component = "server") {
       },
     },
   });
+  expect(outputs.cache).toBe(`ghcr.io/example/kuintessence-buildcache:production-${component}`);
   return outputs.tags.split("\n");
 }
 
@@ -71,6 +78,24 @@ describe("production image publication", () => {
         `ghcr.io/example/kuintessence-${entry.component}:main`,
         `ghcr.io/example/kuintessence-${entry.component}:sha-${revision}`,
       ]);
+    }
+  });
+
+  test("only main updates production cache refs and PR image checks only import them", () => {
+    const build = job.steps.find((step) => step.id === "build").with;
+    expect(build["cache-from"]).toContain(`type=registry,ref=\${{ steps.image.outputs.cache }}`);
+    expect(build["cache-to"]).toContain("github.event_name == 'push' &&");
+    expect(build["cache-to"]).toContain("steps.image.outputs.cache) || ''");
+    for (const [file, id] of [
+      ["federation-compose", "images"],
+      ["server-agent-bundle", "bundle"],
+    ]) {
+      const source = readFileSync(resolve(root, `.github/workflows/${file}.yml`), "utf8");
+      const pr = parse(source).jobs[id];
+      expect(pr.permissions.packages).toBe("read");
+      const image = pr.steps.find((step) => step.uses === "docker/build-push-action@v6").with;
+      expect(image["cache-from"]).toContain(":production-");
+      expect(image["cache-to"]).toBeUndefined();
     }
   });
 

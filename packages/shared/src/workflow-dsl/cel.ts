@@ -1,14 +1,14 @@
 /**
  * Safe expression evaluator for workflow guards — a CEL-flavored subset (D1).
  *
- * Non-Turing-complete by construction (no user loops/recursion/IO), so every
+ * List comprehensions share a bounded evaluation budget, so every
  * expression terminates. Supports: number/string/bool/null literals, member
  * access (`a.b.c`), indexing (`a[0]`), the arithmetic / comparison / equality /
  * logical / unary / ternary operators, and the `size()` and `has()` builtins.
  *
  * Resolution: a top-level identifier missing from the context throws; member
  * access on an absent field yields `undefined` (so `has()` can probe softly).
- * Swapping in a full CEL host later is possible without changing call sites.
+ * Map lookup is restricted to own fields. Expressions cannot invoke host methods.
  */
 
 export type CelValue = unknown;
@@ -43,7 +43,20 @@ function lex(src: string): Token[] {
       let j = i + 1;
       let s = "";
       while (j < n && src[j] !== c) {
-        s += src[j];
+        if (src[j] === "\\") {
+          const escaped = src[++j];
+          const escapes: Record<string, string> = {
+            n: "\n",
+            r: "\r",
+            t: "\t",
+            '"': '"',
+            "'": "'",
+            "\\": "\\",
+          };
+          if (escaped === undefined || !Object.hasOwn(escapes, escaped))
+            throw new Error("CEL: invalid string escape");
+          s += escapes[escaped];
+        } else s += src[j];
         j++;
       }
       if (j >= n) {
@@ -66,7 +79,7 @@ function lex(src: string): Token[] {
       i += 2;
       continue;
     }
-    if ("()[],.?:!<>+-*/%".includes(c)) {
+    if ("()[]{},.?:!<>+-*/%".includes(c)) {
       tokens.push({ t: "op", s: c });
       i++;
       continue;
@@ -83,6 +96,8 @@ type Node =
   | { k: "member"; obj: Node; key: string }
   | { k: "index"; obj: Node; idx: Node }
   | { k: "call"; name: string; args: Node[] }
+  | { k: "map"; entries: [string, Node][] }
+  | { k: "method"; obj: Node; name: string; args: Node[] }
   | { k: "list"; items: Node[] }
   | { k: "unary"; op: string; e: Node }
   | { k: "bin"; op: string; l: Node; r: Node }
@@ -155,9 +170,13 @@ class Parser {
     }
     return l;
   }
+  private isIn(): boolean {
+    const t = this.peek();
+    return t.t === "ident" && t.s === "in";
+  }
   private comparison(): Node {
     let l = this.additive();
-    while (this.isOp("<") || this.isOp("<=") || this.isOp(">") || this.isOp(">=")) {
+    while (this.isIn() || this.isOp("<") || this.isOp("<=") || this.isOp(">") || this.isOp(">=")) {
       const op = (this.next() as { s: string }).s;
       l = { k: "bin", op, l, r: this.additive() };
     }
@@ -195,7 +214,9 @@ class Parser {
         if (t.t !== "ident") {
           throw new Error("CEL: expected field name after '.'");
         }
-        e = { k: "member", obj: e, key: t.s };
+        e = this.isOp("(")
+          ? { k: "method", obj: e, name: t.s, args: this.args() }
+          : { k: "member", obj: e, key: t.s };
       } else if (this.isOp("[")) {
         this.eatOp("[");
         const idx = this.ternary();
@@ -205,6 +226,19 @@ class Parser {
         return e;
       }
     }
+  }
+  private args(): Node[] {
+    this.eatOp("(");
+    const args: Node[] = [];
+    if (!this.isOp(")")) {
+      args.push(this.ternary());
+      while (this.isOp(",")) {
+        this.eatOp(",");
+        args.push(this.ternary());
+      }
+    }
+    this.eatOp(")");
+    return args;
   }
   private primary(): Node {
     const t = this.next();
@@ -225,17 +259,7 @@ class Parser {
         return { k: "lit", v: null };
       }
       if (this.isOp("(")) {
-        this.eatOp("(");
-        const args: Node[] = [];
-        if (!this.isOp(")")) {
-          args.push(this.ternary());
-          while (this.isOp(",")) {
-            this.eatOp(",");
-            args.push(this.ternary());
-          }
-        }
-        this.eatOp(")");
-        return { k: "call", name: t.s, args };
+        return { k: "call", name: t.s, args: this.args() };
       }
       return { k: "id", name: t.s };
     }
@@ -243,6 +267,22 @@ class Parser {
       const e = this.ternary();
       this.eatOp(")");
       return e;
+    }
+    if (t.t === "op" && t.s === "{") {
+      const entries: [string, Node][] = [];
+      const keys = new Set<string>();
+      while (!this.isOp("}")) {
+        const key = this.next();
+        if (key.t !== "str" || keys.has(key.s))
+          throw new Error("CEL: expected unique string map key");
+        keys.add(key.s);
+        this.eatOp(":");
+        entries.push([key.s, this.ternary()]);
+        if (!this.isOp(",")) break;
+        this.eatOp(",");
+      }
+      this.eatOp("}");
+      return { k: "map", entries };
     }
     if (t.t === "op" && t.s === "[") {
       const items: Node[] = [];
@@ -261,57 +301,123 @@ class Parser {
 }
 
 const MISSING = Symbol("missing");
+class CelBudgetExceeded extends Error {}
+type EvaluationBudget = { remaining: number };
+function charge(budget: EvaluationBudget, cost = 1) {
+  budget.remaining -= cost;
+  if (budget.remaining < 0)
+    throw new CelBudgetExceeded("CEL: expression evaluation limit exceeded");
+}
+const mathFunctions = new Map<string, { arity: number; fn: (...args: number[]) => number }>([
+  ["abs", { arity: 1, fn: Math.abs }],
+  ["floor", { arity: 1, fn: Math.floor }],
+  ["ceil", { arity: 1, fn: Math.ceil }],
+  ["round", { arity: 1, fn: Math.round }],
+  ["sqrt", { arity: 1, fn: Math.sqrt }],
+  ["pow", { arity: 2, fn: Math.pow }],
+  ["min", { arity: 2, fn: Math.min }],
+  ["max", { arity: 2, fn: Math.max }],
+]);
 
-function evalNode(node: Node, ctx: Record<string, CelValue>): CelValue {
+function evalNode(node: Node, ctx: Record<string, CelValue>, budget: EvaluationBudget): CelValue {
+  charge(budget);
   switch (node.k) {
     case "lit":
       return node.v;
     case "id": {
-      if (!(node.name in ctx)) {
+      if (!Object.hasOwn(ctx, node.name)) {
         throw new Error(`CEL: unknown identifier "${node.name}"`);
       }
       return ctx[node.name];
     }
     case "member": {
-      const obj = evalNode(node.obj, ctx);
+      const obj = evalNode(node.obj, ctx, budget);
       if (obj === null || typeof obj !== "object") {
         return undefined;
       }
-      return (obj as Record<string, CelValue>)[node.key];
+      return Object.hasOwn(obj, node.key) ? (obj as Record<string, CelValue>)[node.key] : undefined;
     }
     case "index": {
-      const obj = evalNode(node.obj, ctx);
-      const idx = evalNode(node.idx, ctx);
+      const obj = evalNode(node.obj, ctx, budget);
+      const idx = evalNode(node.idx, ctx, budget);
       if (Array.isArray(obj) && typeof idx === "number") {
         return obj[idx];
       }
       if (obj !== null && typeof obj === "object" && typeof idx === "string") {
-        return (obj as Record<string, CelValue>)[idx];
+        return Object.hasOwn(obj, idx) ? (obj as Record<string, CelValue>)[idx] : undefined;
       }
       return undefined;
     }
+    case "map":
+      return Object.fromEntries(
+        node.entries.map(([key, value]) => [key, evalNode(value, ctx, budget)]),
+      );
+    case "method": {
+      if (node.obj.k === "id" && node.obj.name === "math") {
+        const fn = mathFunctions.get(node.name);
+        if (!fn || node.args.length !== fn.arity)
+          throw new Error("CEL: unknown math function or wrong arity");
+        const result = fn.fn(...node.args.map((arg) => toNum(evalNode(arg, ctx, budget))));
+        if (!Number.isFinite(result)) throw new Error("CEL: non-finite math result");
+        return result;
+      }
+      const receiver = evalNode(node.obj, ctx, budget);
+      if (node.name === "map" || node.name === "filter") {
+        const [variable, body] = node.args;
+        if (!Array.isArray(receiver) || variable?.k !== "id" || !body || node.args.length !== 2)
+          throw new Error("CEL: map/filter require a list, a variable and an expression");
+        charge(budget, receiver.length);
+        const local = { ...ctx, [variable.name]: null };
+        const output = [];
+        for (const item of receiver) {
+          local[variable.name] = item;
+          const result = evalNode(body, local, budget);
+          if (node.name === "map") output.push(result);
+          else if (typeof result !== "boolean")
+            throw new Error("CEL: filter predicate must return a boolean");
+          else if (result) output.push(item);
+        }
+        return output;
+      }
+      const [argument] = node.args;
+      if (typeof receiver !== "string" || !argument || node.args.length !== 1)
+        throw new Error("CEL: string method requires a string argument");
+      const value = evalNode(argument, ctx, budget);
+      if (typeof value !== "string") throw new Error("CEL: expected a string");
+      charge(budget, receiver.length + value.length);
+      if (node.name === "contains") return receiver.includes(value);
+      if (node.name === "startsWith") return receiver.startsWith(value);
+      if (node.name === "endsWith") return receiver.endsWith(value);
+      throw new Error(`CEL: unknown string method "${node.name}"`);
+    }
     case "list":
-      return node.items.map((item) => evalNode(item, ctx));
+      return node.items.map((item) => evalNode(item, ctx, budget));
     case "call":
-      return evalCall(node, ctx);
+      return evalCall(node, ctx, budget);
     case "unary": {
-      const v = evalNode(node.e, ctx);
+      const v = evalNode(node.e, ctx, budget);
       return node.op === "!" ? !truthy(v) : -toNum(v);
     }
     case "bin":
-      return evalBin(node, ctx);
+      return evalBin(node, ctx, budget);
     case "ternary":
-      return truthy(evalNode(node.c, ctx)) ? evalNode(node.a, ctx) : evalNode(node.b, ctx);
+      return truthy(evalNode(node.c, ctx, budget))
+        ? evalNode(node.a, ctx, budget)
+        : evalNode(node.b, ctx, budget);
   }
 }
 
-function evalCall(node: Extract<Node, { k: "call" }>, ctx: Record<string, CelValue>): CelValue {
+function evalCall(
+  node: Extract<Node, { k: "call" }>,
+  ctx: Record<string, CelValue>,
+  budget: EvaluationBudget,
+): CelValue {
   if (node.name === "size") {
     const arg = node.args[0];
     if (node.args.length !== 1 || !arg) {
       throw new Error("CEL: size() takes one argument");
     }
-    const v = evalNode(arg, ctx);
+    const v = evalNode(arg, ctx, budget);
     if (typeof v === "string" || Array.isArray(v)) {
       return v.length;
     }
@@ -327,8 +433,9 @@ function evalCall(node: Extract<Node, { k: "call" }>, ctx: Record<string, CelVal
     }
     let v: CelValue | typeof MISSING = MISSING;
     try {
-      v = evalNode(arg, ctx);
-    } catch {
+      v = evalNode(arg, ctx, budget);
+    } catch (error) {
+      if (error instanceof CelBudgetExceeded) throw error;
       return false;
     }
     return v !== undefined && v !== MISSING;
@@ -338,7 +445,7 @@ function evalCall(node: Extract<Node, { k: "call" }>, ctx: Record<string, CelVal
     if (node.args.length !== 1 || !arg) {
       throw new Error("CEL: string() takes one argument");
     }
-    const v = evalNode(arg, ctx);
+    const v = evalNode(arg, ctx, budget);
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
       return String(v);
     }
@@ -347,16 +454,27 @@ function evalCall(node: Extract<Node, { k: "call" }>, ctx: Record<string, CelVal
   throw new Error(`CEL: unknown function "${node.name}"`);
 }
 
-function evalBin(node: Extract<Node, { k: "bin" }>, ctx: Record<string, CelValue>): CelValue {
+function evalBin(
+  node: Extract<Node, { k: "bin" }>,
+  ctx: Record<string, CelValue>,
+  budget: EvaluationBudget,
+): CelValue {
   if (node.op === "&&") {
-    return truthy(evalNode(node.l, ctx)) && truthy(evalNode(node.r, ctx));
+    return truthy(evalNode(node.l, ctx, budget)) && truthy(evalNode(node.r, ctx, budget));
   }
   if (node.op === "||") {
-    return truthy(evalNode(node.l, ctx)) || truthy(evalNode(node.r, ctx));
+    return truthy(evalNode(node.l, ctx, budget)) || truthy(evalNode(node.r, ctx, budget));
   }
-  const l = evalNode(node.l, ctx);
-  const r = evalNode(node.r, ctx);
+  const l = evalNode(node.l, ctx, budget);
+  const r = evalNode(node.r, ctx, budget);
   switch (node.op) {
+    case "in":
+      if (Array.isArray(r)) {
+        charge(budget, r.length);
+        return r.includes(l);
+      }
+      if (r !== null && typeof r === "object" && typeof l === "string") return Object.hasOwn(r, l);
+      throw new Error("CEL: in requires a list or a string-keyed map");
     case "==":
       return l === r;
     case "!=":
@@ -369,10 +487,15 @@ function evalBin(node: Extract<Node, { k: "bin" }>, ctx: Record<string, CelValue
       return toNum(l) > toNum(r);
     case ">=":
       return toNum(l) >= toNum(r);
-    case "+":
-      return typeof l === "string" || typeof r === "string"
-        ? String(l) + String(r)
-        : toNum(l) + toNum(r);
+    case "+": {
+      if (typeof l !== "string" && typeof r !== "string") return toNum(l) + toNum(r);
+      if ((l !== null && typeof l === "object") || (r !== null && typeof r === "object"))
+        throw new Error("CEL: string concatenation requires scalars");
+      const left = String(l);
+      const right = String(r);
+      charge(budget, left.length + right.length);
+      return left + right;
+    }
     case "-":
       return toNum(l) - toNum(r);
     case "*":
@@ -400,5 +523,25 @@ function toNum(v: CelValue): number {
 /** Parse and evaluate a guard expression against a read-only context. */
 export function evalCel(expr: string, ctx: Record<string, CelValue>): CelValue {
   const ast = new Parser(lex(expr)).parse();
-  return evalNode(ast, ctx);
+  const budget = { remaining: 1_000_000 };
+  const value = evalNode(ast, ctx, budget);
+  // A map can emit the same large input many times. Consumers serialize each
+  // occurrence, so account for the expanded result, including repeated references.
+  const pending = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === "string") charge(budget, item.length);
+    else if (Array.isArray(item)) {
+      charge(budget, item.length + 1);
+      for (const child of item) pending.push(child);
+    } else if (item !== null && typeof item === "object") {
+      charge(budget);
+      for (const key in item) {
+        if (!Object.hasOwn(item, key)) continue;
+        charge(budget, key.length + 1);
+        pending.push((item as Record<string, unknown>)[key]);
+      }
+    }
+  }
+  return value;
 }

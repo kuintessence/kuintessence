@@ -34,7 +34,10 @@ export function AgentsPage() {
             className="font-mono text-[11px] text-muted-foreground tabular-nums"
             data-testid="agents-count"
           >
-            {t("agents.countHint", { online: onlineCount, total: agents.length })}
+            {t("agents.countHint", {
+              online: agentsQ.isSuccess ? onlineCount : "—",
+              total: agentsQ.isSuccess ? agents.length : "—",
+            })}
           </span>
         }
       />
@@ -44,7 +47,7 @@ export function AgentsPage() {
         emptyTestId="agents-empty"
         data={agents}
         columns={[{ accessorKey: "siteName", header: t("ui.name") }]}
-        table={{ pageSize: 10, tableClassName: "min-w-0" }}
+        table={{ pageSize: 10 }}
         getKey={(agent) => agent.agentId}
         matches={(agent, query) =>
           [agent.agentId, agent.siteName, agent.schedulerType, agent.status]
@@ -56,7 +59,7 @@ export function AgentsPage() {
         loading={agentsQ.isLoading}
         error={loadError ? toUserFacingError(loadError, t("agents.loadFailed")) : undefined}
         onRetry={() => void agentsQ.refetch()}
-        contentClassName="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+        contentClassName="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))] gap-3"
         data-testid="agents-grid"
       />
     </PageShell>

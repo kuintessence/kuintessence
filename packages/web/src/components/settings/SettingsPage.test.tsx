@@ -3,18 +3,31 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import en from "../../locales/cp/en.json";
 import zh from "../../locales/cp/zh.json";
 
-const router = vi.hoisted(() => ({ hash: "", role: "super_admin" }));
+const router = vi.hoisted(() => ({
+  hash: "",
+  role: "super_admin",
+  expiresAt: null as number | null,
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   useRouterState: ({ select }: { select: (state: { location: { hash: string } }) => unknown }) =>
     select({ location: { hash: router.hash } }),
 }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { count?: number }) =>
+      options?.count === undefined ? key : `${key}:${options.count}`,
+  }),
+}));
 vi.mock("../../lib/auth", () => ({
   clearAuth: vi.fn(),
   clearServerAuthSession: vi.fn(),
-  getAuthState: () => ({ role: router.role, email: "admin@example.test", expiresAt: null }),
+  getAuthState: () => ({
+    role: router.role,
+    email: "admin@example.test",
+    expiresAt: router.expiresAt,
+  }),
   setAuth: vi.fn(),
   subscribeAuthState: () => () => undefined,
 }));
@@ -67,6 +80,7 @@ import { SettingsPage } from "./SettingsPage";
 describe("SettingsPage deep links", () => {
   beforeEach(() => {
     router.hash = "";
+    router.expiresAt = null;
     router.role = "super_admin";
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
@@ -90,11 +104,19 @@ describe("SettingsPage deep links", () => {
     const section = await screen.findByTestId(panel);
     expect(section.closest("section")?.id).toBe(sectionId);
     expect(section.closest("section")?.hidden).toBe(false);
-    const other = document.getElementById(
-      sectionId === "cluster-file-roots" ? "cost-rates" : "branding",
-    );
-    expect(other?.hidden).toBe(true);
+    expect(document.getElementById("branding")).toBeNull();
     await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+  });
+
+  test.each([
+    "#branding",
+    "#security/branding",
+  ])("opens branding outside security at %s", (hash) => {
+    router.hash = hash;
+    render(<SettingsPage />);
+    expect(screen.getByRole("heading", { name: "settings.tabs.branding" })).toBeTruthy();
+    expect(document.getElementById("branding")).toBeTruthy();
+    expect(screen.queryByTestId("settings-section-navigation")).toBeNull();
   });
 
   test("ships localized agent labels in both supported CP locales", () => {
@@ -120,3 +142,14 @@ describe("SettingsPage deep links", () => {
 });
 
 vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));
+
+test.each([
+  [522_000, "settings.sessionMinutes:9"],
+  [0, "settings.sessionExpired"],
+])("shows session validity in whole minutes: %s", (remaining, label) => {
+  router.hash = "#personal/account";
+  router.expiresAt = Date.now() + remaining;
+  render(<SettingsPage />);
+  expect(screen.getByTestId("settings-expiry-value").textContent).toBe(label);
+  expect(screen.getByText("settings.tokenExpiresIn")).toBeTruthy();
+});

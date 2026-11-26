@@ -22,6 +22,7 @@ import {
   type LucideIcon,
   Monitor,
   Network,
+  Palette,
   RadioTower,
   ReceiptText,
   ScrollText,
@@ -189,22 +190,51 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
     serverCapability: "workspace.provider.view",
     sections: [
       {
-        labelKey: "workspace.section.operations",
+        labelKey: "workspace.section.overview",
         items: [
           { to: "/cp", exact: true, labelKey: "cp.nav.dashboard", icon: Gauge },
-          { to: "/cp/interconnect", labelKey: "workspace.nav.interconnect", icon: Activity },
           { to: "/cp/profile", labelKey: "providers.selfTitle", icon: Building2 },
-          { to: "/cp/metering", labelKey: "cp.nav.metering", icon: ReceiptText },
+        ],
+      },
+      {
+        labelKey: "workspace.section.computeNetwork",
+        items: [
+          {
+            to: "/cp/interconnect",
+            hash: "overview",
+            labelKey: "workspace.nav.interconnect",
+            icon: Activity,
+          },
+          {
+            to: "/cp/interconnect",
+            hash: "availability-zones",
+            labelKey: "interconnect.centers",
+            icon: Building2,
+          },
+          {
+            to: "/cp/interconnect",
+            hash: "clusters",
+            labelKey: "interconnect.clusters",
+            icon: Server,
+          },
+          { to: "/cp/interconnect", hash: "links", labelKey: "interconnect.links", icon: Network },
+        ],
+      },
+      {
+        labelKey: "workspace.section.computeResources",
+        items: [
+          {
+            to: "/cp/accounts",
+            labelKey: "cp.nav.accounts",
+            icon: KeyRound,
+            serverCapability: "workspace.provider.manage",
+          },
+          { to: "/cp/software", labelKey: "cp.software.title", icon: Box },
           {
             to: "/cp/data",
             labelKey: "cp.nav.data",
             icon: Database,
             serverCapability: "workspace.provider.manage",
-          },
-          {
-            to: "/cp/software",
-            labelKey: "cp.nav.software",
-            icon: Box,
           },
         ],
       },
@@ -217,13 +247,20 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
             icon: UsersRound,
             serverCapability: "workspace.provider.manage",
           },
+        ],
+      },
+      {
+        labelKey: "workspace.section.audit",
+        items: [
+          { to: "/cp/audit", labelKey: "cp.nav.audit", icon: ScrollText },
+          { to: "/cp/metering", hash: "overview", labelKey: "cp.nav.metering", icon: ReceiptText },
           {
-            to: "/cp/accounts",
-            labelKey: "cp.nav.accounts",
-            icon: KeyRound,
+            to: "/cp/metering",
+            hash: "cost-rates",
+            labelKey: "settings.sections.cost-rates",
+            icon: ReceiptText,
             serverCapability: "workspace.provider.manage",
           },
-          { to: "/cp/audit", labelKey: "cp.nav.audit", icon: ScrollText },
         ],
       },
     ],
@@ -244,7 +281,7 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         labelKey: "workspace.section.infrastructure",
         items: [
           { to: "/cp/infrastructure", labelKey: "cp.nav.infrastructure", icon: HardDrive },
-          { to: "/cp/agents", labelKey: "cp.nav.agents", icon: Server },
+          { to: "/cp/agents", labelKey: "workspace.nav.clusterAccess", icon: Server },
           {
             to: "/cp/agent-registration",
             labelKey: "cp.nav.agentRegistration",
@@ -271,10 +308,8 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
     serverCapability: "workspace.platform.view",
     sections: [
       {
-        labelKey: "workspace.section.platformOperations",
+        labelKey: "workspace.section.overview",
         items: [
-          { to: "/interconnect", labelKey: "workspace.nav.interconnect", icon: Activity },
-          { to: "/providers", labelKey: "providers.title", icon: Building2 },
           {
             to: "/operations",
             hash: "overview",
@@ -285,12 +320,37 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         ],
       },
       {
+        labelKey: "workspace.section.computeNetwork",
+        items: [
+          {
+            to: "/interconnect",
+            hash: "overview",
+            labelKey: "workspace.nav.interconnect",
+            icon: Activity,
+          },
+          { to: "/providers", labelKey: "providers.title", icon: Building2 },
+          {
+            to: "/interconnect",
+            hash: "availability-zones",
+            labelKey: "interconnect.centers",
+            icon: Building2,
+          },
+          {
+            to: "/interconnect",
+            hash: "clusters",
+            labelKey: "interconnect.clusters",
+            icon: Server,
+          },
+          { to: "/interconnect", hash: "links", labelKey: "interconnect.links", icon: Network },
+        ],
+      },
+      {
         labelKey: "workspace.section.computeResources",
         items: [
           {
             to: "/operations",
             hash: "clusters",
-            labelKey: "operations.resources.clusters",
+            labelKey: "workspace.nav.clusterAccess",
             icon: Server,
             serverCapability: "workspace.platform.operate",
           },
@@ -311,10 +371,15 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
           {
             to: "/operations",
             hash: "software",
-            labelKey: "cp.nav.software",
+            labelKey: "cp.software.title",
             icon: Boxes,
             serverCapability: "workspace.platform.operate",
           },
+        ],
+      },
+      {
+        labelKey: "workspace.section.platformIdentity",
+        items: [
           {
             to: "/operations",
             hash: "users",
@@ -382,8 +447,21 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
           {
             to: "/settings",
             hash: "infrastructure",
-            labelKey: "settings.tabs.infrastructure",
+            labelKey: "settings.sections.cluster-file-roots",
             icon: HardDrive,
+          },
+          {
+            to: "/settings",
+            hash: "infrastructure/cost-rates",
+            labelKey: "settings.sections.cost-rates",
+            icon: ReceiptText,
+            requires: Role.SUPER_ADMIN,
+          },
+          {
+            to: "/settings",
+            hash: "branding",
+            labelKey: "settings.tabs.branding",
+            icon: Palette,
           },
         ],
       },
@@ -577,7 +655,7 @@ export function inferWorkspaceIdentity(pathname: string, hash: string): Workspac
   }
   if (pathname === "/settings") {
     const normalizedHash = hash.replace(/^#/, "").split("/")[0];
-    if (normalizedHash === "security" || normalizedHash === "infrastructure") {
+    if (["branding", "security", "infrastructure"].includes(normalizedHash ?? "")) {
       return "platform-technical";
     }
     return "personal";
@@ -605,8 +683,13 @@ export function isWorkspaceNavItemActive(
   if (!normalizedHash) {
     return (
       (item.to === "/settings" && item.hash === "personal/account") ||
-      (item.to === "/operations" && item.hash === "overview")
+      ((item.to === "/operations" || item.to === "/cp/metering") && item.hash === "overview") ||
+      ((item.to === "/interconnect" || item.to === "/cp/interconnect") && item.hash === "overview")
     );
+  }
+  if (item.to === "/settings") {
+    if (normalizedHash === "security/branding") return item.hash === "branding";
+    if (normalizedHash === "infrastructure/cost-rates") return item.hash === normalizedHash;
   }
   if (item.hash.includes("/")) return normalizedHash === item.hash;
   return normalizedHash.split("/")[0] === item.hash;

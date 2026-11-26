@@ -9,6 +9,7 @@ export interface NodeInvocation {
 }
 
 export type WorkflowJournalEntry =
+  | { kind: "generated-files"; files: { id: string; sha256: string }[] }
   | { kind: "definition"; workflow: Workflow }
   | { kind: "version"; workflow: Workflow | null }
   | {

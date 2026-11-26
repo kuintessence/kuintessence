@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { coerceTyped, extractTyped } from "../usecase/value-extract";
 import { createLogger } from "../utils/logger";
 import * as workflowDsl from "../workflow-dsl";
+import { generateFromFile } from "../workflow-dsl/generate-from-file";
 import {
   bindWorkflowJournal,
   journalOperation,
@@ -62,9 +64,17 @@ export type NodeExecutor = (
   node: workflowDsl.WorkflowNode,
   ctx: Record<string, CelValue>,
   invocation?: NodeInvocation,
+  forEachGroup?: string,
 ) => Promise<NodeExecutionResult>;
 
 export interface RunWorkflowOptions {
+  runId?: string;
+  publishGeneratedFiles?: (
+    items: unknown[],
+    invocation: NodeInvocation,
+    output?: workflowDsl.ReduceOutput,
+  ) => Promise<unknown[]>;
+  readGenerateFile?: (value: unknown) => Promise<string>;
   journal?: WorkflowJournal;
   resolveWorkflowVersion?: (workflowVersionId: string) => Promise<workflowDsl.Workflow | null>;
 }
@@ -112,7 +122,7 @@ export async function runWorkflow(
     wf.spec,
     executor,
     { params, nodes: {} },
-    { ...options, control: {} },
+    { ...options, runId: options.runId ?? crypto.randomUUID(), control: {} },
     [],
   );
   return { status: res.status, values: stripReserved(res.nodes) };
@@ -154,9 +164,10 @@ async function runScope(
   parentCtx: Record<string, CelValue>,
   options: ExecutionOptions,
   scopePath: readonly (string | number)[],
+  forEachGroups?: ReadonlyMap<string, string>,
 ): Promise<ScopeResult> {
   try {
-    return await executeScope(spec, executor, parentCtx, options, scopePath);
+    return await executeScope(spec, executor, parentCtx, options, scopePath, forEachGroups);
   } catch (error) {
     if (
       error instanceof WorkflowExecutionInterrupted &&
@@ -173,6 +184,7 @@ async function executeScope(
   parentCtx: Record<string, CelValue>,
   options: ExecutionOptions,
   scopePath: readonly (string | number)[],
+  forEachGroups?: ReadonlyMap<string, string>,
 ): Promise<ScopeResult> {
   const nodes = spec.nodeDrafts;
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -193,7 +205,12 @@ async function executeScope(
     slotRelations: r.slotRelations,
   }));
   const edges: Edge[] = [...explicitEdges, ...switchEdges];
-  const order = topoSort(ids, edges);
+  // A data binding orders producers before readers without propagating branch skips as hard edges.
+  const inputSources = new Map(nodes.map((node) => [node.id, inputSourceIds(node)]));
+  const orderingEdges = [...inputSources].flatMap(([toId, sources]) =>
+    sources.map((fromId) => ({ fromId, toId })),
+  );
+  const order = topoSort(ids, [...edges, ...orderingEdges]);
   const orderedIds = new Set(order);
   const unresolved = new Set(ids.filter((i) => !orderedIds.has(i)));
   const executionOrder = unresolved.size === 0 ? order : [...order, ...unresolved];
@@ -270,7 +287,10 @@ async function executeScope(
       continue;
     }
     const dependencies = preds.get(id) ?? [];
-    if (dependencies.some((id) => pending.has(id)) || hasPendingInput(node, pending)) {
+    if (
+      dependencies.some((id) => pending.has(id)) ||
+      inputSources.get(id)?.some((source) => pending.has(source))
+    ) {
       pending.add(id);
       continue;
     }
@@ -344,9 +364,22 @@ async function executeScope(
     }
     if (node.type === "Generate") {
       try {
-        await record(id, "Succeeded", {
-          [node.output.descriptor]: workflowDsl.expandGenerate(node.rule),
-        });
+        const rule = node.rule;
+        let items: unknown[];
+        if (rule.kind === "FromFile") {
+          if (!options.readGenerateFile) throw new Error("Workflow file storage is unavailable");
+          const source =
+            rule.source === "upload"
+              ? workflowDsl.evalCel("params.upload", ctx)
+              : nodeCtx[rule.source.node]?.values[rule.source.output];
+          items = generateFromFile(rule, await options.readGenerateFile(source));
+        } else items = workflowDsl.expandGenerate(rule);
+        if (node.output.as === "BatchFiles") {
+          if (!options.publishGeneratedFiles)
+            throw new Error("Generated file publication is unavailable");
+          items = await options.publishGeneratedFiles(items, invocation);
+        }
+        await record(id, "Succeeded", { [node.output.descriptor]: items });
       } catch (error) {
         if (error instanceof WorkflowExecutionInterrupted) throw error;
         await record(
@@ -383,12 +416,45 @@ async function executeScope(
         continue;
       }
       if (node.type === "Reduce") {
-        const [reduceStatus, reduceValues] = reduceNode(node, nodeCtx);
+        const [reduceStatus, reduceValues, reduceFailure] = await reduceNode(
+          node,
+          nodeCtx,
+          executor,
+          ctx,
+          invocation,
+        );
+        if (reduceStatus === "Succeeded" && node.output.kind !== "Value") {
+          try {
+            const value = reduceValues[node.output.descriptor];
+            const items = node.output.kind === "SingleFile" ? [value] : value;
+            if (!Array.isArray(items)) throw new Error("OrderedFolder requires a list result");
+            if (!options.publishGeneratedFiles)
+              throw new Error("Workflow file storage is unavailable");
+            const files = await options.publishGeneratedFiles(items, invocation, node.output);
+            if (files.length !== items.length) throw new Error("Missing reduction file receipt");
+            reduceValues[node.output.descriptor] =
+              node.output.kind === "SingleFile" ? files[0] : files;
+          } catch (error) {
+            if (error instanceof WorkflowExecutionInterrupted) throw error;
+            await record(
+              id,
+              "Failed",
+              {},
+              {
+                message:
+                  error instanceof Error ? error.message : "Reduction output publication failed",
+              },
+            );
+            continue;
+          }
+        }
         await record(
           id,
           reduceStatus,
           reduceValues,
-          reduceStatus === "Failed" ? { message: "Result reduction failed." } : undefined,
+          reduceStatus === "Failed"
+            ? (reduceFailure ?? { message: "Result reduction failed." })
+            : undefined,
         );
         continue;
       }
@@ -411,7 +477,7 @@ async function executeScope(
         continue;
       }
       try {
-        const res = await executor(node, ctx, invocation);
+        const res = await executor(node, ctx, invocation, forEachGroups?.get(id));
         await record(id, res.status, res.values ?? {}, res.failure);
       } catch (err) {
         if (err instanceof WorkflowExecutionInterrupted || err instanceof WorkflowNodeWaiting)
@@ -450,21 +516,27 @@ async function executeScope(
   return { status: Object.fromEntries(status), nodes: nodeCtx };
 }
 
-function hasPendingInput(node: workflowDsl.WorkflowNode, pending: ReadonlySet<string>): boolean {
-  const fromPending = (ref: unknown) =>
-    ref !== null &&
-    typeof ref === "object" &&
-    "node" in ref &&
-    typeof ref.node === "string" &&
-    pending.has(ref.node);
-  if (
-    "inputSlots" in node &&
-    node.inputSlots?.some((slot) => fromPending(slot.from) || slot.sources?.some(fromPending))
-  )
-    return true;
-  if (node.type === "SubWorkflow" && node.inputs?.some((input) => fromPending(input.from)))
-    return true;
-  return node.type === "Reduce" && pending.has(node.from.loop);
+function inputSourceIds(node: workflowDsl.WorkflowNode): string[] {
+  const ids = new Set<string>();
+  const addBinding = (ref: workflowDsl.NodeInputSlot["from"]) => {
+    if (ref && "node" in ref) ids.add(ref.node);
+  };
+  if ("inputSlots" in node) {
+    for (const slot of node.inputSlots ?? []) {
+      addBinding(slot.from);
+      for (const source of slot.sources ?? []) ids.add(source.node);
+    }
+  }
+  if (node.type === "SubWorkflow") {
+    for (const input of node.inputs ?? []) addBinding(input.from);
+  }
+  if (node.type === "Loop") {
+    for (const carry of node.carry ?? []) addBinding(carry.initial);
+  }
+  if (node.type === "Generate" && node.rule.kind === "FromFile" && node.rule.source !== "upload")
+    addBinding(node.rule.source);
+  if (node.type === "Reduce") ids.add(node.from.loop);
+  return [...ids];
 }
 
 type InputReadiness = "Ready" | "Skipped" | "Failed";
@@ -597,7 +669,7 @@ function evaluateSwitch(
 }
 
 type ControlFlowRet = [NodeStatus, Record<string, CelValue>, WorkflowNodeFailure?];
-type LoopOutSpec = { descriptor: string; from: { node: string; output: string } };
+type LoopOutSpec = workflowDsl.LoopOutput;
 type NodeWithInputSlots = workflowDsl.WorkflowNode & { inputSlots?: workflowDsl.NodeInputSlot[] };
 
 async function runLoop(
@@ -680,9 +752,28 @@ async function runForEach(
     }
     rows.push(captureRow(item, i, child.nodes));
   }
-  return failed
-    ? ["Failed", {}, failure]
-    : ["Succeeded", { ...collected, [LOOP_ROWS_KEY]: rows } as Record<string, CelValue>];
+  if (failed) return ["Failed", {}, failure];
+  return aggregateLoopOutputs(outputs, collected, { [LOOP_ROWS_KEY]: rows });
+}
+
+function aggregateLoopOutputs(
+  outputs: LoopOutSpec[],
+  collected: Record<string, unknown[]>,
+  result: Record<string, CelValue>,
+): ControlFlowRet {
+  for (const output of outputs) {
+    const values = collected[output.descriptor];
+    if (!values) continue;
+    const value = output.aggregate === "Concat" ? concatScalars(values) : values;
+    if (value === undefined)
+      return [
+        "Failed",
+        {},
+        { message: `Loop output '${output.descriptor}' cannot concatenate non-scalar values.` },
+      ];
+    result[output.descriptor] = value;
+  }
+  return ["Succeeded", result];
 }
 
 async function runForEachIterations(
@@ -698,6 +789,15 @@ async function runForEachIterations(
     return children;
   }
   const concurrency = Math.min(node.maxParallel ?? list.length, list.length);
+  // Only direct leaves share a group. Nested loops get their own scope and concurrency limit.
+  const groups = new Map<string, string>();
+  if (concurrency > 1) {
+    for (const leaf of node.body.nodeDrafts) {
+      if (leaf.type !== "SoftwareUsecaseComputing") continue;
+      const identity = JSON.stringify([options.runId, nodePath, leaf.id]);
+      groups.set(leaf.id, createHash("sha256").update(identity).digest("hex"));
+    }
+  }
   let nextIndex = 0;
   let interruption: unknown;
   let interrupted = false;
@@ -721,11 +821,14 @@ async function runForEachIterations(
         [REQUIRED_COLLECTED_OUTPUTS_KEY]: ctx[REQUIRED_COLLECTED_OUTPUTS_KEY] ?? [],
       };
       try {
-        children[index] = await runScope(node.body, executor, childCtx, options, [
-          ...nodePath,
-          "iteration",
-          index,
-        ]);
+        children[index] = await runScope(
+          node.body,
+          executor,
+          childCtx,
+          options,
+          [...nodePath, "iteration", index],
+          groups,
+        );
       } catch (error) {
         if (error instanceof WorkflowExecutionWaiting) {
           waiting.push(...error.invocations);
@@ -778,6 +881,9 @@ async function runWhile(
     return ["Failed", {}];
   }
   const outputs = (node.outputs ?? []) as LoopOutSpec[];
+  const collected = Object.fromEntries(
+    outputs.filter((out) => out.aggregate).map((out) => [out.descriptor, [] as unknown[]]),
+  );
   const carry = node.carry ?? [];
   const body = withLoopCarryBindings(node.body, carry);
   let previousChild: ScopeResult | undefined;
@@ -811,6 +917,8 @@ async function runWhile(
       return ["Failed", {}];
     }
     lastOutputs = currentOutputs;
+    for (const [descriptor, items] of Object.entries(collected))
+      items.push(currentOutputs[descriptor]);
     const done = evalExpr(
       node.until.expr,
       { ...childCtx, nodes: child.nodes },
@@ -821,12 +929,14 @@ async function runWhile(
       return ["Failed", {}];
     }
     if (done === true) {
-      return ["Succeeded", lastOutputs];
+      return aggregateLoopOutputs(outputs, collected, lastOutputs);
     }
     prevOutputs = lastOutputs;
     previousChild = child;
   }
-  return node.onExhausted === "SucceedWithLast" ? ["Succeeded", lastOutputs] : ["Failed", {}];
+  return node.onExhausted === "SucceedWithLast"
+    ? aggregateLoopOutputs(outputs, collected, lastOutputs)
+    : ["Failed", {}];
 }
 
 function withLoopCarryBindings(spec: Spec, carry: workflowDsl.LoopCarry[]): Spec {
@@ -896,15 +1006,40 @@ function resolveLoopCarryValues(
   return values;
 }
 
-function reduceNode(
+async function reduceNode(
   node: Extract<workflowDsl.WorkflowNode, { type: "Reduce" }>,
   nodeCtx: Record<string, NodeCtxEntry>,
-): ControlFlowRet {
+  executor: NodeExecutor,
+  ctx: Record<string, CelValue>,
+  invocation: NodeInvocation,
+): Promise<ControlFlowRet> {
   const loopValues = nodeCtx[node.from.loop]?.values;
   if (!loopValues) {
     return ["Failed", {}];
   }
   const reducer = node.reducer;
+  if (reducer.kind === "Command") {
+    if (!Array.isArray(loopValues[node.from.output]))
+      return ["Failed", {}, { message: "Command requires a collected Loop output" }];
+    try {
+      const leaf = workflowDsl.commandExecutionNode(node);
+      if (!leaf) throw new Error("Missing Command executor");
+      const result = await executor(leaf, ctx, invocation);
+      if (result.status === "Failed") return ["Failed", {}, result.failure];
+      const value = result.values?.[node.output.descriptor];
+      if (value === undefined)
+        throw new Error(`Command did not produce output '${node.output.descriptor}'`);
+      return ["Succeeded", { [node.output.descriptor]: value }];
+    } catch (error) {
+      if (error instanceof WorkflowExecutionInterrupted || error instanceof WorkflowNodeWaiting)
+        throw error;
+      return [
+        "Failed",
+        {},
+        { message: error instanceof Error ? error.message : "Command execution failed" },
+      ];
+    }
+  }
   if (reducer.kind === "Collect" || reducer.kind === "Concat") {
     const arr = loopValues[node.from.output];
     if (!Array.isArray(arr)) {
@@ -934,8 +1069,6 @@ function reduceNode(
     logger.error({ nodeId: node.id, kind: reducer.kind, err }, "Reduce reducer failed");
     return ["Failed", {}];
   }
-  // `Command` runs a usecase over the gathered rows — needs a sub-executor seam
-  // (deferred); the declarative reducers above cover the scatter-gather gallery.
   return ["Failed", {}];
 }
 

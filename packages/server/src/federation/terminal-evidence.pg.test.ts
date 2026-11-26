@@ -11376,10 +11376,10 @@ test("disclosure delivery imports only complete dual-signed projections and pres
   expect(payload.evidence).toEqual({ recordType: "payment", values: { amount: "7" } });
   expect(f.io.calls).toBe(4);
   const [stored] = await f.imported();
-  expect(stored?.evidence.disclosure.sourceJws).toBe(
+  expect(stored?.evidence?.disclosure.sourceJws).toBe(
     (await f.service.list(f.sourceActor, f.revisionId)).data[0]?.approvalJws,
   );
-  expect(stored?.evidence.disclosure.targetJws).toBe(
+  expect(stored?.evidence?.disclosure.targetJws).toBe(
     (await f.peer.list(f.actor, f.revisionId)).data[0]?.approvalJws,
   );
   expect(await f.receiver.import(f.receiverActor, f.scope.caseId, f.scope)).toEqual(payload);
@@ -11532,6 +11532,47 @@ test("disclosure delivery local case closure retains metadata and never reopens 
   ).toEqual(before);
 });
 
+test("recipient retention requires a custodian, expired retained closure and no hold", async () => {
+  const f = await disclosureDeliveryFixture();
+  const id = f.scope.caseId;
+  await f.receiver.import(f.receiverActor, id, f.scope);
+  await f.receiver.close(f.receiverActor, id);
+  const archive = {
+    revision: 0,
+    action: "archive" as const,
+    retainUntil: new Date(Date.now() + 60000).toISOString(),
+  };
+  await expect(f.receiver.changeRetention(f.receiverActor, id, archive)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.receiverActor, capability: "case.retain", enabled: true },
+    f.receiverActor.userId,
+  );
+  await f.receiver.changeRetention(f.receiverActor, id, archive);
+  await expect(f.receiver.changeRetention(f.receiverActor, id, archive)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(
+    f.receiver.changeRetention(f.receiverActor, id, { action: "purge", revision: 1 }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await f.receiver.changeRetention(f.receiverActor, id, { action: "hold", revision: 1 });
+  await db
+    .update(federationEvidenceCases)
+    .set({ retainUntil: new Date(Date.now() - 1000) })
+    .where(eq(federationEvidenceCases.caseId, id));
+  await expect(
+    f.receiver.changeRetention(f.receiverActor, id, { action: "purge", revision: 2 }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await f.receiver.changeRetention(f.receiverActor, id, { action: "release-hold", revision: 2 });
+  await f.receiver.changeRetention(f.receiverActor, id, { action: "purge", revision: 3 });
+  const [row] = await db
+    .select()
+    .from(federationReceivedDisclosures)
+    .where(eq(federationReceivedDisclosures.grantId, f.scope.grantId));
+  expect(row?.evidence).toBeNull();
+  expect(row?.scope.disclosureDigest).toBe(f.scope.disclosureDigest);
+});
 test("disclosure delivery source audit and replay are atomic and revoked old requests cannot download", async () => {
   const f = await disclosureDeliveryFixture(),
     { q, jws } = await f.downloadQuery();

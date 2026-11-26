@@ -9,8 +9,17 @@ import type {
   SchedulerType,
 } from "@kuintessence/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, CircleAlert, Loader2, Pencil, Plus, Power, RefreshCw } from "lucide-react";
-import { type FormEvent, Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import type { CellContext, ColumnDef } from "@tanstack/react-table";
+import { CircleAlert, Loader2, Pencil, Plus, Power, RefreshCw } from "lucide-react";
+import {
+  createContext,
+  type FormEvent,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { queueTargetMode } from "../../lib/queue-selection";
@@ -27,6 +36,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { DataTable } from "../ui/data-table";
 import {
   Dialog,
   DialogBody,
@@ -37,6 +47,8 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { PageHeader } from "../ui/page";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -219,239 +231,171 @@ function ObservationBadge({ queue, t }: { queue: QueueRegistryView; t: Translate
   );
 }
 
-function ManagedQueueMobileDetails({ queue }: { queue: QueueRegistryView }) {
-  const { t } = useTranslation();
-  const organizationName = useOrganizationName();
-  const targetMode = queueTargetMode(queue);
-  return (
-    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
-      <dt className="text-muted-foreground">{t("cp.queues.field.queueId")}</dt>
-      <dd className="break-all font-mono">{queue.queueId}</dd>
-      <dt className="text-muted-foreground">{t("cp.queues.field.providerOrgId")}</dt>
-      <dd className="break-words" title={queue.providerOrgId}>
-        {organizationName(queue.providerOrgId)}
-      </dd>
-      <dt className="text-muted-foreground">{t("cp.queues.col.target")}</dt>
-      <dd className="break-words">
-        {targetMode === "default"
-          ? t("cp.queues.targetDefault")
-          : targetMode === "named"
-            ? queue.queueName
-            : t("cp.queues.targetUnknown")}
-      </dd>
-      <dt className="text-muted-foreground">{t("cp.queues.col.visibility")}</dt>
-      <dd className="break-words">
-        {queue.visibleOrgIds.length === 0
-          ? t("cp.queues.allProviderUsers")
-          : queue.visibleOrgIds.map(organizationName).join(", ")}
-      </dd>
-      <dt className="text-muted-foreground">{t("cp.queues.col.policy")}</dt>
-      <dd>
-        <QueuePolicyTags queue={queue} />
-      </dd>
-    </dl>
-  );
+interface QueueActions {
+  togglingQueueIds: Set<string>;
+  onEdit: (queue: QueueRegistryView) => void;
+  onToggle: (queue: QueueRegistryView) => void;
 }
+
+const QueueActionsContext = createContext<QueueActions | null>(null);
 
 function ManagedQueueTable({
   queues,
-  togglingQueueIds,
-  expandedQueueId,
-  onEdit,
-  onToggle,
-  onExpandedChange,
-}: {
-  queues: QueueRegistryView[];
-  togglingQueueIds: Set<string>;
-  expandedQueueId: string | null;
-  onEdit: (queue: QueueRegistryView) => void;
-  onToggle: (queue: QueueRegistryView) => void;
-  onExpandedChange: (queueId: string | null) => void;
-}) {
+  empty,
+  ...actions
+}: QueueActions & { queues: QueueRegistryView[]; empty: string }) {
   const { t } = useTranslation();
-  const organizationName = useOrganizationName();
+  const organizationName = useOrganizationName(queues.length > 0);
+  const columns = useMemo<ColumnDef<QueueRegistryView>[]>(
+    () => [
+      {
+        accessorKey: "name",
+        header: t("cp.queues.col.queue"),
+        size: 220,
+        cell: ({ row: { original: queue } }) => (
+          <div title={queue.queueId}>
+            <div className="font-medium">{queue.name}</div>
+            <div className="text-xs text-muted-foreground">
+              {organizationName(queue.providerOrgId)}
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: "target",
+        accessorFn: (queue) =>
+          queueTargetMode(queue) === "default"
+            ? t("cp.queues.targetDefault")
+            : (queue.queueName ?? t("cp.queues.targetUnknown")),
+        header: t("cp.queues.col.target"),
+        size: 150,
+        cell: ({ row: { original: queue }, getValue }) => (
+          <>
+            <span className={queueTargetMode(queue) === "named" ? "font-mono" : undefined}>
+              {String(getValue())}
+            </span>
+            {queueTargetMode(queue) === "default" ? (
+              <div className="text-xs text-muted-foreground">
+                {queue.resolvedQueueName
+                  ? t("cp.queues.currentResolution", { queueName: queue.resolvedQueueName })
+                  : t("cp.queues.unresolved")}
+              </div>
+            ) : queue.qos ? (
+              <div className="text-xs text-muted-foreground">QoS: {queue.qos}</div>
+            ) : null}
+          </>
+        ),
+      },
+      {
+        accessorKey: "agentId",
+        header: t("cp.queues.col.agent"),
+        size: 155,
+        cell: ({ row: { original: queue } }) => (
+          <>
+            <div className="font-mono text-xs">{queue.agentId}</div>
+            <div className="text-xs text-muted-foreground">{queue.schedulerType}</div>
+          </>
+        ),
+      },
+      {
+        id: "publication",
+        accessorFn: (queue) => Number(queue.enabled),
+        header: t("cp.queues.col.publication"),
+        size: 120,
+        cell: ({ row }) => <PublicationBadge enabled={row.original.enabled} t={t} />,
+      },
+      {
+        id: "observation",
+        accessorFn: (queue) => queue.availability?.state ?? "",
+        header: t("cp.queues.col.observation"),
+        size: 120,
+        cell: ({ row }) => <ObservationBadge queue={row.original} t={t} />,
+      },
+      {
+        id: "visibility",
+        accessorFn: (queue) =>
+          queue.visibleOrgIds.map(organizationName).join(", ") || t("cp.queues.allProviderUsers"),
+        header: t("cp.queues.col.visibility"),
+        size: 175,
+      },
+      {
+        id: "policy",
+        header: t("cp.queues.col.policy"),
+        size: 165,
+        cell: ({ row }) => <QueuePolicyTags queue={row.original} />,
+      },
+      {
+        id: "actions",
+        header: t("cp.queues.col.actions"),
+        size: 208,
+        enableResizing: false,
+        cell: ManagedQueueActions,
+      },
+    ],
+    [organizationName, t],
+  );
   return (
-    <div
-      className=" border-border sm:overflow-x-auto sm:overscroll-x-contain"
-      data-testid="cp-queues-table-scroll"
-    >
-      <Table className="w-full text-sm sm:min-w-[76rem]">
-        <caption className="sr-only">{t("cp.queues.managedTableCaption")}</caption>
-        <TableHeader className="sr-only text-left text-xs uppercase tracking-wide text-muted-foreground sm:not-sr-only sm:table-header-group">
-          <TableRow>
-            <TableHead className="px-3 py-2 font-medium" scope="col">
-              {t("cp.queues.col.queue")}
-            </TableHead>
-            <TableHead className="px-3 py-2 font-medium" scope="col">
-              {t("cp.queues.col.target")}
-            </TableHead>
-            <TableHead className="px-3 py-2 font-medium" scope="col">
-              {t("cp.queues.col.agent")}
-            </TableHead>
-            <TableHead className="px-3 py-2 font-medium" scope="col">
-              {t("cp.queues.col.publication")}
-            </TableHead>
-            <TableHead className="px-3 py-2 font-medium" scope="col">
-              {t("cp.queues.col.observation")}
-            </TableHead>
-            <TableHead className="px-3 py-2 font-medium" scope="col">
-              {t("cp.queues.col.visibility")}
-            </TableHead>
-            <TableHead className="px-3 py-2 font-medium" scope="col">
-              {t("cp.queues.col.policy")}
-            </TableHead>
-            <TableHead
-              className="px-3 py-2 font-medium sm:sticky sm:right-0 sm:z-10 sm:min-w-48 "
-              scope="col"
-            >
-              {t("cp.queues.col.actions")}
-            </TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody className="block divide-y divide-border sm:table-row-group sm:divide-y-0">
-          {queues.map((queue) => {
-            const targetMode = queueTargetMode(queue);
-            const expanded = expandedQueueId === queue.queueId;
-            const enableBlockedByInventory =
-              !queue.enabled &&
-              targetMode === "named" &&
-              queue.availability !== undefined &&
-              queue.availability.state !== "available";
-            return (
-              <Fragment key={queue.queueId}>
-                <TableRow
-                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 p-4 sm:table-row sm:border-border sm:p-0"
-                  data-testid={`cp-queue-row-${queue.queueId}`}
-                >
-                  <TableCell className="order-1 min-w-0 sm:table-cell sm:px-3 sm:py-2">
-                    <div className="break-words font-medium" title={queue.queueId}>
-                      {queue.name}
-                    </div>
-                    <div className="break-words text-xs text-muted-foreground">
-                      {organizationName(queue.providerOrgId)}
-                    </div>
-                  </TableCell>
-                  <TableCell className="order-2 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">
-                    {targetMode === "default" ? (
-                      <div className="space-y-1">
-                        <span className="text-xs font-medium sm:text-sm">
-                          {t("cp.queues.targetDefault")}
-                        </span>
-                        <div className="text-xs text-muted-foreground">
-                          {queue.resolvedQueueName
-                            ? t("cp.queues.currentResolution", {
-                                queueName: queue.resolvedQueueName,
-                                defaultValue: `Current resolution: ${queue.resolvedQueueName}`,
-                              })
-                            : t("cp.queues.unresolved")}
-                        </div>
-                      </div>
-                    ) : targetMode === "named" ? (
-                      <div className="space-y-1">
-                        <span className="font-mono text-xs sm:text-sm">{queue.queueName}</span>
-                        {queue.qos ? (
-                          <div className="text-xs text-muted-foreground">QoS: {queue.qos}</div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <Badge variant="cancelled">{t("cp.queues.targetUnknown")}</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="order-3 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">
-                    <div className="font-mono text-xs">
-                      <span className="mr-2 font-sans text-muted-foreground sm:hidden">
-                        {t("cp.queues.col.agent")}
-                      </span>
-                      <span className="break-all sm:break-normal">{queue.agentId}</span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">{queue.schedulerType}</div>
-                  </TableCell>
-                  <TableCell className="order-1 sm:table-cell sm:px-3 sm:py-2">
-                    <PublicationBadge enabled={queue.enabled} t={t} />
-                  </TableCell>
-                  <TableCell className="order-4 col-span-2 sm:table-cell sm:px-3 sm:py-2">
-                    <ObservationBadge queue={queue} t={t} />
-                  </TableCell>
-                  <TableCell
-                    className="hidden px-3 py-2 text-xs sm:table-cell"
-                    title={queue.visibleOrgIds.join(", ")}
-                  >
-                    {queue.visibleOrgIds.length === 0
-                      ? t("cp.queues.allProviderUsers")
-                      : queue.visibleOrgIds.map(organizationName).join(", ")}
-                  </TableCell>
-                  <TableCell className="hidden px-3 py-2 sm:table-cell">
-                    <QueuePolicyTags queue={queue} />
-                  </TableCell>
-                  <TableCell className="order-5 col-span-2 sm:sticky sm:right-0 sm:z-10 sm:table-cell sm:min-w-48 sm:px-3 sm:py-2 ">
-                    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="min-h-11 sm:min-h-8"
-                        onClick={() => onEdit(queue)}
-                        data-testid={`cp-queue-edit-${queue.queueId}`}
-                      >
-                        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                        {t("cp.queues.edit")}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="min-h-11 sm:min-h-8"
-                        disabled={togglingQueueIds.has(queue.queueId) || enableBlockedByInventory}
-                        aria-busy={togglingQueueIds.has(queue.queueId)}
-                        onClick={() => onToggle(queue)}
-                        data-testid={`cp-queue-toggle-${queue.queueId}`}
-                        title={
-                          enableBlockedByInventory
-                            ? t("cp.queues.cannotEnableUntilFresh", {
-                                defaultValue:
-                                  "A named target needs a fresh scheduler observation before it can be enabled.",
-                              })
-                            : undefined
-                        }
-                      >
-                        {togglingQueueIds.has(queue.queueId) ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                        ) : (
-                          <Power className="h-3.5 w-3.5" aria-hidden="true" />
-                        )}
-                        {queue.enabled ? t("cp.queues.disable") : t("cp.queues.enable")}
-                      </Button>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="mt-2 min-h-11 w-full justify-between sm:hidden"
-                      aria-expanded={expanded}
-                      aria-controls={expanded ? `cp-queue-detail-${queue.queueId}` : undefined}
-                      onClick={() => onExpandedChange(expanded ? null : queue.queueId)}
-                      data-testid={`cp-queue-details-${queue.queueId}`}
-                    >
-                      {t("cp.queues.details")}
-                      <ChevronDown
-                        className={expanded ? "rotate-180" : undefined}
-                        aria-hidden="true"
-                      />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-                {expanded ? (
-                  <TableRow id={`cp-queue-detail-${queue.queueId}`} className="block sm:hidden">
-                    <TableCell className="block space-y-3 px-4 py-3" colSpan={8}>
-                      <ManagedQueueMobileDetails queue={queue} />
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </Fragment>
-            );
-          })}
-        </TableBody>
-      </Table>
+    <QueueActionsContext.Provider value={actions}>
+      <DataTable
+        columns={columns}
+        emptyState={<span data-testid="cp-queues-empty">{empty}</span>}
+        data={queues}
+        getRowId={(queue) => queue.queueId}
+        onRowClick={actions.onEdit}
+        rowDataTestId={(queue) => `cp-queue-row-${queue.queueId}`}
+        scrollTestId="cp-queues-table-scroll"
+        caption={t("cp.queues.managedTableCaption")}
+        pinnedEndColumn="actions"
+        resizable
+      />
+    </QueueActionsContext.Provider>
+  );
+}
+
+function ManagedQueueActions({
+  row: { original: queue },
+}: CellContext<QueueRegistryView, unknown>) {
+  const { t } = useTranslation();
+  const actions = useContext(QueueActionsContext);
+  if (!actions) return null;
+  const { togglingQueueIds, onEdit, onToggle } = actions;
+  const busy = togglingQueueIds.has(queue.queueId);
+  const enableBlocked =
+    !queue.enabled &&
+    queueTargetMode(queue) === "named" &&
+    queue.availability !== undefined &&
+    queue.availability.state !== "available";
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="min-h-11 sm:min-h-8"
+        onClick={() => onEdit(queue)}
+        data-testid={`cp-queue-edit-${queue.queueId}`}
+      >
+        <Pencil aria-hidden="true" />
+        {t("cp.queues.edit")}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="min-h-11 sm:min-h-8"
+        disabled={busy || enableBlocked}
+        aria-busy={busy}
+        onClick={() => onToggle(queue)}
+        data-testid={`cp-queue-toggle-${queue.queueId}`}
+        title={enableBlocked ? t("cp.queues.cannotEnableUntilFresh") : undefined}
+      >
+        {busy ? (
+          <Loader2 className="animate-spin" aria-hidden="true" />
+        ) : (
+          <Power aria-hidden="true" />
+        )}
+        {t(queue.enabled ? "cp.queues.disable" : "cp.queues.enable")}
+      </Button>
     </div>
   );
 }
@@ -625,10 +569,7 @@ function QueueInventoryAgentSection({
                 <TableHead className="px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.inventoryCol.observedAt")}
                 </TableHead>
-                <TableHead
-                  className="sticky right-0 z-10 min-w-28 px-3 py-2 font-medium"
-                  scope="col"
-                >
+                <TableHead className="kq-pinned-end min-w-28 px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.col.actions")}
                 </TableHead>
               </TableRow>
@@ -690,7 +631,7 @@ function QueueInventoryAgentSection({
                       }
                     />
                   </TableCell>
-                  <TableCell className="sticky right-0 z-10 min-w-28 px-3 py-2 ">
+                  <TableCell className="kq-pinned-end min-w-28 px-3 py-2 ">
                     {!fact.managed &&
                     (canManageFacts || (inventory.status === "stale" && !fact.isDefault)) ? (
                       <Button
@@ -742,14 +683,17 @@ export function CpQueuesPage() {
   const [search, setSearch] = useState("");
   const [agentFilter, setAgentFilter] = useState("");
   const [onlyAttention, setOnlyAttention] = useState(false);
+  const [publication, setPublication] = useState("");
   const [dialogMode, setDialogMode] = useState<"create" | "edit" | null>(null);
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
-  const [expandedQueueId, setExpandedQueueId] = useState<string | null>(null);
   const [togglingQueueIds, setTogglingQueueIds] = useState<Set<string>>(() => new Set());
   const [form, setForm] = useState<QueueFormState>(() => newQueueForm());
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const providerOrgs = registrationContext.data?.providerOrgs ?? [];
   const agents = agentsQuery.data ?? [];
+  const formAgents = agentsQuery.isError
+    ? []
+    : agents.filter((agent) => agent.providerOrgId === form.providerOrgId);
   const selectedInventoryQuery = useCpQueueInventory(form.agentId || null, dialogMode !== null);
   const selectedInventory = selectedInventoryQuery.data;
   const schedulerType = selectedInventory?.schedulerType ?? form.schedulerType;
@@ -765,6 +709,7 @@ export function CpQueuesPage() {
     const needle = search.trim().toLowerCase();
     return queues.filter((queue) => {
       if (agentFilter && queue.agentId !== agentFilter) return false;
+      if (publication && (publication === "enabled") !== queue.enabled) return false;
       if (onlyAttention && queue.availability?.state === "available") return false;
       if (!needle) return true;
       return [queue.name, queue.queueId, queue.agentId, queue.queueName ?? "", queue.schedulerType]
@@ -772,7 +717,7 @@ export function CpQueuesPage() {
         .toLowerCase()
         .includes(needle);
     });
-  }, [agentFilter, onlyAttention, queues, search]);
+  }, [agentFilter, onlyAttention, publication, queues, search]);
 
   const filteredAgents = useMemo(
     () => agents.filter((agent) => !agentFilter || agent.id === agentFilter),
@@ -783,9 +728,14 @@ export function CpQueuesPage() {
     if (!loadError) return;
     setDialogMode(null);
     setEditingQueueId(null);
-    setExpandedQueueId(null);
     setTogglingQueueIds(new Set());
   }, [loadError]);
+
+  useEffect(() => {
+    const defaultProviderOrgId = providerOrgs[0]?.id;
+    if (dialogMode !== "create" || form.providerOrgId || !defaultProviderOrgId) return;
+    setForm((current) => ({ ...current, providerOrgId: defaultProviderOrgId }));
+  }, [dialogMode, form.providerOrgId, providerOrgs]);
 
   useEffect(() => {
     if (!selectedInventory || selectedInventory.agentId !== form.agentId) return;
@@ -839,8 +789,20 @@ export function CpQueuesPage() {
   }
 
   function changeAgent(agentId: string) {
-    setForm((current) => ({ ...current, agentId, queueName: "", targetMode: "named" }));
+    setForm((current) => ({
+      ...current,
+      agentId,
+      queueName: "",
+      qos: "",
+      schedulerType: "slurm",
+      targetMode: "named",
+    }));
     setFormErrors((current) => ({ ...current, agentId: "", queueName: "" }));
+  }
+
+  function changeProviderOrg(providerOrgId: string) {
+    setForm((current) => ({ ...current, providerOrgId }));
+    changeAgent("");
   }
 
   function changeTargetMode(targetMode: QueueTargetMode) {
@@ -859,7 +821,8 @@ export function CpQueuesPage() {
     if (loadError) return;
     const nextErrors: Record<string, string> = {};
     const discovered = selectedInventory?.queues.map((fact) => fact.queueName) ?? [];
-    if (!form.agentId) nextErrors.agentId = t("cp.queues.validation.agentRequired");
+    if (!formAgents.some((agent) => agent.id === form.agentId))
+      nextErrors.agentId = t("cp.queues.validation.agentRequired");
     if (!selectedInventory) nextErrors.agentId = t("cp.queues.validation.inventoryRequired");
     const staleNamedFact =
       dialogMode === "create" &&
@@ -928,24 +891,22 @@ export function CpQueuesPage() {
 
   return (
     <div className="min-w-0 space-y-4" data-testid="cp-queues-page">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
-        <div>
-          <h1 className="break-words text-2xl font-semibold tracking-tight">
-            {t("cp.queues.title")}
-          </h1>
-          <p className="text-sm text-muted-foreground">{t("cp.queues.subtitle")}</p>
-        </div>
-        <Button
-          type="button"
-          onClick={openCreate}
-          disabled={Boolean(loadError)}
-          data-testid="cp-queues-create"
-        >
-          <Plus aria-hidden="true" />
-          {t("cp.queues.create")}
-        </Button>
-      </div>
-      <FunctionMaps ids={["G06"]} />
+      <PageHeader
+        title={t("cp.nav.queues")}
+        actions={
+          view === "managed" && (
+            <Button
+              type="button"
+              onClick={openCreate}
+              disabled={Boolean(loadError)}
+              data-testid="cp-queues-create"
+            >
+              <Plus aria-hidden="true" />
+              {t("cp.queues.create")}
+            </Button>
+          )
+        }
+      />
 
       {loadError ? (
         <div className=" p-3 text-sm" data-testid="cp-queues-error" role="alert">
@@ -954,18 +915,37 @@ export function CpQueuesPage() {
       ) : null}
 
       {loadError ? null : (
-        <>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-            <label htmlFor="cp-queues-search" className="grid min-w-0 flex-1 gap-1 text-sm">
-              <span className="sr-only">{t("cp.queues.search")}</span>
-              <Input
-                id="cp-queues-search"
-                value={search}
-                onChange={(event) => setSearch(event.currentTarget.value)}
-                placeholder={t("cp.queues.search")}
-                data-testid="cp-queues-search"
-              />
-            </label>
+        <Tabs
+          value={view}
+          onValueChange={(value) => setView(value as QueueView)}
+          className="space-y-3"
+        >
+          <TabsList
+            className="h-auto max-w-full flex-wrap"
+            aria-label={t("cp.nav.queues")}
+            data-testid="cp-queues-tabs"
+          >
+            <TabsTrigger value="managed" data-testid="cp-queues-tab-managed">
+              {t("cp.queues.managedTargets")}
+            </TabsTrigger>
+            <TabsTrigger value="inventory" data-testid="cp-queues-tab-inventory">
+              {t("cp.queues.schedulerInventory")}
+            </TabsTrigger>
+          </TabsList>
+
+          <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3">
+            {view === "managed" && (
+              <label htmlFor="cp-queues-search" className="min-w-36 flex-[1_1_14rem]">
+                <span className="sr-only">{t("cp.queues.search")}</span>
+                <Input
+                  id="cp-queues-search"
+                  value={search}
+                  onChange={(event) => setSearch(event.currentTarget.value)}
+                  placeholder={t("cp.queues.search")}
+                  data-testid="cp-queues-search"
+                />
+              </label>
+            )}
             <ResourceSelectField
               resourceType="agents"
               value={agentFilter}
@@ -981,7 +961,19 @@ export function CpQueuesPage() {
                 </option>
               ))}
             </ResourceSelectField>
-            <label className="flex min-h-11 items-center gap-2 border-b border-border px-3 text-sm sm:min-h-9">
+            {view === "managed" && (
+              <NativeSelect
+                aria-label={t("cp.queues.col.publication")}
+                value={publication}
+                onChange={(event) => setPublication(event.currentTarget.value)}
+                className="h-9"
+              >
+                <option value="">{t("cp.queues.allPublicationStates")}</option>
+                <option value="enabled">{t("cp.common.enabled")}</option>
+                <option value="disabled">{t("cp.common.disabled")}</option>
+              </NativeSelect>
+            )}
+            <label className="flex min-h-9 items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={onlyAttention}
@@ -1006,77 +998,56 @@ export function CpQueuesPage() {
               <RefreshCw aria-hidden="true" />
             </Button>
           </div>
-
-          <Tabs value={view} onValueChange={(value) => setView(value as QueueView)}>
-            <TabsList className="h-auto max-w-full flex-wrap" data-testid="cp-queues-tabs">
-              <TabsTrigger value="managed" data-testid="cp-queues-tab-managed">
-                {t("cp.queues.managedTargets")}
-              </TabsTrigger>
-              <TabsTrigger value="inventory" data-testid="cp-queues-tab-inventory">
-                {t("cp.queues.schedulerInventory")}
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="managed" className="min-w-0">
-              {query.isLoading ? (
-                <div
-                  className="flex items-center gap-2 text-sm text-muted-foreground"
-                  role="status"
-                >
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  {t("cp.common.loading")}
-                </div>
-              ) : filteredQueues.length === 0 ? (
-                <div
-                  className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
-                  data-testid="cp-queues-empty"
-                >
-                  {queues.length === 0 ? t("cp.queues.empty") : t("cp.queues.noMatchingQueues")}
-                </div>
-              ) : (
-                <ManagedQueueTable
-                  queues={filteredQueues}
-                  togglingQueueIds={togglingQueueIds}
-                  expandedQueueId={expandedQueueId}
-                  onEdit={openEdit}
-                  onToggle={toggleEnabled}
-                  onExpandedChange={setExpandedQueueId}
+          <TabsContent value="managed" forceMount className="min-w-0" hidden={view !== "managed"}>
+            {query.isLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                {t("cp.common.loading")}
+              </div>
+            ) : (
+              <ManagedQueueTable
+                queues={filteredQueues}
+                empty={t(queues.length === 0 ? "cp.queues.empty" : "cp.queues.noMatchingQueues")}
+                togglingQueueIds={togglingQueueIds}
+                onEdit={openEdit}
+                onToggle={toggleEnabled}
+              />
+            )}
+          </TabsContent>
+          <TabsContent value="inventory" className="min-w-0 border-b border-border">
+            {agentsQuery.isLoading ? (
+              <div
+                className="flex min-h-28 items-center gap-2 px-3 text-sm text-muted-foreground"
+                role="status"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                {t("cp.common.loading")}
+              </div>
+            ) : filteredAgents.length === 0 ? (
+              <div className="px-3 py-6 text-sm text-muted-foreground">
+                {t("cp.queues.noAgents")}
+              </div>
+            ) : (
+              filteredAgents.map((agent) => (
+                <QueueInventoryAgentSection
+                  key={agent.id}
+                  agent={agent}
+                  onlyAttention={onlyAttention}
+                  onManage={openManageFact}
                 />
-              )}
-            </TabsContent>
-            <TabsContent value="inventory" className="min-w-0 border-b border-border">
-              {agentsQuery.isLoading ? (
-                <div
-                  className="flex min-h-28 items-center gap-2 px-3 text-sm text-muted-foreground"
-                  role="status"
-                >
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  {t("cp.common.loading")}
-                </div>
-              ) : filteredAgents.length === 0 ? (
-                <div className="px-3 py-6 text-sm text-muted-foreground">
-                  {t("cp.queues.noAgents")}
-                </div>
-              ) : (
-                filteredAgents.map((agent) => (
-                  <QueueInventoryAgentSection
-                    key={agent.id}
-                    agent={agent}
-                    onlyAttention={onlyAttention}
-                    onManage={openManageFact}
-                  />
-                ))
-              )}
-            </TabsContent>
-          </Tabs>
-        </>
+              ))
+            )}
+          </TabsContent>
+        </Tabs>
       )}
 
+      <FunctionMaps ids={["G06"]} />
       <Dialog
         open={dialogMode !== null && !loadError}
         onOpenChange={(open) => !open && closeDialog()}
       >
         <DialogContent>
-          <form onSubmit={onSubmit} noValidate>
+          <form className="flex min-h-0 flex-col" onSubmit={onSubmit} noValidate>
             <DialogHeader>
               <DialogTitle>{t(titleKey)}</DialogTitle>
               <DialogDescription>{t("cp.queues.dialog.description")}</DialogDescription>
@@ -1111,9 +1082,8 @@ export function CpQueuesPage() {
                     id="cp-queue-field-provider-org-id"
                     value={form.providerOrgId}
                     required
-                    onChange={(event) =>
-                      setForm({ ...form, providerOrgId: event.currentTarget.value })
-                    }
+                    disabled={dialogMode === "edit"}
+                    onChange={(event) => changeProviderOrg(event.currentTarget.value)}
                     data-testid="cp-queue-field-provider-org-id"
                     className="flex h-11 w-full sm:h-9"
                   >
@@ -1133,10 +1103,12 @@ export function CpQueuesPage() {
               )}
               <Field htmlFor="cp-queue-field-agent-id" label={t("cp.queues.field.agentId")}>
                 <ResourceSelectField
+                  key={form.providerOrgId}
                   resourceType="agents"
                   id="cp-queue-field-agent-id"
                   value={form.agentId}
                   required
+                  disabled={!form.providerOrgId || agentsQuery.isLoading || agentsQuery.isError}
                   aria-invalid={Boolean(formErrors.agentId)}
                   aria-describedby={formErrors.agentId ? "cp-queue-agent-error" : undefined}
                   onChange={(event) => changeAgent(event.currentTarget.value)}
@@ -1144,7 +1116,7 @@ export function CpQueuesPage() {
                   className="flex h-11 w-full sm:h-9"
                 >
                   <option value="">{t("cp.queues.field.chooseAgent")}</option>
-                  {agents.map((agent) => (
+                  {formAgents.map((agent) => (
                     <option key={agent.id} value={agent.id}>
                       {agent.hostname} · {agent.id}
                     </option>
@@ -1227,6 +1199,7 @@ export function CpQueuesPage() {
                   label={t("cp.queues.field.queueName")}
                 >
                   <ResourceSelectField
+                    key={form.agentId}
                     resourceType="agents"
                     id="cp-queue-field-queue-name"
                     value={form.queueName}

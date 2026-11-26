@@ -160,6 +160,19 @@ cat >"${work_dir}/policy.json" <<EOF
       "Resource": ["arn:aws:s3:::${netdrive_bucket}/netdrive/*", "arn:aws:s3:::${netdrive_bucket}/federation-results/*", "arn:aws:s3:::${netdrive_bucket}/federation-inputs/*"]
     },
     {
+      "Sid": "ListNetDrivePendingUploads",
+      "Effect": "Allow",
+      "Action": "s3:ListBucketMultipartUploads",
+      "Resource": "arn:aws:s3:::${netdrive_bucket}",
+      "Condition": {"StringLike": {"s3:prefix": "netdrive/objects/*"}}
+    },
+    {
+      "Sid": "DeleteNetDriveObjectVersions",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObjectVersion",
+      "Resource": "arn:aws:s3:::${netdrive_bucket}/netdrive/objects/*"
+    },
+    {
       "Sid": "ListFederationResultResidue",
       "Effect": "Allow",
       "Action": ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"],

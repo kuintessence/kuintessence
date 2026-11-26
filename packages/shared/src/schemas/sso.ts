@@ -12,9 +12,7 @@
  * the user's resolved role as the highest-priority role implied by the union
  * of their group memberships, defaulting to `user` when no group matches.
  *
- * Provider type field is a forward-compatible string union; only `oidc` is
- * supported in v1. The web form shows `saml`/`ldap` as disabled options so
- * operators can see they are on the roadmap without us promising a date.
+ * SAML and LDAP upstreams use the corresponding connector on the configured Dex issuer.
  */
 import { z } from "zod";
 import { Role, type RoleName } from "../constants/roles";

@@ -14,6 +14,7 @@ import type {
   FederationExecutionTerminalEvidence,
   FederationInputFiles,
   FederationInputManifest,
+  FederationInputSelection,
   FederationMediaImportGrant,
   FederationMediaManifest,
   FederationMediaReceipt,
@@ -289,7 +290,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'dispute.read', 'dispute.open', 'dispute.resolve', 'attestation.recover', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim', 'cluster.use', 'cluster.manage')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'payment.approve', 'arbitration.approve', 'arbitration.read', 'arbitration.decide', 'arbitration.execute', 'disclosure.approve', 'disclosure.receive', 'case.publish', 'case.retain', 'dispute.read', 'dispute.open', 'dispute.resolve', 'attestation.recover', 'asset.read', 'asset.map', 'media.import', 'media.export', 'media.logistics', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim', 'cluster.use', 'cluster.manage')`,
     ),
   ],
 );
@@ -346,6 +347,10 @@ export const federationOutbound = pgTable(
       .default("0"),
     endpoint: text("endpoint").notNull(),
     request: jsonb("request").$type<FederationDelegation>().notNull(),
+    localInputSnapshot: jsonb("local_input_snapshot").$type<{
+      selection: FederationInputSelection;
+      bindingsDigest: string;
+    }>(),
     requestDigest: varchar("request_digest", { length: 71 }).notNull(),
     requestJws: text("request_jws").notNull(),
     receipt: jsonb("receipt").$type<FederationAcceptance>(),
@@ -4061,6 +4066,10 @@ export const federationEvidenceCases = pgTable(
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id),
+    retentionRevision: integer("retention_revision").notNull().default(0),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    retentionHold: boolean("retention_hold").notNull().default(false),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
     closedAt: timestamp("closed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -4080,7 +4089,7 @@ export const federationReceivedDisclosures = pgTable(
     grantId: uuid("grant_id").notNull(),
     caseId: uuid("case_id").notNull(),
     scope: jsonb("scope").$type<CommercialDisclosureReadScope>().notNull(),
-    evidence: jsonb("evidence").$type<CommercialDisclosureEvidence>().notNull(),
+    evidence: jsonb("evidence").$type<CommercialDisclosureEvidence>(),
     receivedBy: uuid("received_by")
       .notNull()
       .references(() => users.id),

@@ -48,29 +48,21 @@ import {
 import { getAuthState } from "../../lib/auth";
 import {
   deleteSpackCatalogPackage,
+  getSpackCatalogSource,
   listSpackCatalog,
   listUsecasePackagePage,
   listWorkflowTemplatePage,
-  parseSpackCompilers,
-  parseSpackPackageFile,
   SoftwareError,
   type SpackCatalog,
   type SpackCatalogPackage,
-  type SpackCatalogPackageCreate,
   type SpackCatalogPackageUpdate,
   type SpackCatalogSourceFilter,
-  type SpackCompilerMetadata,
-  type SpackPackageMetadata,
-  type SpackVariantMetadata,
   type UsecasePackage,
-  type UsecasePackageCreate,
-  type UsecasePackageSpec,
   type UsecasePackageUpdate,
   updateSpackCatalogPackage,
   updateUsecasePackage,
   updateWorkflowTemplate,
   type WorkflowTemplate,
-  type WorkflowTemplateCreate,
   type WorkflowTemplateUpdate,
 } from "../../lib/software-client";
 import {
@@ -88,7 +80,6 @@ import { Button } from "../ui/button";
 import { ErrorState, LoadingState } from "../ui/content-state";
 import {
   Dialog,
-  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -98,16 +89,14 @@ import {
 import { FormField } from "../ui/form-field";
 import { Input, Textarea } from "../ui/input";
 import { ListToolbar } from "../ui/list-toolbar";
-import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
-import { SearchInput } from "../ui/search-input";
+import { RefreshButton } from "../ui/refresh-button";
 import {
   Sheet,
   SheetBody,
   SheetContent,
   SheetDescription,
-  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "../ui/sheet";
@@ -122,9 +111,16 @@ import {
 import { LicenseEntitlementPanel } from "./EcosystemGovernancePanels";
 import { RecipeRepositoriesPanel } from "./RecipeRepositoriesPanel";
 import { SandboxScriptCatalog } from "./SandboxScriptCatalog";
+import { SmallEmpty } from "./SmallEmpty";
 import { SoftwareCard } from "./SoftwareCard";
 import { SoftwareCardGrid } from "./SoftwareCardGrid";
+import { CatalogPackagePickerField, SpackCatalogPickerDialog } from "./SpackCatalogPicker";
 import { SpackMaterialsPanel } from "./SpackMaterialsPanel";
+import { SpackSourceEditor } from "./SpackSourceEditor";
+import { SpackSpecConfigSheet, SpackSpecPickerField } from "./SpackSpecPicker";
+import { optionalText, parseTagInput, sourceLabel } from "./software-fields";
+import { catalogPackageKey, SPACK_CATALOG_PAGE_SIZE } from "./spack-catalog";
+import { makeUsecaseSpec } from "./spack-spec";
 
 export interface TemplateView {
   template: WorkflowTemplate;
@@ -136,7 +132,6 @@ export interface TemplateView {
   isValidWorkflow: boolean;
 }
 
-export const SPACK_CATALOG_PAGE_SIZE = 24;
 export const WORKFLOW_TEMPLATE_PAGE_SIZE = 24;
 const SOFTWARE_FAVORITES_KEY = "kuintessence.software.favorites";
 const SOFTWARE_STICKY_TOP = 0;
@@ -183,33 +178,6 @@ function collectWorkflowRefs(nodes: unknown[]): { usecaseRefs: string[]; softwar
     usecaseRefs: [...usecaseRefs],
     softwareRefs: [...softwareRefs],
   };
-}
-
-export function collectTemplateTags(items: WorkflowTemplate[]): string[] {
-  return [...new Set(items.flatMap((item) => item.tags))].sort((a, b) => a.localeCompare(b));
-}
-
-export function filterTemplateViews(
-  views: TemplateView[],
-  query: string,
-  tag: string | null,
-): TemplateView[] {
-  const q = query.trim().toLowerCase();
-  return views.filter((view) => {
-    if (tag && !view.template.tags.includes(tag)) return false;
-    if (!q) return true;
-    const haystack = [
-      view.template.name,
-      view.template.version,
-      view.template.description ?? "",
-      view.template.id,
-      ...view.template.tags,
-      ...view.nodeTypes,
-    ]
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(q);
-  });
 }
 
 function favoriteKey(kind: "template" | "usecase" | "spack", id: string): string {
@@ -436,7 +404,7 @@ export function SoftwarePage() {
   const hasTemplateFilter = search.trim() !== "" || activeTag !== null;
   const hasUsecaseFilter = usecaseSearch.trim() !== "";
   const isFetching = templatesQ.isFetching || usecasesQ.isFetching || spackCatalogQ.isFetching;
-  const isLoading = templatesQ.isLoading && usecasesQ.isLoading && spackCatalogQ.isLoading;
+  const directoryLoading = <LoadingState>{t("common.loading")}</LoadingState>;
   const activeCreateLink = getActiveCreateLink(activeTab);
   const canCreateActiveArtifact =
     canManageOrganization && (activeTab !== "templates" || canManagePlatform);
@@ -619,16 +587,15 @@ export function SoftwarePage() {
                 </Button>
               )
             ) : null}
-            <Button
+            <RefreshButton
               variant="outline"
-              size="sm"
               onClick={refreshAll}
               disabled={isFetching}
               data-testid="software-refresh"
+              label={t("common.refresh", { defaultValue: "刷新" })}
             >
               <RefreshCw className={cn(isFetching && "animate-spin")} />
-              {t("common.refresh", { defaultValue: "刷新" })}
-            </Button>
+            </RefreshButton>
           </>
         }
       />
@@ -662,7 +629,7 @@ export function SoftwarePage() {
       ) : null}
 
       <details className="border-b border-border" data-testid="software-management">
-        <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+        <summary className="cursor-pointer px-2 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
           {t("software.management")}
         </summary>
         <div className="kq-motion--disclosure space-y-4 border-border p-4">
@@ -705,31 +672,31 @@ export function SoftwarePage() {
         </ErrorState>
       ) : null}
 
-      {isLoading ? (
-        <LoadingState>{t("common.loading")}</LoadingState>
-      ) : (
-        <Tabs
-          value={activeTab}
-          onValueChange={(value) => {
-            if (isSoftwareTab(value)) updateActiveTab(value);
-          }}
-          className="space-y-3"
-        >
-          <SoftwareStickyControls
-            activeTab={activeTab}
-            activeTag={activeTag}
-            search={search}
-            setActiveTag={updateTemplateTag}
-            setSearch={updateTemplateSearch}
-            setSpackCatalogSearch={updateSpackCatalogSearch}
-            setSpackCatalogSource={updateSpackCatalogSource}
-            setUsecaseSearch={updateUsecaseSearch}
-            spackCatalogSearch={spackCatalogSearch}
-            spackCatalogSource={spackCatalogSource}
-            tags={tags}
-            usecaseSearch={usecaseSearch}
-          />
-          <TabsContent value="templates">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          if (isSoftwareTab(value)) updateActiveTab(value);
+        }}
+        className="space-y-3"
+      >
+        <SoftwareStickyControls
+          activeTab={activeTab}
+          activeTag={activeTag}
+          search={search}
+          setActiveTag={updateTemplateTag}
+          setSearch={updateTemplateSearch}
+          setSpackCatalogSearch={updateSpackCatalogSearch}
+          setSpackCatalogSource={updateSpackCatalogSource}
+          setUsecaseSearch={updateUsecaseSearch}
+          spackCatalogSearch={spackCatalogSearch}
+          spackCatalogSource={spackCatalogSource}
+          tags={tags}
+          usecaseSearch={usecaseSearch}
+        />
+        <TabsContent value="templates">
+          {templateLoadError ? null : templatesQ.isPending ? (
+            directoryLoading
+          ) : (
             <WorkflowTemplatesPanel
               canManage={canManagePlatform}
               favorites={favorites}
@@ -737,7 +704,6 @@ export function SoftwarePage() {
               hasNext={templatePageResult?.hasNext ?? false}
               page={templatePageResult?.page ?? templatePage}
               setActiveTag={updateTemplateTag}
-              setFavoritesOnly={() => undefined}
               setPage={setTemplatePage}
               setSearch={updateTemplateSearch}
               toggleFavorite={toggleFavorite}
@@ -748,8 +714,12 @@ export function SoftwarePage() {
               total={templatePageResult?.total ?? 0}
               visibleTemplates={visibleTemplates}
             />
-          </TabsContent>
-          <TabsContent value="usecases">
+          )}
+        </TabsContent>
+        <TabsContent value="usecases">
+          {usecaseLoadError ? null : usecasesQ.isPending ? (
+            directoryLoading
+          ) : (
             <UsecasePackagesPanel
               canManage={canManageOrganization}
               catalog={spackCatalog}
@@ -771,21 +741,25 @@ export function SoftwarePage() {
               updateUsecasePending={updateUsecase.isPending}
               usecases={visibleUsecases}
             />
-          </TabsContent>
-          <TabsContent value="spack">
-            <details
-              className="mb-4 border-b border-border"
-              data-testid="software-material-management"
-            >
-              <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
-                {t("software.materialManagement")}
-              </summary>
-              <div className="kq-motion--disclosure space-y-4 border-border p-4">
-                <FunctionMaps ids={["G19"]} />
-                <RecipeRepositoriesPanel canManage={canManageOrganization} />
-                <SpackMaterialsPanel canManage={canManageOrganization} canManageBindings />
-              </div>
-            </details>
+          )}
+        </TabsContent>
+        <TabsContent value="spack">
+          <details
+            className="mb-4 border-b border-border"
+            data-testid="software-material-management"
+          >
+            <summary className="cursor-pointer px-2 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+              {t("software.materialManagement")}
+            </summary>
+            <div className="kq-motion--disclosure space-y-4 border-border p-4">
+              <FunctionMaps ids={["G19"]} />
+              <RecipeRepositoriesPanel canManage={canManageOrganization} />
+              <SpackMaterialsPanel canManage={canManageOrganization} canManageBindings />
+            </div>
+          </details>
+          {spackCatalogLoadError ? null : spackCatalogQ.isPending ? (
+            directoryLoading
+          ) : (
             <SpackSoftwarePanel
               canManage={canManageOrganization}
               canManagePlatform={canManagePlatform}
@@ -812,12 +786,12 @@ export function SoftwarePage() {
               }
               updateCatalogPackagePending={updateCatalogPackage.isPending}
             />
-          </TabsContent>
-          <TabsContent value="scripts">
-            <SandboxScriptCatalog embedded />
-          </TabsContent>
-        </Tabs>
-      )}
+          )}
+        </TabsContent>
+        <TabsContent value="scripts">
+          <SandboxScriptCatalog embedded />
+        </TabsContent>
+      </Tabs>
     </PageShell>
   );
 }
@@ -1428,7 +1402,6 @@ function WorkflowTemplatesPanel({
   hasNext,
   page,
   setActiveTag,
-  setFavoritesOnly,
   setPage,
   setSearch,
   toggleFavorite,
@@ -1443,7 +1416,6 @@ function WorkflowTemplatesPanel({
   hasNext: boolean;
   page: number;
   setActiveTag: (tag: string | null) => void;
-  setFavoritesOnly: (value: boolean) => void;
   setPage: (value: number) => void;
   setSearch: (value: string) => void;
   toggleFavorite: (key: string) => void;
@@ -1531,7 +1503,6 @@ function WorkflowTemplatesPanel({
               onClick={() => {
                 setSearch("");
                 setActiveTag(null);
-                setFavoritesOnly(false);
               }}
             >
               {t("software.clearFilters")}
@@ -1542,75 +1513,6 @@ function WorkflowTemplatesPanel({
         <SoftwareEmptyState canCreate={canManage} />
       )}
     </div>
-  );
-}
-
-export function WorkflowTemplateForm({
-  isPending = false,
-  onSubmit,
-}: {
-  isPending?: boolean;
-  onSubmit: (payload: WorkflowTemplateCreate) => void;
-}) {
-  const { t } = useTranslation();
-  const id = useId();
-  const [name, setName] = useState("");
-  const [version, setVersion] = useState("0.1.0");
-  const [description, setDescription] = useState("");
-  const [tags, setTags] = useState("demo");
-  const [yamlContent, setYamlContent] = useState("");
-  return (
-    <form
-      className="grid grid-cols-1 gap-3 border-b border-border p-3"
-      data-testid="software-template-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!name.trim() || !version.trim() || !yamlContent.trim()) return;
-        onSubmit({
-          name: name.trim(),
-          version: version.trim(),
-          description: optionalText(description),
-          yamlContent,
-          tags: parseTagInput(tags),
-        });
-      }}
-    >
-      <div className="grid gap-2 md:grid-cols-[1fr_140px]">
-        <FormField id={`${id}-name`} label={t("software.manage.templateName")}>
-          {(field) => <Input {...field} value={name} onChange={(e) => setName(e.target.value)} />}
-        </FormField>
-        <FormField id={`${id}-version`} label={t("software.manage.version")}>
-          {(field) => (
-            <Input {...field} value={version} onChange={(e) => setVersion(e.target.value)} />
-          )}
-        </FormField>
-      </div>
-      <FormField id={`${id}-description`} label={t("software.manage.description")}>
-        {(field) => (
-          <Input {...field} value={description} onChange={(e) => setDescription(e.target.value)} />
-        )}
-      </FormField>
-      <FormField id={`${id}-tags`} label={t("software.manage.tags")}>
-        {(field) => <Input {...field} value={tags} onChange={(e) => setTags(e.target.value)} />}
-      </FormField>
-      <FormField id={`${id}-yamlContent`} label={t("software.detail.yamlSource")}>
-        {(field) => (
-          <Textarea
-            {...field}
-            value={yamlContent}
-            onChange={(e) => setYamlContent(e.target.value)}
-            placeholder={t("software.manage.yamlPlaceholder")}
-            className="min-h-28 font-mono text-xs"
-          />
-        )}
-      </FormField>
-      <div className="flex justify-end">
-        <Button type="submit" size="sm" disabled={isPending}>
-          <GitBranch />
-          {t("software.manage.publish")}
-        </Button>
-      </div>
-    </form>
   );
 }
 
@@ -1769,18 +1671,20 @@ function UsecasePackagesPanel({
               shown={usecases.length}
               total={total}
             />
-            {usecases.map((pkg) => {
-              const key = favoriteKey("usecase", pkg.id);
-              return (
-                <UsecaseCard
-                  key={pkg.id}
-                  favorite={favorites.has(key)}
-                  onEdit={canManage ? () => setEditingId(pkg.id) : undefined}
-                  onToggleFavorite={() => toggleFavorite(key)}
-                  pkg={pkg}
-                />
-              );
-            })}
+            <SoftwareCardGrid>
+              {usecases.map((pkg) => {
+                const key = favoriteKey("usecase", pkg.id);
+                return (
+                  <UsecaseCard
+                    key={pkg.id}
+                    favorite={favorites.has(key)}
+                    onEdit={canManage ? () => setEditingId(pkg.id) : undefined}
+                    onToggleFavorite={() => toggleFavorite(key)}
+                    pkg={pkg}
+                  />
+                );
+              })}
+            </SoftwareCardGrid>
             <ServerPagination
               hasNext={hasNext}
               page={page}
@@ -1823,807 +1727,6 @@ function UsecasePackagesPanel({
             </SheetBody>
           </SheetContent>
         </Sheet>
-      ) : null}
-    </div>
-  );
-}
-
-export function UsecasePackageForm({
-  catalog,
-  catalogError = null,
-  catalogSearch,
-  catalogSource,
-  isPending = false,
-  requiresActiveOrganization = false,
-  onSubmit,
-  setCatalogPage,
-  setCatalogSearch,
-  setCatalogSource,
-}: {
-  catalog: SpackCatalog | null;
-  catalogError?: Error | null;
-  catalogSearch: string;
-  catalogSource: SpackCatalogSourceFilter;
-  isPending?: boolean;
-  requiresActiveOrganization?: boolean;
-  onSubmit: (payload: UsecasePackageCreate) => void;
-  setCatalogPage: (value: number) => void;
-  setCatalogSearch: (value: string) => void;
-  setCatalogSource: (value: SpackCatalogSourceFilter) => void;
-}) {
-  const { t } = useTranslation();
-  const id = useId();
-  const [name, setName] = useState("");
-  const [version, setVersion] = useState("0.1.0");
-  const [description, setDescription] = useState("");
-  const [commandFile, setCommandFile] = useState("");
-  const [inputDescriptor, setInputDescriptor] = useState("script");
-  const [argumentFormat, setArgumentFormat] = useState("{}");
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [specOpen, setSpecOpen] = useState(false);
-  const [selectedPackage, setSelectedPackage] = useState<SpackCatalogPackage | null>(null);
-  const [softwareVersion, setSoftwareVersion] = useState("");
-  const [compiler, setCompiler] = useState("");
-  const [moduleName, setModuleName] = useState("");
-  const [variants, setVariants] = useState("");
-  const catalogUnavailable = Boolean(catalogError);
-  useEffect(() => {
-    if (!catalogUnavailable) return;
-    setSelectedPackage(null);
-    setPickerOpen(false);
-    setSpecOpen(false);
-  }, [catalogUnavailable]);
-  return (
-    <form
-      className="grid min-w-0 grid-cols-1 content-start gap-3 border-b border-border p-3"
-      data-testid="software-usecase-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (
-          catalogUnavailable ||
-          !name.trim() ||
-          !version.trim() ||
-          !commandFile.trim() ||
-          !selectedPackage
-        ) {
-          return;
-        }
-        onSubmit({
-          name: name.trim(),
-          version: version.trim(),
-          description: optionalText(description),
-          spec: makeUsecaseSpec(
-            commandFile.trim(),
-            inputDescriptor.trim(),
-            argumentFormat,
-            selectedPackage,
-            {
-              compiler,
-              moduleName,
-              variants,
-              version: softwareVersion,
-            },
-          ),
-        });
-      }}
-    >
-      {catalogError ? (
-        <div
-          className="flex min-w-0 items-start gap-2 p-3 text-sm text-status-failed"
-          data-testid="software-usecase-catalog-error"
-        >
-          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="min-w-0">
-            <div className="font-medium">{t("common.error")}</div>
-            <div className="break-words text-xs">
-              {toUserFacingError(catalogError, t("software.unreachable"))}
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {requiresActiveOrganization ? (
-        <div className="text-xs text-status-failed">
-          {t("software.manage.activeOrganizationRequired")}
-        </div>
-      ) : null}
-      <div className="grid gap-2 md:grid-cols-[1fr_120px]">
-        <FormField id={`${id}-name`} label={t("software.manage.usecaseName")}>
-          {(field) => <Input {...field} value={name} onChange={(e) => setName(e.target.value)} />}
-        </FormField>
-        <FormField id={`${id}-version`} label={t("software.manage.version")}>
-          {(field) => (
-            <Input {...field} value={version} onChange={(e) => setVersion(e.target.value)} />
-          )}
-        </FormField>
-      </div>
-      <FormField id={`${id}-description`} label={t("software.manage.description")}>
-        {(field) => (
-          <Input {...field} value={description} onChange={(e) => setDescription(e.target.value)} />
-        )}
-      </FormField>
-      <FormField id={`${id}-commandFile`} label={t("software.manage.commandFile")}>
-        {(field) => (
-          <Input {...field} value={commandFile} onChange={(e) => setCommandFile(e.target.value)} />
-        )}
-      </FormField>
-      <CatalogPackagePickerField
-        disabled={catalogUnavailable}
-        selected={selectedPackage}
-        onOpen={() => {
-          if (!catalogUnavailable) setPickerOpen(true);
-        }}
-      />
-      <SpackCatalogPickerDialog
-        catalog={catalog}
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        onSelect={setSelectedPackage}
-        search={catalogSearch}
-        selected={selectedPackage}
-        setPage={setCatalogPage}
-        setSearch={setCatalogSearch}
-        setSource={setCatalogSource}
-        source={catalogSource}
-      />
-      <SpackSpecPickerField
-        compiler={compiler}
-        metadata={selectedPackage?.metadata}
-        moduleName={moduleName}
-        onOpen={() => setSpecOpen(true)}
-        packageName={selectedPackage?.metadata?.name ?? selectedPackage?.name ?? null}
-        defaultSpec={selectedPackage?.defaultSpec}
-        softwareVersion={softwareVersion}
-        variants={variants}
-      />
-      <SpackSpecConfigSheet
-        compiler={compiler}
-        metadata={selectedPackage?.metadata}
-        moduleName={moduleName}
-        onCompilerChange={setCompiler}
-        onModuleNameChange={setModuleName}
-        onOpenChange={setSpecOpen}
-        onSoftwareVersionChange={setSoftwareVersion}
-        onVariantsChange={setVariants}
-        open={specOpen}
-        packageName={selectedPackage?.metadata?.name ?? selectedPackage?.name ?? null}
-        defaultSpec={selectedPackage?.defaultSpec}
-        softwareVersion={softwareVersion}
-        variants={variants}
-      />
-      <div className="grid gap-2 md:grid-cols-2">
-        <FormField id={`${id}-inputDescriptor`} label={t("software.manage.inputDescriptor")}>
-          {(field) => (
-            <Input
-              {...field}
-              value={inputDescriptor}
-              onChange={(e) => setInputDescriptor(e.target.value)}
-            />
-          )}
-        </FormField>
-        <FormField id={`${id}-argumentFormat`} label={t("software.manage.argumentFormat")}>
-          {(field) => (
-            <Input
-              {...field}
-              value={argumentFormat}
-              onChange={(e) => setArgumentFormat(e.target.value)}
-            />
-          )}
-        </FormField>
-      </div>
-      <div className="flex justify-end">
-        <Button
-          type="submit"
-          size="sm"
-          disabled={
-            catalogUnavailable || !selectedPackage || isPending || requiresActiveOrganization
-          }
-        >
-          <PackagePlus />
-          {t("software.manage.create")}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
-function CatalogPackagePickerField({
-  disabled = false,
-  onOpen,
-  selected,
-}: {
-  disabled?: boolean;
-  onOpen: () => void;
-  selected: SpackCatalogPackage | null;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div
-      className="flex min-w-0 flex-col gap-2 border-border p-2 sm:flex-row sm:items-center sm:justify-between"
-      data-testid="software-usecase-package-field"
-    >
-      <div className="min-w-0">
-        <div className="text-[11px] text-muted-foreground">
-          {t("software.manage.selectedCatalogPackage")}
-        </div>
-        {selected ? (
-          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
-            <span className="break-all font-mono text-sm font-semibold">{selected.name}</span>
-            <Badge variant={selected.source === "upstream" ? "outline" : "brand"}>
-              {sourceLabel(t, selected.source)}
-            </Badge>
-          </div>
-        ) : (
-          <div className="mt-1 text-sm text-muted-foreground">
-            {t("software.manage.noSoftwareOption")}
-          </div>
-        )}
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={onOpen}
-        disabled={disabled}
-        data-testid="software-usecase-open-package-picker"
-      >
-        <Boxes />
-        {selected
-          ? t("software.manage.changeCatalogPackage")
-          : t("software.manage.chooseCatalogPackage")}
-      </Button>
-    </div>
-  );
-}
-
-function SpackSpecPickerField({
-  defaultSpec,
-  compiler,
-  metadata,
-  moduleName,
-  onOpen,
-  packageName,
-  softwareVersion,
-  variants,
-}: {
-  defaultSpec?: string;
-  compiler: string;
-  metadata?: SpackPackageMetadata;
-  moduleName: string;
-  onOpen: () => void;
-  packageName: string | null;
-  softwareVersion: string;
-  variants: string;
-}) {
-  const { t } = useTranslation();
-  const preview = packageName
-    ? makeSpackSpecPreview(packageName, softwareVersion, compiler, variants, defaultSpec)
-    : "";
-  return (
-    <div
-      className="flex min-w-0 flex-col gap-2 border-border p-2 sm:flex-row sm:items-center sm:justify-between"
-      data-testid="software-usecase-spec-field"
-    >
-      <div className="min-w-0">
-        <div className="text-[11px] text-muted-foreground">
-          {t("software.manage.selectedSpackSpec")}
-        </div>
-        {preview ? (
-          <div className="mt-1 min-w-0 space-y-1">
-            <div
-              className="break-all font-mono text-sm font-semibold"
-              data-testid="software-usecase-spack-spec-preview"
-            >
-              {preview}
-            </div>
-            <div className="text-xs text-muted-foreground">
-              {[softwareVersion, compiler, moduleName, variants].filter(Boolean).join(" · ") ||
-                t("software.manage.noSpecOptions")}
-            </div>
-            {metadata ? (
-              <div className="mt-1 flex flex-wrap gap-1">
-                <Badge variant="outline">
-                  {t("software.manage.versionCount", { count: metadata.versions.length })}
-                </Badge>
-                <Badge variant="outline">
-                  {t("software.manage.variantCount", { count: metadata.variants.length })}
-                </Badge>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <div className="mt-1 text-sm text-muted-foreground">
-            {t("software.manage.noSpackSpec")}
-          </div>
-        )}
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={onOpen}
-        disabled={!packageName}
-        data-testid="software-usecase-open-spec-picker"
-      >
-        <Edit3 />
-        {t("software.manage.configureSpackSpec")}
-      </Button>
-    </div>
-  );
-}
-
-function SpackSpecConfigSheet({
-  defaultSpec,
-  compiler,
-  metadata,
-  moduleName,
-  onCompilerChange,
-  onModuleNameChange,
-  onOpenChange,
-  onSoftwareVersionChange,
-  onVariantsChange,
-  open,
-  packageName,
-  softwareVersion,
-  variants,
-}: {
-  defaultSpec?: string;
-  compiler: string;
-  metadata?: SpackPackageMetadata;
-  moduleName: string;
-  onCompilerChange: (value: string) => void;
-  onModuleNameChange: (value: string) => void;
-  onOpenChange: (value: boolean) => void;
-  onSoftwareVersionChange: (value: string) => void;
-  onVariantsChange: (value: string) => void;
-  open: boolean;
-  packageName: string | null;
-  softwareVersion: string;
-  variants: string;
-}) {
-  const { t } = useTranslation();
-  const id = useId();
-  const preview = packageName
-    ? makeSpackSpecPreview(packageName, softwareVersion, compiler, variants, defaultSpec)
-    : "";
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent width="max-w-2xl" data-testid="software-usecase-spec-picker">
-        <SheetHeader>
-          <SheetTitle>{t("software.manage.specPickerTitle")}</SheetTitle>
-          <SheetDescription>{t("software.manage.specPickerDescription")}</SheetDescription>
-        </SheetHeader>
-        <SheetBody className="grid content-start gap-3">
-          <div className=" border-border p-3">
-            <div className="text-[11px] text-muted-foreground">
-              {t("software.manage.spackSpec")}
-            </div>
-            <div className="mt-1 break-all font-mono text-sm font-semibold">
-              {preview || t("software.manage.noSpackSpec")}
-            </div>
-          </div>
-          {metadata ? (
-            <SpackMetadataChoices
-              metadata={metadata}
-              onSoftwareVersionChange={onSoftwareVersionChange}
-              onVariantsChange={onVariantsChange}
-              variants={variants}
-            />
-          ) : null}
-          <CompilerParseBox onCompilerChange={onCompilerChange} />
-          <div className="grid gap-2 md:grid-cols-2">
-            <FormField id={`${id}-softwareVersion`} label={t("software.manage.softwareVersion")}>
-              {(field) => (
-                <Input
-                  {...field}
-                  value={softwareVersion}
-                  onChange={(e) => onSoftwareVersionChange(e.target.value)}
-                  data-testid="software-usecase-spec-version"
-                />
-              )}
-            </FormField>
-            <FormField id={`${id}-compiler`} label={t("software.manage.compiler")}>
-              {(field) => (
-                <Input
-                  {...field}
-                  value={compiler}
-                  onChange={(e) => onCompilerChange(e.target.value)}
-                  data-testid="software-usecase-spec-compiler"
-                />
-              )}
-            </FormField>
-            <FormField id={`${id}-moduleName`} label={t("software.manage.module")}>
-              {(field) => (
-                <Input
-                  {...field}
-                  value={moduleName}
-                  onChange={(e) => onModuleNameChange(e.target.value)}
-                  data-testid="software-usecase-spec-module"
-                />
-              )}
-            </FormField>
-            <FormField id={`${id}-variants`} label={t("software.manage.variants")}>
-              {(field) => (
-                <Input
-                  {...field}
-                  value={variants}
-                  onChange={(e) => onVariantsChange(e.target.value)}
-                  data-testid="software-usecase-spec-variants"
-                />
-              )}
-            </FormField>
-          </div>
-        </SheetBody>
-        <SheetFooter className="flex justify-end">
-          <Button type="button" size="sm" onClick={() => onOpenChange(false)}>
-            <Save />
-            {t("software.manage.applySpec")}
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
-  );
-}
-
-function SpackMetadataChoices({
-  metadata,
-  onSoftwareVersionChange,
-  onVariantsChange,
-  variants,
-}: {
-  metadata: SpackPackageMetadata;
-  onSoftwareVersionChange: (value: string) => void;
-  onVariantsChange: (value: string) => void;
-  variants: string;
-}) {
-  const { t } = useTranslation();
-  const visibleVersions = metadata.versions.slice(0, 10);
-  return (
-    <div className="grid gap-3 border-border p-3">
-      <div className="text-xs font-medium text-foreground">
-        {t("software.manage.packageMetadata")}
-      </div>
-      {visibleVersions.length > 0 ? (
-        <div className="space-y-1">
-          <div className="text-[11px] text-muted-foreground">{t("software.manage.versions")}</div>
-          <div className="kq-fill-row gap-1.5">
-            {visibleVersions.map((version) => (
-              <Button
-                key={version}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onSoftwareVersionChange(version)}
-              >
-                {version}
-              </Button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      {metadata.variants.length > 0 ? (
-        <div className="space-y-2">
-          <div className="text-[11px] text-muted-foreground">{t("software.manage.variants")}</div>
-          {metadata.variants.map((variant) => (
-            <VariantChoice
-              key={variant.name}
-              onVariantsChange={onVariantsChange}
-              variant={variant}
-              variants={variants}
-            />
-          ))}
-        </div>
-      ) : null}
-      {metadata.provides.length > 0 || metadata.dependencies.length > 0 ? (
-        <div className="flex flex-wrap gap-1">
-          {[
-            ...metadata.provides.map((item) => `provides:${item}`),
-            ...metadata.dependencies.map((item) => `dep:${item}`),
-          ].map((item) => (
-            <Badge key={item} variant="outline">
-              {item}
-            </Badge>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function VariantChoice({
-  onVariantsChange,
-  variant,
-  variants,
-}: {
-  onVariantsChange: (value: string) => void;
-  variant: SpackVariantMetadata;
-  variants: string;
-}) {
-  const values = variant.values.length > 0 ? variant.values : ["+", "~"];
-  return (
-    <div className=" border-border p-2">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <div className="font-mono text-xs font-semibold">{variant.name}</div>
-          {variant.description ? (
-            <div className="mt-1 text-[11px] text-muted-foreground">{variant.description}</div>
-          ) : null}
-        </div>
-        {variant.default ? <Badge variant="outline">default:{variant.default}</Badge> : null}
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {values.map((value) => {
-          const token =
-            value === "+" || value === "~" ? `${value}${variant.name}` : `${variant.name}=${value}`;
-          return (
-            <Button
-              key={token}
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => onVariantsChange(setVariantToken(variants, variant.name, token))}
-            >
-              {token}
-            </Button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function CompilerParseBox({ onCompilerChange }: { onCompilerChange: (value: string) => void }) {
-  const { t } = useTranslation();
-  const [source, setSource] = useState("");
-  const [compilers, setCompilers] = useState<SpackCompilerMetadata[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const parse = async () => {
-    setError(null);
-    try {
-      setCompilers(await parseSpackCompilers(source));
-    } catch (err) {
-      setError(toUserFacingError(err, t("software.unreachable")));
-    }
-  };
-  return (
-    <div className="grid gap-2 border-border p-3">
-      <div className="text-xs font-medium text-foreground">
-        {t("software.manage.compilerParser")}
-      </div>
-      <Textarea
-        value={source}
-        onChange={(e) => setSource(e.target.value)}
-        placeholder={t("software.manage.compilerParserPlaceholder")}
-        className="min-h-20 font-mono text-xs"
-        data-testid="software-usecase-compiler-source"
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={parse} disabled={!source.trim()}>
-          {t("software.manage.parseCompiler")}
-        </Button>
-        {error ? <span className="text-xs text-status-failed">{error}</span> : null}
-      </div>
-      {compilers.length > 0 ? (
-        <div className="kq-fill-row gap-1.5" data-testid="software-usecase-compiler-options">
-          {compilers.map((compiler) => (
-            <Button
-              key={compiler.spec}
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => onCompilerChange(compiler.spec)}
-            >
-              {compiler.spec}
-            </Button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SpackCatalogPickerDialog({
-  catalog,
-  onOpenChange,
-  onSelect,
-  open,
-  search,
-  selected,
-  setPage,
-  setSearch,
-  setSource,
-  source,
-}: {
-  catalog: SpackCatalog | null;
-  onOpenChange: (value: boolean) => void;
-  onSelect: (pkg: SpackCatalogPackage) => void;
-  open: boolean;
-  search: string;
-  selected: SpackCatalogPackage | null;
-  setPage: (value: number) => void;
-  setSearch: (value: string) => void;
-  setSource: (value: SpackCatalogSourceFilter) => void;
-  source: SpackCatalogSourceFilter;
-}) {
-  const { t } = useTranslation();
-  const packages = catalog?.packages ?? [];
-  const selectedKey = selected ? catalogPackageKey(selected) : null;
-  const choose = (pkg: SpackCatalogPackage) => {
-    onSelect(pkg);
-    onOpenChange(false);
-  };
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="h-[min(88vh,900px)] w-[min(calc(100vw-1rem),1120px)]"
-        data-testid="software-usecase-package-picker"
-        aria-describedby={undefined}
-      >
-        <DialogHeader>
-          <DialogTitle>{t("software.manage.packagePickerTitle")}</DialogTitle>
-        </DialogHeader>
-        <DialogBody className="flex flex-col gap-3">
-          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-            <SearchInput
-              aria-label={t("software.manage.catalogSearch")}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t("software.manage.catalogSearch")}
-              data-testid="software-usecase-catalog-search"
-            />
-            <div className="kq-fill-row gap-1.5" data-testid="software-usecase-source-filters">
-              {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
-                (item) => (
-                  <Button
-                    key={item}
-                    type="button"
-                    variant={source === item ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSource(item)}
-                  >
-                    {sourceLabel(t, item)}
-                  </Button>
-                ),
-              )}
-            </div>
-          </div>
-          <CatalogPickerPagination catalog={catalog} onPageChange={setPage} />
-          <div
-            className="grid min-h-80 flex-1 auto-rows-max content-start gap-3 overflow-auto border-border p-2 sm:grid-cols-2 xl:grid-cols-3"
-            data-testid="software-usecase-catalog-grid"
-          >
-            {packages.length === 0 ? (
-              <SmallEmpty icon={<Boxes />} text={t("software.manage.catalogNoMatches")} />
-            ) : (
-              packages.map((pkg) => {
-                const key = catalogPackageKey(pkg);
-                const active = key === selectedKey;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    className={cn(
-                      "grid min-h-36 min-w-0 content-between gap-3 p-3 text-left transition-colors ",
-                      active ? "text-brand" : "",
-                    )}
-                    onClick={() => choose(pkg)}
-                    data-testid={`software-usecase-catalog-package-${pkg.source}-${pkg.name}`}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex min-w-0 items-start justify-between gap-2">
-                        <span className="break-all font-mono text-sm font-semibold text-foreground">
-                          {pkg.name}
-                        </span>
-                        <Badge variant={pkg.source === "upstream" ? "outline" : "brand"}>
-                          {sourceLabel(t, pkg.source)}
-                        </Badge>
-                      </div>
-                      {pkg.description ? (
-                        <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
-                          {pkg.description}
-                        </p>
-                      ) : null}
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {pkg.metadata ? (
-                          <>
-                            <Badge variant="outline">
-                              {t("software.manage.versionCount", {
-                                count: pkg.metadata.versions.length,
-                              })}
-                            </Badge>
-                            <Badge variant="outline">
-                              {t("software.manage.variantCount", {
-                                count: pkg.metadata.variants.length,
-                              })}
-                            </Badge>
-                          </>
-                        ) : null}
-                        {pkg.tags.map((tag) => (
-                          <Badge key={tag} variant="outline">
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex justify-end text-xs">
-                      {active ? (
-                        <span className="inline-flex items-center gap-1 font-medium text-brand">
-                          <Check className="h-3.5 w-3.5" />
-                          {t("software.manage.selected")}
-                        </span>
-                      ) : (
-                        <span className="font-medium text-brand">
-                          {t("software.manage.choose")}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-          <CatalogPickerPagination catalog={catalog} onPageChange={setPage} compact />
-        </DialogBody>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function CatalogPickerPagination({
-  catalog,
-  compact = false,
-  onPageChange,
-}: {
-  catalog: SpackCatalog | null;
-  compact?: boolean;
-  onPageChange: (value: number) => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-      <div className="text-xs text-muted-foreground">
-        {catalog
-          ? t("software.manage.catalogResultCount", {
-              shown: catalog.packages.length,
-              total: catalog.totalCount,
-            })
-          : t("common.loading")}
-      </div>
-      {catalog ? (
-        <PaginationControls
-          previous={{
-            disabled: !catalog.hasPrevious,
-            onClick: () => onPageChange(Math.max(1, catalog.page - 1)),
-            "data-testid": compact
-              ? "software-usecase-catalog-prev-bottom"
-              : "software-usecase-catalog-prev",
-            children: (
-              <>
-                <ChevronLeft />
-                {t("software.manage.previousPage")}
-              </>
-            ),
-          }}
-          next={{
-            disabled: !catalog.hasNext,
-            onClick: () => onPageChange(catalog.page + 1),
-            "data-testid": compact
-              ? "software-usecase-catalog-next-bottom"
-              : "software-usecase-catalog-next",
-            children: (
-              <>
-                {t("software.manage.nextPage")}
-                <ChevronRight />
-              </>
-            ),
-          }}
-        >
-          <span className="font-mono text-[11px] text-muted-foreground">
-            {t("software.manage.catalogPageStatus", {
-              page: catalog.page,
-              total: catalog.totalPages,
-            })}
-          </span>
-        </PaginationControls>
       ) : null}
     </div>
   );
@@ -2832,7 +1935,7 @@ function SpackCatalogPackageList({
             return (
               <div
                 key={`${pkg.source}:${pkg.id ?? pkg.name}`}
-                className={`grid min-w-0 gap-2 border-border p-2.5 ${clickableCardClass}`}
+                className={`grid min-w-0 content-start gap-2 p-3 ${clickableCardClass}`}
                 data-testid={`software-spack-catalog-package-${pkg.source}-${pkg.name}`}
               >
                 <Link
@@ -2993,6 +2096,7 @@ function SpackCatalogPackageList({
             </SheetHeader>
             <SheetBody>
               <SpackCatalogPackageEditForm
+                key={`${editingPackage.id}-${activeOrganizationId}`}
                 pkg={editingPackage}
                 isPending={updatePackagePending}
                 onCancel={() => setEditingId(null)}
@@ -3057,161 +2161,6 @@ function SpackCatalogOptions({ catalog }: { catalog: SpackCatalog | null }) {
   );
 }
 
-export function SpackCatalogPackageForm({
-  isPending = false,
-  requiresActiveOrganizationForVendor = false,
-  onSubmit,
-}: {
-  isPending?: boolean;
-  requiresActiveOrganizationForVendor?: boolean;
-  onSubmit: (payload: SpackCatalogPackageCreate) => void;
-}) {
-  const { t } = useTranslation();
-  const id = useId();
-  const [name, setName] = useState("");
-  const [source, setSource] = useState<SpackCatalogPackageCreate["source"]>("official");
-  const [description, setDescription] = useState("");
-  const [tags, setTags] = useState("");
-  const [packageFile, setPackageFile] = useState("");
-  const [metadata, setMetadata] = useState<SpackPackageMetadata | null>(null);
-  const [parseError, setParseError] = useState<string | null>(null);
-  const parsePackage = async () => {
-    setParseError(null);
-    try {
-      const parsed = await parseSpackPackageFile(packageFile);
-      setMetadata(parsed);
-      if (parsed.name) setName(parsed.name);
-      if (parsed.homepage && !description.trim()) setDescription(parsed.homepage);
-      const metadataTags = [
-        ...parsed.provides.map((item) => `provides:${item}`),
-        ...parsed.licenses.map((item) => `license:${item}`),
-      ];
-      if (metadataTags.length > 0) setTags(metadataTags.join(","));
-    } catch (err) {
-      setParseError(toUserFacingError(err, t("software.unreachable")));
-    }
-  };
-  return (
-    <form
-      className="mt-3 grid gap-2 border-b border-border p-2"
-      data-testid="software-spack-catalog-create-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!name.trim()) return;
-        onSubmit({
-          name: name.trim(),
-          source,
-          description: optionalText(description),
-          tags: parseTagInput(tags),
-          packageFile: optionalText(packageFile),
-        });
-      }}
-    >
-      <div className="grid gap-2 md:grid-cols-[1fr_150px]">
-        <FormField id={`${id}-name`} label={t("software.manage.catalogPackageName")}>
-          {(field) => <Input {...field} value={name} onChange={(e) => setName(e.target.value)} />}
-        </FormField>
-        <label htmlFor={`${id}-source`} className="grid min-w-0 gap-1.5 text-sm">
-          <span>{t("software.manage.catalogPackageSource")}</span>
-          <NativeSelect
-            id={`${id}-source`}
-            value={source}
-            onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
-            aria-label={t("software.manage.catalogPackageSource")}
-          >
-            <option value="official">{sourceLabel(t, "official")}</option>
-            <option value="vendor">{sourceLabel(t, "vendor")}</option>
-          </NativeSelect>
-        </label>
-      </div>
-      {source === "vendor" && requiresActiveOrganizationForVendor ? (
-        <div className="text-xs text-status-failed">
-          {t("software.manage.activeOrganizationRequired")}
-        </div>
-      ) : null}
-      <FormField id={`${id}-description`} label={t("software.manage.catalogPackageDescription")}>
-        {(field) => (
-          <Input {...field} value={description} onChange={(e) => setDescription(e.target.value)} />
-        )}
-      </FormField>
-      <label htmlFor={`${id}-packageFile`} className="grid min-w-0 gap-1.5 text-sm">
-        <span>package.py</span>
-        <Textarea
-          id={`${id}-packageFile`}
-          value={packageFile}
-          onChange={(e) => setPackageFile(e.target.value)}
-          placeholder={t("software.manage.packageFilePlaceholder")}
-          className="min-h-32 font-mono text-xs"
-          data-testid="software-spack-package-file"
-        />
-      </label>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={parsePackage}
-          disabled={!packageFile.trim()}
-          data-testid="software-spack-parse-package-file"
-        >
-          {t("software.manage.parsePackageFile")}
-        </Button>
-        {parseError ? <span className="text-xs text-status-failed">{parseError}</span> : null}
-      </div>
-      {metadata ? <SpackPackageMetadataSummary metadata={metadata} /> : null}
-      <div className="grid items-end gap-2 md:grid-cols-[1fr_auto]">
-        <FormField id={`${id}-tags`} label={t("software.manage.catalogPackageTags")}>
-          {(field) => <Input {...field} value={tags} onChange={(e) => setTags(e.target.value)} />}
-        </FormField>
-        <Button
-          type="submit"
-          size="sm"
-          disabled={isPending || (source === "vendor" && requiresActiveOrganizationForVendor)}
-        >
-          <PackagePlus />
-          {t("software.manage.createCatalogPackage")}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
-function SpackPackageMetadataSummary({ metadata }: { metadata: SpackPackageMetadata }) {
-  const { t } = useTranslation();
-  return (
-    <div
-      className="grid gap-2 border-border p-2 text-xs"
-      data-testid="software-spack-package-metadata"
-    >
-      <div className="font-medium text-foreground">{t("software.manage.packageMetadata")}</div>
-      <div className="flex flex-wrap gap-1">
-        <Badge variant="outline">{metadata.name ?? "package.py"}</Badge>
-        <Badge variant="outline">
-          {t("software.manage.versionCount", { count: metadata.versions.length })}
-        </Badge>
-        <Badge variant="outline">
-          {t("software.manage.variantCount", { count: metadata.variants.length })}
-        </Badge>
-        {metadata.licenses.map((license) => (
-          <Badge key={license} variant="outline">
-            license:{license}
-          </Badge>
-        ))}
-      </div>
-      {metadata.variants.length > 0 ? (
-        <div className="flex flex-wrap gap-1">
-          {metadata.variants.slice(0, 12).map((variant) => (
-            <Badge key={variant.name} variant="outline">
-              {variant.name}
-              {variant.values.length > 0 ? `=${variant.values.join("|")}` : ""}
-            </Badge>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function SpackCatalogPackageEditForm({
   isPending,
   onCancel,
@@ -3226,9 +2175,18 @@ function SpackCatalogPackageEditForm({
   const { t } = useTranslation();
   const id = useId();
   const [name, setName] = useState(pkg.name);
-  const [source, setSource] = useState<SpackCatalogPackageCreate["source"]>(
-    pkg.source === "vendor" ? "vendor" : "official",
-  );
+  const source = pkg.source === "vendor" ? "vendor" : "official";
+  const orgId = useActiveOrganizationId();
+  const recipe = useQuery({
+    queryKey: ["spack-catalog-source", pkg.id, orgId, getAuthState().revision],
+    queryFn: () => getSpackCatalogSource(pkg.id ?? ""),
+    retry: false,
+    gcTime: 0,
+  });
+  const [draft, setDraft] = useState<{
+    packageFile: string;
+    expectedSourceDigest: string | null;
+  }>();
   const [description, setDescription] = useState(pkg.description ?? "");
   const [tags, setTags] = useState(pkg.tags.join(","));
   return (
@@ -3243,6 +2201,7 @@ function SpackCatalogPackageEditForm({
           source,
           description: optionalText(description),
           tags: parseTagInput(tags),
+          ...draft,
         });
       }}
     >
@@ -3252,15 +2211,7 @@ function SpackCatalogPackageEditForm({
         </FormField>
         <label htmlFor={`${id}-source`} className="grid min-w-0 gap-1.5 text-sm">
           <span>{t("software.manage.catalogPackageSource")}</span>
-          <NativeSelect
-            id={`${id}-source`}
-            value={source}
-            onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
-            aria-label={t("software.manage.catalogPackageSource")}
-          >
-            <option value="official">{sourceLabel(t, "official")}</option>
-            <option value="vendor">{sourceLabel(t, "vendor")}</option>
-          </NativeSelect>
+          <Input id={`${id}-source`} readOnly value={sourceLabel(t, source)} />
         </label>
       </div>
       <FormField id={`${id}-description`} label={t("software.manage.catalogPackageDescription")}>
@@ -3271,6 +2222,23 @@ function SpackCatalogPackageEditForm({
       <FormField id={`${id}-tags`} label={t("software.manage.catalogPackageTags")}>
         {(field) => <Input {...field} value={tags} onChange={(e) => setTags(e.target.value)} />}
       </FormField>
+      {recipe.data && (
+        <SpackSourceEditor
+          value={draft?.packageFile ?? recipe.data.content ?? ""}
+          onChange={(packageFile) => {
+            const expectedSourceDigest = draft ? draft.expectedSourceDigest : recipe.data.digest;
+            setDraft({ packageFile, expectedSourceDigest });
+          }}
+        />
+      )}
+      {recipe.isError && (
+        <div role="alert">
+          {toUserFacingError(recipe.error, t("software.unreachable"))}{" "}
+          <Button type="button" variant="outline" onClick={() => void recipe.refetch()}>
+            {t("common.retry")}
+          </Button>
+        </div>
+      )}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={isPending}>
           <Undo2 />
@@ -3303,14 +2271,12 @@ function UsecaseCard({
       : pkg.spec.software.kind === "Singularity"
         ? `${pkg.spec.software.image}:${pkg.spec.software.tag}`
         : "Bare";
-  const moduleName =
-    pkg.spec.software.kind === "Spack" ? (pkg.spec.software.moduleName ?? "—") : "—";
-  const compiler = pkg.spec.software.kind === "Spack" ? (pkg.spec.software.compiler ?? "—") : "—";
-  const variantRef =
-    pkg.spec.software.kind === "Spack" ? (pkg.spec.software.variantRef ?? "—") : "—";
+  const moduleName = pkg.spec.software.kind === "Spack" ? pkg.spec.software.moduleName : null;
+  const compiler = pkg.spec.software.kind === "Spack" ? pkg.spec.software.compiler : null;
+  const variantRef = pkg.spec.software.kind === "Spack" ? pkg.spec.software.variantRef : null;
   return (
-    <div
-      className={` border-border p-3 ${clickableCardClass}`}
+    <article
+      className={`flex min-w-0 flex-col gap-2 p-3 ${clickableCardClass}`}
       data-testid={`software-usecase-card-${pkg.id}`}
     >
       <Link
@@ -3323,24 +2289,25 @@ function UsecaseCard({
       <div className={`flex items-start justify-between gap-3 ${cardContentLayerClass}`}>
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">{pkg.name}</div>
-          <div className="mt-1 font-mono text-[11px] text-muted-foreground">{shortId(pkg.id)}</div>
         </div>
         <div className={`flex shrink-0 items-center gap-1 ${cardActionLayerClass}`}>
           <FavoriteButton active={favorite} onClick={onToggleFavorite} />
           <Badge variant="outline">v{pkg.version}</Badge>
         </div>
       </div>
-      <p className={`mt-2 line-clamp-2 text-xs text-muted-foreground ${cardContentLayerClass}`}>
-        {pkg.description ?? t("software.card.noDescription")}
-      </p>
-      <div className={`mt-3 grid gap-2 text-xs md:grid-cols-2 ${cardContentLayerClass}`}>
+      {pkg.description && (
+        <p className={`line-clamp-2 text-xs text-muted-foreground ${cardContentLayerClass}`}>
+          {pkg.description}
+        </p>
+      )}
+      <div className={`grid grid-cols-2 gap-2 text-xs ${cardContentLayerClass}`}>
         <InfoTile label={t("software.manage.commandFile")} value={pkg.spec.usecase.commandFile} />
         <InfoTile label={t("software.manage.boundSoftware")} value={softwareLabel} />
-        <InfoTile label={t("software.manage.compiler")} value={compiler} />
-        <InfoTile label={t("software.manage.module")} value={moduleName} />
-        <InfoTile label={t("software.manage.variantRef")} value={variantRef} />
+        {compiler && <InfoTile label={t("software.manage.compiler")} value={compiler} />}
+        {moduleName && <InfoTile label={t("software.manage.module")} value={moduleName} />}
+        {variantRef && <InfoTile label={t("software.manage.variantRef")} value={variantRef} />}
       </div>
-      <div className={`mt-3 kq-fill-row ${cardActionLayerClass}`}>
+      <div className={`mt-auto flex flex-wrap gap-1.5 pt-1 ${cardActionLayerClass}`}>
         <Button asChild variant="outline" size="sm" data-testid={`software-view-usecase-${pkg.id}`}>
           <Link to="/software/usecases/$usecaseId" params={{ usecaseId: pkg.id }}>
             <Eye />
@@ -3354,7 +2321,7 @@ function UsecaseCard({
           </Button>
         ) : null}
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -3530,58 +2497,13 @@ function UsecasePackageEditForm({
 
 function InfoTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 border-border px-2 py-1.5">
+    <div className="min-w-0">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="truncate font-mono text-xs" title={value}>
         {value}
       </div>
     </div>
   );
-}
-
-function SmallEmpty({ icon, text }: { icon: ReactNode; text: string }) {
-  return (
-    <div className="flex min-h-32 flex-col items-center justify-center gap-2 border-border text-sm text-muted-foreground">
-      <span className="[&_svg]:h-5 [&_svg]:w-5">{icon}</span>
-      {text}
-    </div>
-  );
-}
-
-function parseTagInput(value: string): string[] {
-  return value
-    .split(/[,\n]/)
-    .map((tag) => tag.trim())
-    .filter((tag) => tag.length > 0);
-}
-
-function optionalText(value: string): string | undefined {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function sourceLabel(
-  t: (key: string, opts?: Record<string, unknown>) => string,
-  source: SpackCatalogSourceFilter,
-): string {
-  const keys: Record<SpackCatalogSourceFilter, string> = {
-    all: "software.manage.sourceAll",
-    upstream: "software.manage.sourceUpstream",
-    official: "software.manage.sourceOfficial",
-    vendor: "software.manage.sourceVendor",
-  };
-  return t(keys[source]);
-}
-
-interface SpackSpecConfig {
-  compiler: string;
-  moduleName: string;
-  variants: string;
-  version: string;
-}
-
-function catalogPackageKey(pkg: SpackCatalogPackage): string {
-  return pkg.id ?? `catalog:${pkg.source}:${pkg.name}`;
 }
 
 function spackPackageNameFromSpecName(name: string): string {
@@ -3614,90 +2536,6 @@ function findCatalogPackage(
     source,
     tags: [],
   };
-}
-
-function makeSpackSpecPreview(
-  packageName: string,
-  version: string,
-  compiler: string,
-  variants: string,
-  defaultSpec?: string,
-): string {
-  if (defaultSpec && !version.trim() && !compiler.trim() && !variants.trim()) return defaultSpec;
-  const head = `${packageName}${version.trim() ? `@${version.trim()}` : ""}${
-    compiler.trim() ? `%${compiler.trim()}` : ""
-  }`;
-  const tail = variants.trim();
-  return tail ? `${head} ${tail}` : head;
-}
-
-function makeSpackSoftwareSpec(
-  pkg: SpackCatalogPackage,
-  config: SpackSpecConfig,
-): UsecasePackageSpec["software"] {
-  const version = optionalText(config.version);
-  const compiler = optionalText(config.compiler);
-  const useDefault = !!pkg.defaultSpec && !version && !compiler && !config.variants.trim();
-  return {
-    kind: "Spack",
-    name:
-      useDefault && pkg.defaultSpec
-        ? pkg.defaultSpec
-        : makeSpackSpecPreview(pkg.metadata?.name ?? pkg.name, version ?? "", compiler ?? "", ""),
-    ...(version ? { version } : {}),
-    ...(compiler ? { compiler } : {}),
-    ...(optionalText(config.moduleName) ? { moduleName: optionalText(config.moduleName) } : {}),
-    variantRef: catalogPackageKey(pkg),
-    argumentList: config.variants.split(/\s+/).filter((token) => token.length > 0),
-  };
-}
-
-function setVariantToken(current: string, variantName: string, token: string): string {
-  const tokens = current
-    .split(/\s+/)
-    .filter((item) => item.length > 0)
-    .filter(
-      (item) =>
-        item !== `+${variantName}` &&
-        item !== `~${variantName}` &&
-        !item.startsWith(`${variantName}=`),
-    );
-  return [...tokens, token].join(" ");
-}
-
-function makeUsecaseSpec(
-  commandFile: string,
-  inputDescriptor: string,
-  argumentFormat: string,
-  software: SpackCatalogPackage,
-  specConfig: SpackSpecConfig,
-): UsecasePackageSpec {
-  const descriptor = inputDescriptor.trim();
-  const hasInput = descriptor.length > 0;
-  return {
-    usecase: {
-      commandFile,
-      inputSlots: hasInput
-        ? [
-            {
-              kind: "Text",
-              descriptor,
-              refMaterials: [{ kind: "ArgRef", descriptor, sort: 0 }],
-            },
-          ]
-        : [],
-    },
-    software: makeSpackSoftwareSpec(software, specConfig),
-    arguments: hasInput ? [{ descriptor, valueFormat: argumentFormat.trim() || "{}" }] : [],
-    environments: [],
-    filesomeInputs: [],
-    filesomeOutputs: [],
-    valueOutputs: [],
-  };
-}
-
-function shortId(id: string): string {
-  return id.length > 12 ? id.slice(0, 12) : id;
 }
 
 function SoftwareEmptyState({ canCreate }: { canCreate: boolean }) {

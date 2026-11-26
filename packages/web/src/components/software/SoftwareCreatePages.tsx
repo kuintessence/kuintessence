@@ -20,12 +20,10 @@ import { type SoftwareSection, softwareCatalogDestination } from "../../lib/soft
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
-import {
-  SPACK_CATALOG_PAGE_SIZE,
-  SpackCatalogPackageForm,
-  UsecasePackageForm,
-  WorkflowTemplateForm,
-} from "./SoftwarePage";
+import { SpackCatalogPackageForm } from "./SpackCatalogPackageForm";
+import { SPACK_CATALOG_PAGE_SIZE } from "./spack-catalog";
+import { UsecasePackageForm } from "./UsecasePackageForm";
+import { WorkflowTemplateForm } from "./WorkflowTemplateForm";
 
 function CreatePageShell({
   children,

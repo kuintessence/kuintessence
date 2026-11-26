@@ -114,7 +114,10 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
             className="font-mono text-[11px] text-muted-foreground tabular-nums"
             data-testid="jobs-count"
           >
-            {t("jobs.countHint", { visible: jobs.length, total })}
+            {t("jobs.countHint", {
+              visible: jobsQ.isSuccess ? jobs.length : "—",
+              total: jobsQ.isSuccess ? total : "—",
+            })}
           </span>
         }
       />

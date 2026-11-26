@@ -110,7 +110,7 @@ describe("CommandWorkdirDialog", () => {
 
     const dialog = await screen.findByTestId("command-workdir-dialog");
     expect(dialog.className).toContain("h-[min(88vh,900px)]");
-    expect(dialog.className).toContain("overflow-hidden");
+    expect(dialog.className).toContain("overflow-visible");
     expect(screen.getByTestId("command-workdir-entries").className).toContain("overflow-auto");
   });
 

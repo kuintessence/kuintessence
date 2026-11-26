@@ -460,6 +460,7 @@ describe("agent-handler identity pinning", () => {
     });
   });
   test("advertises heartbeat ACK support and acks only applied heartbeat sequences", async () => {
+    const key = "a".repeat(64);
     const heartbeatSequences: bigint[] = [];
     const { router, handlers } = createMockRouter();
     registerAgentHandler(router, {
@@ -468,13 +469,24 @@ describe("agent-handler identity pinning", () => {
         heartbeat: async () => undefined,
       } as unknown as AgentManager,
       jobService: {} as unknown as JobService,
+      transferCheckpoints: {
+        releasedCheckpointKeys: async (agentId, keys) => {
+          expect(agentId).toBe("agent-1");
+          expect(keys).toEqual([key]);
+          return keys;
+        },
+      },
       logger: silent,
       dispatcher: new AgentDispatcher(),
     });
     const heartbeat = create(AgentMessageSchema, {
       payload: {
         case: "heartbeat",
-        value: create(HeartbeatSchema, { sequence: 41n }),
+        value: create(HeartbeatSchema, {
+          agentId: "untrusted",
+          sequence: 41n,
+          uploadCheckpointKeys: [key],
+        }),
       },
     });
 
@@ -484,6 +496,7 @@ describe("agent-handler identity pinning", () => {
     );
     for (const response of responses) {
       if (response.payload.case === "heartbeatAck") {
+        expect(response.payload.value.releasedUploadCheckpointKeys).toEqual([key]);
         heartbeatSequences.push(response.payload.value.sequence);
       }
     }
@@ -660,7 +673,7 @@ describe("agent-handler identity pinning", () => {
       denyList: string[];
     }> = [];
     const fakePolicyStore = {
-      getForAgent: async (agentId: string) => ({
+      effectiveForAgent: async (agentId: string) => ({
         agentId,
         scope: "agent",
         version: "v-reconnect",
@@ -967,4 +980,63 @@ test("accounting responses require registration and capability and carry the pin
     await drain(handlers.connect(iter(response, registration, response)));
     expect(seen).toEqual(advertised ? ["original-agent:probe"] : []);
   }
+});
+
+test("update heartbeats use the registered identity and delivery failures preserve heartbeat ACKs", async () => {
+  const calls: string[] = [];
+  const report = { requestId: crypto.randomUUID(), release: "a".repeat(64), state: "waiting" };
+  const { router, handlers } = createMockRouter();
+  const dispatcher = new AgentDispatcher();
+  registerAgentHandler(router, {
+    agentManager: {
+      register: async () => undefined,
+      heartbeat: async (input: { agentId: string }) => {
+        calls.push(`heartbeat:${input.agentId}`);
+      },
+    } as unknown as AgentManager,
+    jobService: {} as unknown as JobService,
+    logger: silent,
+    dispatcher,
+    agentUpdates: {
+      report: async (agentId, value) => {
+        calls.push(`report:${agentId}:${value.requestId}`);
+      },
+      deliver: async (agentId) => {
+        calls.push(`deliver:${agentId}:${dispatcher.getChannel(agentId)?.agentUpdateV1}`);
+        throw new Error("temporary update storage failure");
+      },
+    },
+  });
+  const heartbeat = create(AgentMessageSchema, {
+    payload: {
+      case: "heartbeat",
+      value: create(HeartbeatSchema, {
+        agentId: "forged-agent",
+        sequence: 1n,
+        siteOperationsJson: JSON.stringify({
+          version: 1,
+          observedAt: Date.now(),
+          transport: "direct",
+          trust: "single-user",
+          executor: "slurm",
+          materials: { state: "idle" },
+          installation: { state: "idle" },
+          jobs: { state: "idle" },
+          transfers: { state: "idle" },
+          update: { phase: "staged", request: report },
+        }),
+      }),
+    },
+  });
+  const registration = registerMsg("registered-agent");
+  if (registration.payload.case !== "register" || !handlers.connect)
+    throw new Error("Missing fixture");
+  registration.payload.value.agentUpdateV1 = true;
+  const responses = await collectServer(handlers.connect(iter(heartbeat, registration, heartbeat)));
+  expect(calls).toEqual([
+    "heartbeat:registered-agent",
+    `report:registered-agent:${report.requestId}`,
+    "deliver:registered-agent:true",
+  ]);
+  expect(responses.some((message) => message.payload.case === "heartbeatAck")).toBe(true);
 });

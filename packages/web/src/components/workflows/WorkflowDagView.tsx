@@ -629,7 +629,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
           <CardHeader>
             <CardTitle className="text-foreground">{t("workflows.run.nodes")}</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="divide-y divide-border">
             {nodeStatuses.map(([nodeId, status]) => {
               const values = runQ.data?.result?.values[nodeId]?.values ?? {};
               const jobId = stepJobs[nodeId];
@@ -637,7 +637,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
                 <div
                   key={nodeId}
                   data-testid={`workflow-node-${nodeId}`}
-                  className="min-w-0 space-y-2 border-b border-border py-3 last:border-0"
+                  className="min-w-0 space-y-2 py-3"
                 >
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                     <span className="min-w-0 font-mono text-sm [overflow-wrap:anywhere]">

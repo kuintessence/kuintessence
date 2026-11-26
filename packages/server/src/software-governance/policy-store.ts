@@ -1,6 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { type PgDb, softwarePolicies } from "@kuintessence/db";
-import { and, eq } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import { agents, type PgDb, softwarePolicies, softwarePolicyOverlays } from "@kuintessence/db";
+import { and, eq, or, sql } from "drizzle-orm";
+
+import { mergePolicyInputs } from "./effective-policy";
 
 /**
  * software governance policy bundle as the Server stores and
@@ -23,15 +25,6 @@ export interface StoredPolicy extends PolicyBundle {
   updatedAt: Date;
 }
 
-/**
- * CRUD for the `software_policies` table. Per-agent scope is the only
- * variant in v1; global / org scope rows are tolerated by the schema for
- * future extension but the push path treats agent scope as
- * authoritative.
- *
- * Each upsert gets a unique version, including writes in the same millisecond
- * or from different Server instances. Agents compare versions for equality.
- */
 export class PolicyStore {
   constructor(private readonly db: PgDb) {}
 
@@ -43,6 +36,48 @@ export class PolicyStore {
       .limit(1);
     if (!row) return null;
     return this.rowToBundle(row);
+  }
+
+  /** Read the current provider, cluster and Agent layers in one database snapshot. */
+  async effectiveForAgent(agentId: string): Promise<(PolicyBundle & { version: string }) | null> {
+    const overlay = softwarePolicyOverlays;
+    const rows = await this.db
+      .select({ explicit: softwarePolicies, overlay })
+      .from(agents)
+      .leftJoin(
+        softwarePolicies,
+        and(eq(softwarePolicies.agentId, agents.agentId), eq(softwarePolicies.scope, "agent")),
+      )
+      .leftJoin(
+        overlay,
+        and(
+          sql`${overlay.providerOrgId} is not distinct from ${agents.providerOrgId}`,
+          or(
+            eq(overlay.scope, "provider"),
+            and(
+              eq(overlay.scope, "cluster"),
+              eq(overlay.clusterId, sql`coalesce(${agents.clusterId},${agents.siteName})`),
+            ),
+            and(eq(overlay.scope, "agent"), eq(overlay.agentId, agents.agentId)),
+          ),
+        ),
+      )
+      .where(eq(agents.agentId, agentId));
+    const explicit = rows[0]?.explicit;
+    const layers = rows.flatMap((row) => (row.overlay ? [row.overlay] : []));
+    if (!layers.length) return explicit ? this.rowToBundle(explicit) : null;
+    const layer = (scope: string) => layers.find((row) => row.scope === scope);
+    const { allowList, denyList, lockEnabled, mirrors, preinstallList } = mergePolicyInputs(
+      layer("provider"),
+      layer("cluster"),
+      layer("agent"),
+      explicit ?? undefined,
+    );
+    const bundle = { allowList, denyList, lockEnabled, mirrors, preinstallList };
+    return {
+      ...bundle,
+      version: createHash("sha256").update(JSON.stringify(bundle)).digest("hex"),
+    };
   }
 
   async upsertForAgent(agentId: string, bundle: PolicyBundle): Promise<StoredPolicy> {

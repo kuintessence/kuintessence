@@ -208,7 +208,11 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
                 ) : null}
               </TabsList>
               <TabsContent value="overview">
-                <JobOverviewTab job={detailQ.data} loading={detailQ.isLoading} />
+                <JobOverviewTab
+                  job={detailQ.data}
+                  loading={detailQ.isLoading}
+                  placement={traceQ.isSuccess ? traceQ.data : undefined}
+                />
               </TabsContent>
               <TabsContent value="logs">
                 <JobLogsTab jobId={jobId} />

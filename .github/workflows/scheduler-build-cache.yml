@@ -1,0 +1,64 @@
+name: Warm scheduler build cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/actions/registry-build-cache/**
+      - .github/workflows/scheduler-build-cache.yml
+      - deploy/compose/docker-compose.pr-test.yml
+      - deploy/compose/docker-compose.pr-cache.yml
+      - deploy/schedulers/**
+      - deploy/pr-test/workspace.Dockerfile*
+      - .dockerignore
+      - .npmrc
+      - bun.lock
+      - package.json
+      - packages/*/package.json
+      - contracts/fabric/*/package.json
+      - biome.json
+      - tsconfig.base.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduler-build-cache
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/registry-build-cache
+      - name: Export shared scheduler layers
+        env:
+          # Compose validates runtime fields even for a build-only plan.
+          COMPOSE_PROJECT_NAME: ci-build-cache
+          KQ_PR_DB_PASSWORD: build-only
+          KQ_PR_JWT_SECRET: build-only
+          KQ_PR_REGISTRATION_SCHEDULER: build-only
+        run: |
+          compose=(docker compose --project-directory . -f deploy/compose/docker-compose.pr-test.yml
+            -f deploy/compose/docker-compose.pr-cache.yml --profile images)
+          export KQ_PR_SCHEDULER=slurm
+          "${compose[@]}" build --print scheduler-base scheduler-runtime test-workspace |
+            docker buildx bake -f - --set '*.output=type=cacheonly' \
+              --set "scheduler-base.cache-to=type=registry,ref=$KQ_CI_BUILD_CACHE:scheduler-base,mode=max" \
+              --set "scheduler-runtime.cache-to=type=registry,ref=$KQ_CI_BUILD_CACHE:runtime-slurm,mode=max" \
+              --set "test-workspace.cache-to=type=registry,ref=$KQ_CI_BUILD_CACHE:workspace-deps,mode=max" \
+              --set test-workspace.target=deps scheduler-base scheduler-runtime test-workspace
+          export KQ_PR_SCHEDULER=pbs
+          "${compose[@]}" build --print scheduler-runtime |
+            docker buildx bake -f - --set '*.output=type=cacheonly' \
+              --set "scheduler-runtime.cache-to=type=registry,ref=$KQ_CI_BUILD_CACHE:runtime-pbs,mode=max" \
+              scheduler-runtime

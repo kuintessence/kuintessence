@@ -458,3 +458,29 @@ test("market details pair the source name with its full ID and keep the signed d
   expect(JSON.stringify(demand)).toBe(before);
   expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
 });
+
+test("reopening a closed demand publishes a new ID bound to the reviewed version", async () => {
+  demand.status = "CANCELLED";
+  demand.version = 2;
+  demand.cancellation = {
+    cancellationId: crypto.randomUUID(),
+    demandId: demand.demand.demandId,
+    expectedVersion: 1,
+  };
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: /Public BWA demand/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "Reopen demand" }));
+  fireEvent.change(screen.getByLabelText("Expires"), { target: { value: "2099-01-01T00:00" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review request" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(api.post).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm submission" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.post).mock.calls[0]?.[1]).toMatchObject({
+    operation: "publish-demand",
+    demand: {
+      demandId: expect.not.stringMatching(demand.demand.demandId),
+      reopens: { demandId: demand.demand.demandId, version: demand.version },
+    },
+  });
+});

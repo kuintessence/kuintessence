@@ -2,20 +2,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { WorkflowTemplate } from "../../lib/software-client";
+import type {
+  SpackCatalog,
+  SpackCompilerMetadata,
+  SpackPackageMetadata,
+  UsecasePackage,
+  WorkflowTemplate,
+} from "../../lib/software-client";
 import { nativeControl } from "../../lib/test-resource-field";
 import { SoftwareSpackCatalogCreatePage, SoftwareUsecaseCreatePage } from "./SoftwareCreatePages";
-import {
-  collectTemplateTags,
-  describeTemplate,
-  filterTemplateViews,
-  SoftwarePage,
-  suggestNextTemplateVersion,
-} from "./SoftwarePage";
+import { describeTemplate, SoftwarePage, suggestNextTemplateVersion } from "./SoftwarePage";
 
 const softwareClient = vi.hoisted(() => ({
   decideLicenseEntitlementClaim: vi.fn(),
   createAppTemplate: vi.fn(),
+  getSpackCatalogSource: vi.fn(),
   createSpackCatalogPackage: vi.fn(),
   createUsecasePackage: vi.fn(),
   createWorkflowTemplate: vi.fn(),
@@ -460,6 +461,44 @@ async function activateTab(testId: string, targetForm: string) {
   await screen.findByTestId(targetForm);
 }
 
+const parsedPackage: SpackPackageMetadata = {
+  name: "parsed-openfoam",
+  homepage: "https://openfoam.org",
+  licenses: ["GPL-3.0-only"],
+  maintainers: [],
+  versions: ["12"],
+  variants: [{ name: "mpi", default: "True", description: "MPI", values: [] }],
+  dependencies: ["mpi"],
+  provides: ["solver"],
+  conflicts: [],
+};
+
+async function openCompilerParser() {
+  render(<SoftwareUsecaseCreatePage />, { wrapper: wrapper() });
+  fireEvent.click(await screen.findByTestId("software-usecase-open-package-picker"));
+  fireEvent.click(await screen.findByTestId("software-usecase-catalog-package-upstream-openfoam"));
+  fireEvent.click(screen.getByTestId("software-usecase-open-spec-picker"));
+  await screen.findByTestId("software-usecase-compiler-source");
+}
+
+function changeCompilerSource(value: string) {
+  fireEvent.change(nativeControl(screen.getByTestId("software-usecase-compiler-source")), {
+    target: { value },
+  });
+}
+
+function clickParseCompilers() {
+  fireEvent.click(screen.getByRole("button", { name: "Parse compilers" }));
+}
+
+function changePackageFile(value: string) {
+  fireEvent.change(screen.getByTestId("software-spack-package-file"), { target: { value } });
+}
+
+function clickParsePackage() {
+  fireEvent.click(screen.getByTestId("software-spack-parse-package-file"));
+}
+
 afterEach(() => {
   vi.resetAllMocks();
   window.localStorage.clear();
@@ -605,17 +644,7 @@ beforeEach(() => {
   softwareClient.parseSpackCompilers.mockResolvedValue([
     { spec: "gcc@13.2.0", name: "gcc", version: "13.2.0" },
   ]);
-  softwareClient.parseSpackPackageFile.mockResolvedValue({
-    name: "parsed-openfoam",
-    homepage: "https://openfoam.org",
-    licenses: ["GPL-3.0-only"],
-    maintainers: [],
-    versions: ["12"],
-    variants: [{ name: "mpi", default: "True", description: "MPI", values: [] }],
-    dependencies: ["mpi"],
-    provides: ["solver"],
-    conflicts: [],
-  });
+  softwareClient.parseSpackPackageFile.mockResolvedValue(parsedPackage);
 });
 
 test("ordinary users do not request platform governance queues", async () => {
@@ -664,32 +693,102 @@ test("ordinary users do not request platform governance queues", async () => {
 });
 
 describe("SoftwarePage helpers", () => {
-  test("summarizes valid workflow YAML and tags", () => {
+  test("summarizes valid workflow YAML", () => {
     const view = describeTemplate(template({ yamlContent: yamlTwoNodes, tags: ["hpc", "demo"] }));
     expect(view.isValidWorkflow).toBe(true);
     expect(view.nodeCount).toBe(2);
     expect(view.edgeCount).toBe(1);
     expect(view.nodeTypes).toEqual(["NoAction", "SoftwareUsecaseComputing"]);
-    expect(collectTemplateTags([view.template, template({ id: "other", tags: ["demo"] })])).toEqual(
-      ["demo", "hpc"],
-    );
-  });
-
-  test("filters by query and tag", () => {
-    const views = [
-      describeTemplate(template({ id: "hello", name: "Hello", tags: ["demo"] })),
-      describeTemplate(template({ id: "pipe", name: "Pipeline", tags: ["hpc"] })),
-    ];
-    expect(filterTemplateViews(views, "pipe", null).map((view) => view.template.id)).toEqual([
-      "pipe",
-    ]);
-    expect(filterTemplateViews(views, "", "demo").map((view) => view.template.id)).toEqual([
-      "hello",
-    ]);
   });
 });
 
 describe("SoftwarePage", () => {
+  test("keeps template loading visible after the usecase directory is ready", async () => {
+    const initial = Promise.withResolvers<WorkflowTemplate[]>();
+    const searchResult = Promise.withResolvers<WorkflowTemplate[]>();
+    softwareClient.listWorkflowTemplates
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(searchResult.promise);
+
+    render(<SoftwarePage />, { wrapper: wrapper() });
+
+    await activateTab("software-tab-usecases", "software-usecase-empty");
+    expect(within(screen.getByRole("tabpanel")).queryByRole("status")).toBeNull();
+    await activateTab("software-tab-templates", "software-search");
+    expect(within(screen.getByRole("tabpanel")).getByRole("status").textContent).toBe("Loading");
+    expect(screen.queryByTestId("software-empty")).toBeNull();
+
+    await act(async () => initial.resolve([template({ id: "hello" })]));
+    await screen.findByTestId("software-card-hello");
+    const search = screen.getByRole<HTMLInputElement>("textbox", { name: "Search templates" });
+    search.focus();
+    fireEvent.change(search, { target: { value: "pipeline" } });
+
+    expect(within(screen.getByRole("tabpanel")).getByRole("status").textContent).toBe("Loading");
+    expect(screen.queryByTestId("software-empty")).toBeNull();
+    expect(document.activeElement).toBe(search);
+    expect(search.value).toBe("pipeline");
+
+    await act(async () => searchResult.resolve([template({ id: "pipeline" })]));
+    await screen.findByTestId("software-card-pipeline");
+    expect(screen.getByTestId("software-search")).toBe(search);
+    expect(document.activeElement).toBe(search);
+    expect(search.value).toBe("pipeline");
+  });
+
+  test("waits for the usecase directory after the template directory is ready", async () => {
+    const usecases = Promise.withResolvers<UsecasePackage[]>();
+    softwareClient.listUsecasePackages.mockReturnValueOnce(usecases.promise);
+
+    render(<SoftwarePage />, { wrapper: wrapper() });
+    await screen.findByTestId("software-empty");
+    await activateTab("software-tab-usecases", "software-usecase-search");
+
+    expect(within(screen.getByRole("tabpanel")).getByRole("status").textContent).toBe("Loading");
+    expect(screen.queryByTestId("software-usecase-empty")).toBeNull();
+
+    await act(async () => usecases.resolve([]));
+    await screen.findByTestId("software-usecase-empty");
+    expect(within(screen.getByRole("tabpanel")).queryByRole("status")).toBeNull();
+  });
+
+  test("loads the script catalog while every other directory is pending", async () => {
+    const directories = Promise.withResolvers<never>();
+    const scripts = Promise.withResolvers<[]>();
+    softwareClient.listWorkflowTemplates.mockReturnValueOnce(directories.promise);
+    softwareClient.listUsecasePackages.mockReturnValueOnce(directories.promise);
+    softwareClient.listSpackCatalog.mockReturnValueOnce(directories.promise);
+    sandboxClient.listSandboxScripts.mockReturnValueOnce(scripts.promise);
+
+    render(<SoftwarePage />, { wrapper: wrapper() });
+
+    await activateTab("software-tab-scripts", "sandbox-script-catalog");
+    const catalog = within(screen.getByTestId("sandbox-script-catalog"));
+    expect(catalog.getByRole("status").textContent).toBe("Loading");
+    expect(catalog.queryByTestId("sandbox-script-empty")).toBeNull();
+
+    await act(async () => scripts.resolve([]));
+    expect(await catalog.findByTestId("sandbox-script-empty")).toBeDefined();
+    expect(within(screen.getByRole("tabpanel")).queryByRole("status")).toBeNull();
+  });
+
+  test("shows the active directory error while other directories are pending", async () => {
+    const templates = Promise.withResolvers<WorkflowTemplate[]>();
+    const otherDirectories = Promise.withResolvers<never>();
+    softwareClient.listWorkflowTemplates.mockReturnValueOnce(templates.promise);
+    softwareClient.listUsecasePackages.mockReturnValueOnce(otherDirectories.promise);
+    softwareClient.listSpackCatalog.mockReturnValueOnce(otherDirectories.promise);
+
+    render(<SoftwarePage />, { wrapper: wrapper() });
+    expect(within(screen.getByRole("tabpanel")).getByRole("status").textContent).toBe("Loading");
+
+    await act(async () => templates.reject(new Error("template list forbidden")));
+    expect((await screen.findByTestId("software-error")).textContent).toBe("software.unreachable");
+    expect(screen.queryByTestId("software-empty")).toBeNull();
+    expect(within(screen.getByRole("tabpanel")).queryByRole("status")).toBeNull();
+    expect(screen.getByTestId("software-search")).toBeDefined();
+  });
+
   test("opens the requested tab from the URL hash", async () => {
     router.hash = "#usecases";
     window.history.replaceState(null, "", "/software#usecases");
@@ -778,27 +877,38 @@ describe("SoftwarePage", () => {
     ).toBe("/software/usecases/new");
   });
 
-  test("reuses the catalog placeholder when the Spack catalog is empty", async () => {
-    softwareClient.listSpackCatalog.mockResolvedValueOnce({
-      source: "local",
-      sourceRepository: "local",
-      sourceRef: "main",
-      generatedAt: "2026-07-15",
-      packageCount: 0,
-      upstreamCount: 0,
-      customCount: 0,
-      totalCount: 0,
-      page: 1,
-      pageSize: 24,
-      totalPages: 1,
-      hasNext: false,
-      hasPrevious: false,
-      packages: [],
-    });
+  test("shows the Spack placeholder only after the catalog resolves empty", async () => {
+    const catalog = Promise.withResolvers<SpackCatalog>();
+    softwareClient.listSpackCatalog.mockReturnValueOnce(catalog.promise);
     render(<SoftwarePage />, { wrapper: wrapper() });
+    await screen.findByTestId("software-empty");
+    await activateTab("software-tab-spack", "software-material-management");
 
-    await activateTab("software-tab-spack", "software-spack-empty");
-    const empty = screen.getByTestId("software-spack-empty");
+    expect(within(screen.getByRole("tabpanel")).getByText("Loading").getAttribute("role")).toBe(
+      "status",
+    );
+    expect(screen.queryByTestId("software-spack-empty")).toBeNull();
+
+    await act(async () =>
+      catalog.resolve({
+        source: "local",
+        sourceRepository: "local",
+        sourceRef: "main",
+        generatedAt: "2026-07-15",
+        packageCount: 0,
+        upstreamCount: 0,
+        customCount: 0,
+        totalCount: 0,
+        page: 1,
+        pageSize: 24,
+        totalPages: 1,
+        hasNext: false,
+        hasPrevious: false,
+        packages: [],
+      }),
+    );
+
+    const empty = await screen.findByTestId("software-spack-empty");
     expect(within(empty).getByText("No Spack software")).toBeDefined();
     expect(screen.queryByTestId("software-spack-empty-placeholders")).toBeNull();
     expect(
@@ -1107,10 +1217,8 @@ describe("SoftwarePage", () => {
 
     render(<SoftwareSpackCatalogCreatePage />, { wrapper: wrapper() });
 
-    fireEvent.change(nativeControl(screen.getByTestId("software-spack-package-file")), {
-      target: { value: "class ParsedOpenfoam(Package):" },
-    });
-    fireEvent.click(screen.getByTestId("software-spack-parse-package-file"));
+    changePackageFile("class ParsedOpenfoam(Package):");
+    clickParsePackage();
 
     await waitFor(() => {
       expect(softwareClient.parseSpackPackageFile).toHaveBeenCalledWith(
@@ -1141,11 +1249,109 @@ describe("SoftwarePage", () => {
     });
   });
 
+  test("applies only the latest parse response for the same package file", async () => {
+    const oldSuccess = Promise.withResolvers<SpackPackageMetadata>();
+    const oldFailure = Promise.withResolvers<SpackPackageMetadata>();
+    const latest = Promise.withResolvers<SpackPackageMetadata>();
+    softwareClient.parseSpackPackageFile
+      .mockReturnValueOnce(oldSuccess.promise)
+      .mockReturnValueOnce(oldFailure.promise)
+      .mockReturnValueOnce(latest.promise);
+    render(<SoftwareSpackCatalogCreatePage />, { wrapper: wrapper() });
+    changePackageFile("class Openfoam(Package):");
+
+    clickParsePackage();
+    clickParsePackage();
+    clickParsePackage();
+    await act(async () => latest.resolve(parsedPackage));
+    await act(async () =>
+      oldSuccess.resolve({
+        ...parsedPackage,
+        name: "old-package",
+        homepage: "https://old.example",
+      }),
+    );
+    await act(async () => oldFailure.reject(new Error("Old parse failed")));
+
+    expect(screen.getByTestId("software-spack-package-metadata").textContent).toContain(
+      "parsed-openfoam",
+    );
+    expect(screen.getByDisplayValue("parsed-openfoam")).toBeDefined();
+    expect(screen.getByDisplayValue("https://openfoam.org")).toBeDefined();
+    expect(screen.queryByText("software.unreachable")).toBeNull();
+  });
+
+  test("changing package.py invalidates the pending parse and clears its preview and error", async () => {
+    const pending = Promise.withResolvers<SpackPackageMetadata>();
+    softwareClient.parseSpackPackageFile
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(parsedPackage)
+      .mockRejectedValueOnce(new Error("Current parse failed"));
+    render(<SoftwareSpackCatalogCreatePage />, { wrapper: wrapper() });
+    changePackageFile("class Openfoam(Package):");
+    clickParsePackage();
+    changePackageFile("class OtherPackage(Package):");
+    changePackageFile("class Openfoam(Package):");
+    await act(async () => pending.resolve(parsedPackage));
+
+    expect(screen.queryByTestId("software-spack-package-metadata")).toBeNull();
+    expect(screen.queryByDisplayValue("parsed-openfoam")).toBeNull();
+    expect(screen.queryByDisplayValue("https://openfoam.org")).toBeNull();
+    expect(screen.queryByDisplayValue("provides:solver,license:GPL-3.0-only")).toBeNull();
+
+    clickParsePackage();
+    expect(await screen.findByTestId("software-spack-package-metadata")).toBeDefined();
+    clickParsePackage();
+    expect(await screen.findByText("software.unreachable")).toBeDefined();
+    expect(screen.getByTestId("software-spack-package-metadata")).toBeDefined();
+    changePackageFile("class OtherPackage(Package):");
+    expect(screen.queryByTestId("software-spack-package-metadata")).toBeNull();
+    expect(screen.queryByText("software.unreachable")).toBeNull();
+  });
+
+  test("preserves edits made during parsing and fills fields on a later explicit parse", async () => {
+    const pending = Promise.withResolvers<SpackPackageMetadata>();
+    softwareClient.parseSpackPackageFile.mockReturnValueOnce(pending.promise);
+    render(<SoftwareSpackCatalogCreatePage />, { wrapper: wrapper() });
+    const name = screen.getByRole("textbox", { name: "Custom package" });
+    const description = screen.getByRole("textbox", { name: "Package description" });
+    const tags = screen.getByRole("textbox", { name: "Catalog tags" });
+    changePackageFile("class Openfoam(Package):");
+    fireEvent.change(tags, { target: { value: "lab" } });
+    clickParsePackage();
+    fireEvent.change(name, { target: { value: "lab-openfoam" } });
+    fireEvent.change(description, { target: { value: "Lab solver" } });
+    fireEvent.change(description, { target: { value: "" } });
+    fireEvent.change(tags, { target: { value: "lab,cfd" } });
+    fireEvent.change(tags, { target: { value: "lab" } });
+    fireEvent.change(nativeControl(screen.getByLabelText("Package source")), {
+      target: { value: "vendor" },
+    });
+    await act(async () => pending.resolve(parsedPackage));
+
+    expect(screen.getByTestId("software-spack-package-metadata")).toBeDefined();
+    expect(screen.getByDisplayValue("lab-openfoam")).toBe(name);
+    expect(description).toHaveProperty("value", "");
+    expect(screen.getByDisplayValue("lab")).toBe(tags);
+
+    fireEvent.change(description, { target: { value: "Lab solver" } });
+    clickParsePackage();
+    expect(await screen.findByDisplayValue("parsed-openfoam")).toBe(name);
+    expect(screen.getByDisplayValue("Lab solver")).toBe(description);
+    expect(screen.getByDisplayValue("provides:solver,license:GPL-3.0-only")).toBe(tags);
+  });
+
   test("edits and confirms deletion of catalog packages from the catalog list", async () => {
     softwareClient.listWorkflowTemplates.mockResolvedValueOnce([]);
     softwareClient.updateSpackCatalogPackage.mockResolvedValueOnce({});
     softwareClient.deleteSpackCatalogPackage.mockResolvedValueOnce({});
 
+    const recipe =
+      'class Demo(Package):\n    version("1.0", sha256="hash")  # keep\n    def install(self): pass\n';
+    softwareClient.getSpackCatalogSource.mockResolvedValue({
+      content: recipe,
+      digest: "a".repeat(64),
+    });
     render(<SoftwarePage />, { wrapper: wrapper() });
 
     await activateTab("software-tab-spack", "software-spack-catalog-summary");
@@ -1160,6 +1366,12 @@ describe("SoftwarePage", () => {
         target: { value: "platform-cfd-updated" },
       },
     );
+    fireEvent.click(await within(editForm).findByText("software.manage.recipeFields"));
+    fireEvent.change(within(editForm).getByLabelText("version"), { target: { value: "2.0" } });
+    expect(within(editForm).getByLabelText("package.py")).toHaveProperty(
+      "value",
+      recipe.replace("1.0", "2.0"),
+    );
     fireEvent.submit(editForm);
 
     await waitFor(() => {
@@ -1167,7 +1379,12 @@ describe("SoftwarePage", () => {
     });
     expect(softwareClient.updateSpackCatalogPackage.mock.calls[0]).toEqual([
       "catalog-official-cfd",
-      expect.objectContaining({ name: "platform-cfd-updated", source: "official" }),
+      expect.objectContaining({
+        name: "platform-cfd-updated",
+        source: "official",
+        packageFile: recipe.replace("1.0", "2.0"),
+        expectedSourceDigest: "a".repeat(64),
+      }),
       undefined,
     ]);
 
@@ -1444,7 +1661,7 @@ advanced:
     const picker = await screen.findByTestId("software-usecase-package-picker");
     expect(picker.getAttribute("role")).toBe("dialog");
     expect(picker.className).toContain("h-[min(88vh,900px)]");
-    expect(picker.className).toContain("overflow-hidden");
+    expect(picker.className).toContain("overflow-visible");
     expect((await screen.findByTestId("software-usecase-catalog-grid")).className).toContain(
       "overflow-auto",
     );
@@ -1516,6 +1733,79 @@ advanced:
         arguments: [{ descriptor: "caseDir", valueFormat: "--case {}" }],
       },
     });
+  });
+
+  test("ignores older compiler parse successes and failures after the latest success", async () => {
+    const oldSuccess = Promise.withResolvers<SpackCompilerMetadata[]>();
+    const oldFailure = Promise.withResolvers<SpackCompilerMetadata[]>();
+    softwareClient.parseSpackCompilers
+      .mockReturnValueOnce(oldSuccess.promise)
+      .mockReturnValueOnce(oldFailure.promise);
+    await openCompilerParser();
+    changeCompilerSource("spec: gcc@13.2.0");
+
+    clickParseCompilers();
+    clickParseCompilers();
+    clickParseCompilers();
+    await screen.findByRole("button", { name: "gcc@13.2.0" });
+    await act(async () =>
+      oldSuccess.resolve([{ spec: "gcc@12.1.0", name: "gcc", version: "12.1.0" }]),
+    );
+    await act(async () => oldFailure.reject(new Error("Old compiler parse failed")));
+
+    expect(screen.getByRole("button", { name: "gcc@13.2.0" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "gcc@12.1.0" })).toBeNull();
+    expect(screen.queryByText("software.unreachable")).toBeNull();
+  });
+
+  test("ignores an older compiler parse success after the latest failure", async () => {
+    const oldSuccess = Promise.withResolvers<SpackCompilerMetadata[]>();
+    softwareClient.parseSpackCompilers
+      .mockReturnValueOnce(oldSuccess.promise)
+      .mockRejectedValueOnce(new Error("Current compiler parse failed"));
+    await openCompilerParser();
+    changeCompilerSource("spec: gcc@13.2.0");
+
+    clickParseCompilers();
+    clickParseCompilers();
+    await screen.findByText("software.unreachable");
+    await act(async () =>
+      oldSuccess.resolve([{ spec: "gcc@12.1.0", name: "gcc", version: "12.1.0" }]),
+    );
+
+    expect(screen.getByText("software.unreachable")).toBeDefined();
+    expect(screen.queryByTestId("software-usecase-compiler-options")).toBeNull();
+  });
+
+  test("clears compiler parse feedback on source edits and invalidates in-flight results", async () => {
+    const pending = Promise.withResolvers<SpackCompilerMetadata[]>();
+    softwareClient.parseSpackCompilers
+      .mockResolvedValueOnce([{ spec: "gcc@13.2.0", name: "gcc", version: "13.2.0" }])
+      .mockRejectedValueOnce(new Error("Compiler parse failed"))
+      .mockReturnValueOnce(pending.promise);
+    await openCompilerParser();
+    changeCompilerSource("spec: gcc@13.2.0");
+
+    clickParseCompilers();
+    fireEvent.click(await screen.findByRole("button", { name: "gcc@13.2.0" }));
+    clickParseCompilers();
+    await screen.findByText("software.unreachable");
+
+    changeCompilerSource("spec: clang@19.1.0");
+    expect(screen.queryByTestId("software-usecase-compiler-options")).toBeNull();
+    expect(screen.queryByText("software.unreachable")).toBeNull();
+    expect(nativeControl(screen.getByTestId("software-usecase-spec-compiler"))).toHaveProperty(
+      "value",
+      "gcc@13.2.0",
+    );
+    clickParseCompilers();
+    changeCompilerSource("spec: gcc@13.2.0");
+    changeCompilerSource("spec: clang@19.1.0");
+    await act(async () =>
+      pending.resolve([{ spec: "clang@19.1.0", name: "clang", version: "19.1.0" }]),
+    );
+
+    expect(screen.queryByTestId("software-usecase-compiler-options")).toBeNull();
   });
 
   test("blocks usecase creation when the Spack catalog fails to load", async () => {

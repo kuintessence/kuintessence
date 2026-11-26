@@ -122,14 +122,9 @@ REST 提供单段和分片两套接口，由客户端选择；当前 Web 文件�
 - 已 dispatch 的传输不因 root 变更自动中止，但记录 root revision 和
   `file_transfer.root_policy_changed_during_run` 审计；失败后从当前授权上下文重新发起。
 
-owner 调用 `POST /api/files/transfers/:id/cancel` 发起协作式取消。
-Server 移除 listener、尝试 abort 未完成 multipart，并向原 Agent 下发
-`FileTransferCancel`。云端下载使用 hidden partial、有界 Range resume 和完成后的原子
-publish。若 terminal commit 已开始，取消会被拒绝，传输记录等待提交结束后更新终态，
-不得手动强写 cancelled。
+owner 调用 `POST /api/files/transfers/:id/cancel` 发起协作式取消。任一 Server 都可接收请求，持有传输的实例负责执行。已派发的任务由 Agent 停止当前请求并确认，Server 清理未完成的分片上传后记录 `cancelled`。排队中的重试也会清理原上传会话。对象存储暂时不可用时，后台保留取消请求并重试；API 等待确认超过 5 秒返回 503，可查询同一传输的状态。已开始最终提交时，取消与完成按先后顺序处理。
 
-Server 重启不会自动恢复未完成传输的 I/O。被中断的记录使用
-`TRANSFER_INTERRUPTED_BY_SERVER_RESTART` 标记，用户核对源、目标和当前授权后再重试。
+传输使用数据库时钟计时的 30 秒租约。持有实例定期续租，其他 Server 启动或滚动更新时会保留有效租约。持有实例退出且租约过期后，后台用 `TRANSFER_INTERRUPTED_BY_SERVER_RESTART` 标记中断，用户可在复核授权后恢复原传输。
 
 ### Workflow Artifact
 
@@ -177,8 +172,9 @@ PUT、非 staging copy 和 immutable delete。以下为 delete-deny 片段，部
 ```
 
 metadata commit 后删除 staging；清理失败可重试，遗留对象由 lifecycle 清理。
-算力中心 strict import 的后续 worker 和 NetDrive promote copy backend 未配置时返回
-`503 DATA_IMPORT_UNAVAILABLE`，导入不会完成。
+算力中心选择平台对象来源时，使用当前用户已提交的上传会话导入同一资产的指定版本。
+相同幂等键返回同一份导入回执。CP 本地目录导入由扫描协调器处理。
+选择 NetDrive 来源时，Server 按本人上传文件的固定对象版本复制到 staging，验证 SHA-256 并写入带保留锁的不可变副本。重复提交同一导入返回已保存的回执。
 生态 bundle 由 Registry 管理；POTCAR 与其他受限材料不得进入公共对象上传链路。
 
 <a id="quota"></a>
@@ -194,13 +190,14 @@ metadata commit 后删除 staging；清理失败可重试，遗留对象由 life
 | `storage_quota_grants` | 永久、临时、自动或人工分配，可到期或撤销 |
 | `netdrive_files` | 云盘实际对象字节和对象数 |
 | `netdrive_transfer_log` | 上传、下载与 mirror 流量 |
+| `netdrive_storage_daily` | 按 UTC 日期和文件所有者保存云盘逻辑占用量，单位为字节·秒 |
 
 有效配额取默认配额与有效 grant 的较大值。grant 到期不删除文件，但新增/覆盖写入
 重新校验。覆盖按“当前占用 - 旧文件 + 新文件”计算；单段、multipart 初始化/完成和
 commit 超额时拒绝，返回 `STORAGE_QUOTA_EXCEEDED`。
 
 申请模式为 `auto`、`manual`、`disabled`。自动审批受两类上限约束；人工批准会重查
-当前策略。每个用户每个范围只能保留一条待审批申请。
+当前策略。同一用户在同一范围重复提交待审批申请，或两位管理员同时审批同一申请时，只有首个操作生效，另一方收到 HTTP 409。自动批准和人工批准均与额度写入一起提交，写入失败后可重试。
 云盘申请由平台管理员处理，集群申请由拥有该 root 管理权的算力中心处理。
 
 | 入口 | 用途 |
@@ -211,13 +208,19 @@ commit 超额时拒绝，返回 `STORAGE_QUOTA_EXCEEDED`。
 | `GET /api/storage/summary` | 用户配额与占用 |
 | `GET/POST /api/storage/quota-requests` | 用户申请 |
 | `GET /api/admin/storage/overview` | 管理总览 |
+| `GET /api/storage/usage/daily?day=YYYY-MM-DD` | 本人指定 UTC 日的云盘占用 |
+| `GET /api/admin/storage/usage/daily?day=YYYY-MM-DD` | 有平台存储管理权限的调用者按所有者分页读取当日用量 |
 | `GET/PUT /api/admin/storage/policy` | 范围策略 |
 | `GET /api/admin/storage/quota-requests` | 待处理申请 |
 | `POST /api/admin/storage/quota-requests/:id/decision` | 审批 |
 | `POST /api/admin/storage/grants` | 分配 |
 
 Cluster File Root 的 `capacityBytes` 是算力中心声明容量，不是 Agent 实时磁盘采样。
-当前未提供高并发 durable reservation ledger；URL 签发和 commit 会校验额度，但不预留额度。
+单文件和分片上传按用户锁持久预留逻辑空间，同一路径按最大的待提交文件计费。提交原子转换为已用额度，分片取消和会话过期会释放预留。未知长度的分片上传在提交实际大小时校验额度。
+
+浏览器单文件上传使用一个签名的分片 PUT，提交后完成组装。后台回收过期且尚未提交的上传和分片，可续传的会话保留。
+
+用户删除或覆盖文件后，后台按对象版本清理，失败保留重试记录。工作流产物、联邦输入快照、活动传输等引用延迟回收；缺少固定版本和其他发布命名空间的对象保留。
 
 <a id="metering"></a>
 ## 计量口径
@@ -229,14 +232,24 @@ Cluster File Root 的 `capacityBytes` 是算力中心声明容量，不是 Agent
 - 长期存储归属 owner，读取者承担自己的 download egress。
   同一文件可出现在多个 Job 关联视图，但不据此重复计算 owner 存储账单。
 - 跨组织聚合必须受当前 principal 的 tenant scope 限制。
-- 当前展示实际字节、对象数、近 30 天 transfer bytes 和对象存续窗口的 byte-hours；
-  尚无独立的生产账务 storage snapshot 管线。
+- 存储总览显示当前字节数、对象数、近 30 天的传输量和字节·小时。单段和分片上传均在文件提交事务内记录上传量。提交重放沿用文件回执，每个成功提交的文件只记一次。
 
 `GET /api/metering/workflow-runs/:runId/netdrive-attribution` 提供 run-level 聚合；
 准确性依赖 `jobId/workflowRunId/netdriveFileIds` 上下文。
-`netdrive_replicas.status=available` 会记录 mirror egress，并为 scheduler 提供 locality；
-pending/syncing/failed 状态下尚未确认数据就绪。复制执行器尚未生产化。
-CSV/JSON 导出可用，Parquet 返回 422。实际账单由外部计费系统处理。
+
+支持 CSV、JSON 和 Parquet 导出。默认导出时间窗口和授权范围内的全部分组，指定 limit 与 offset 可导出单页。实际账单由外部计费系统处理。
+
+从 NetDrive 导入固定数据版本后，可在数据资产的副本入口复制到获准的受管根。目标 Agent 首次回报校验通过时，Server 在确认副本的同一事务中写入一条 `mirror` 流量记录，按原文件大小、复制发起人、机构和目标站点归属。这里计量成功复制的逻辑字节。回执重放和目标端重新校验已有字节均不增加流量。
+
+作业包含本人 NetDrive 输入时，调度预览与提交可按已确认的副本站点加分。受管副本须属于当前机构，源版本、披露授权、目标根及最近 24 小时的验证仍须有效。直接登记的副本须处于可用状态，文件大小、摘要和确认时间均须匹配。显式设置 `requires.locality.dataSites`（含空列表）优先。输入仍按原有授权和路径准备。
+
+### 云盘每日用量
+
+Server 启动时及随后每小时检查一次已结束的 UTC 日期。每个文件按当天实际存续秒数乘以字节数计入所有者用量。覆盖在同一时间结束旧文件并开始新文件，软删除结束逻辑占用。首次运行按数据库保留的文件记录回算，停机后从上次完成的日期补算。多个 Server 共用完成进度，日用量与进度在同一事务中保存。
+
+查询参数 `day` 使用 `YYYY-MM-DD`。返回的 `ready=false` 表示当天仍未汇总，可稍后重查。`ready=true` 时，`usage` 中每行包含 `day`、`ownerId` 和十进制字符串 `byteSeconds`，除以 3600 即为字节·小时。当日没有占用记录时列表为空。管理接口的 `limit` 默认为 100，最大 1000。将响应的 `nextAfterOwnerId` 作为下一页的 `afterOwnerId`，直至返回 `null`。
+
+文件存续时间取自数据库时钟。跨午夜的云盘写事务会推迟当日汇总。如果数据库隐藏了在途写事务的开始时间，Server 会在下一轮重新检查。已封存的日用量可供外部计费系统按日期和所有者对账。
 
 <a id="audit"></a>
 ## 文件传输审计

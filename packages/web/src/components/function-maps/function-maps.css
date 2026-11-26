@@ -1,9 +1,10 @@
 .function-map-node {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--border);
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklch, var(--border), var(--foreground) 12%);
+  border-radius: var(--radius);
   background: var(--card);
   color: var(--foreground);
   overflow: hidden;
@@ -11,8 +12,8 @@
   cursor: pointer;
 }
 .function-map-icon {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   flex-shrink: 0;
   color: var(--brand);
 }
@@ -20,13 +21,8 @@
   display: block;
   min-width: 0;
 }
-.function-map-mobile-node {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
 .function-map-node:hover,
-.function-map-node[aria-pressed="true"] {
+.function-map-node[aria-expanded="true"] {
   border-color: var(--brand);
   background: var(--muted);
 }
@@ -34,20 +30,69 @@
   outline: 2px solid var(--ring);
   outline-offset: -3px;
 }
-.function-map-mobile-node[aria-pressed="true"] {
-  color: var(--brand);
-}
 .function-map-edge {
-  background: var(--card);
+  background: var(--background);
   color: var(--muted-foreground);
   overflow-wrap: anywhere;
   padding: 2px;
 }
 .function-map-canvas {
-  scrollbar-color: var(--border) var(--card);
-  scrollbar-width: thin;
+  overflow: hidden;
+}
+.function-map-canvas > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(360px, 46dvh);
+}
+.function-map-connection,
+.function-map-flow {
+  stroke: var(--map-line-color);
+  stroke-width: var(--map-line-width);
+}
+.function-map-canvas[data-flow="true"] .function-map-connection {
+  stroke-opacity: 0.35;
+}
+.function-map-flow {
+  stroke-dasharray: 3 21;
+  stroke-linecap: round;
+  animation: function-map-flow var(--map-flow-duration) linear infinite;
+}
+@keyframes function-map-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.function-map-range {
+  accent-color: var(--brand);
+}
+.function-map-range:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.function-map-range:disabled {
+  opacity: 0.5;
 }
 .function-map ::selection {
   background: var(--brand-soft);
   color: var(--foreground);
+}
+@media (width < 768px) {
+  .map-region-data[data-state] {
+    display: block;
+  }
+  .function-map,
+  .map-region-single,
+  .map-region-diagram {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .function-map-canvas[data-flow="true"] .function-map-connection {
+    stroke-opacity: 1;
+  }
+  .function-map-flow {
+    display: none;
+    animation: none;
+  }
 }

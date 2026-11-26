@@ -221,7 +221,7 @@ describe("Spack material pipeline (in-process, no listeners)", () => {
     const outcome = await manager.runSoftwareOperation("install", f.input.spec, input);
     expect(outcome).toEqual({
       outcome: "rejected",
-      reason: "managed offline Spack execution is not enabled yet",
+      reason: "Managed Spack operations require audited materials and a configured site installer",
     });
     expect(commands).toEqual([["spack", "--version"]]);
 

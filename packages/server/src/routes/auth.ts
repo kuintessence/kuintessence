@@ -24,7 +24,7 @@
  * the auth path.
  */
 import { createHash } from "node:crypto";
-import { authzOutbox, orgs, type PgDb, userOrgMemberships, users } from "@kuintessence/db";
+import { orgs, type PgDb, userOrgMemberships, users } from "@kuintessence/db";
 import {
   AppError,
   ErrorCode,
@@ -32,7 +32,7 @@ import {
   type RoleName,
   type SsoPublicConfig,
 } from "@kuintessence/shared";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { Logger } from "pino";
@@ -61,6 +61,7 @@ import {
   rotateBrowserSession,
 } from "../auth/session-ledger";
 import { loadSsoConfig, type SsoConfigRow } from "../auth/sso-config-store";
+import { insertAuthzOutboxRows } from "../authz/enqueue";
 import {
   type MembershipRole,
   organizationBaselineTuples,
@@ -127,12 +128,7 @@ export interface AuthRouteOptions {
 }
 
 function isSsoFullyConfigured(cfg: SsoConfigRow): boolean {
-  return (
-    cfg.enabled &&
-    cfg.providerType === "oidc" &&
-    cfg.issuerUrl.length > 0 &&
-    cfg.clientId.length > 0
-  );
+  return cfg.enabled && cfg.issuerUrl.length > 0 && cfg.clientId.length > 0;
 }
 
 export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRouteOptions): Hono {
@@ -465,7 +461,10 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
 
     const cliRequest = readCliLoginRequest(c);
     const redirectUri = cfg.redirectUri.length > 0 ? cfg.redirectUri : defaultRedirectUri(c);
-    const built = await buildOidcAuthUrl(discovered.config, { redirectUri });
+    const built = await buildOidcAuthUrl(discovered.config, {
+      redirectUri,
+      providerType: cfg.providerType,
+    });
 
     setCookie(c, OIDC_STATE_COOKIE, built.state, {
       httpOnly: true,
@@ -551,6 +550,7 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
         expectedState,
         codeVerifier,
         groupMapping: cfg.groupMapping,
+        providerType: cfg.providerType,
       });
     } catch (err) {
       log?.warn({ err: String(err) }, "OIDC callback failed");
@@ -569,29 +569,6 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
     const role = result.resolvedRole;
     const externalId = oidcExternalIdentityKey(cfg.issuerUrl, result.sub);
 
-    if (!cfg.autoCreateUsers) {
-      // Caller policy: SSO must not auto-provision. Verify the user already
-      // exists; otherwise refuse the login.
-      const existing = await db
-        .select()
-        .from(users)
-        .where(
-          or(
-            eq(users.externalId, externalId),
-            eq(users.externalId, result.sub),
-            eq(users.email, email),
-          ),
-        )
-        .limit(1);
-      if (existing.length === 0) {
-        throw new AppError(
-          ErrorCode.FORBIDDEN,
-          "User not provisioned and auto-create is disabled",
-          403,
-        );
-      }
-    }
-
     const userId = await upsertUserAndSeedAuthz(
       db,
       {
@@ -599,6 +576,7 @@ export function createAuthRoutes(jwtSecret: string, db: PgDb, options: AuthRoute
         role,
         externalId,
         legacyExternalId: result.sub,
+        requireExisting: !cfg.autoCreateUsers,
         displayName: result.displayName,
         seedDevelopmentOrganization: false,
       },
@@ -759,6 +737,7 @@ async function upsertUserAndSeedAuthz(
     role: RoleName;
     externalId?: string;
     legacyExternalId?: string;
+    requireExisting?: boolean;
     displayName?: string | null;
     seedDevelopmentOrganization: boolean;
   },
@@ -787,6 +766,7 @@ async function upsertUserAndSeedAuthz(
           .from(users)
           .where(eq(users.externalId, input.externalId))
           .limit(1)
+          .for("update")
       : [];
     const [legacyExternal] =
       input.externalId && !canonicalExternal && input.legacyExternalId
@@ -795,19 +775,38 @@ async function upsertUserAndSeedAuthz(
             .from(users)
             .where(eq(users.externalId, input.legacyExternalId))
             .limit(1)
+            .for("update")
         : [];
-    const existingExternal = canonicalExternal ?? legacyExternal;
-    const [upserted] = existingExternal
+    const [provisionedEmail] =
+      input.requireExisting && !canonicalExternal && !legacyExternal
+        ? await tx
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.email, input.email))
+            .limit(1)
+            .for("update")
+        : [];
+    const existing = canonicalExternal ?? legacyExternal ?? provisionedEmail;
+    if (input.requireExisting && !existing) {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "User not provisioned and auto-create is disabled",
+        403,
+      );
+    }
+    const [upserted] = existing
       ? await tx
           .update(users)
           .set({
             email: input.email,
             role: input.role,
             ...(input.externalId !== undefined ? { externalId: input.externalId } : {}),
-            ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+            ...(input.displayName !== undefined
+              ? { displayName: sql`coalesce(${users.displayName}, ${input.displayName})` }
+              : {}),
             updatedAt: new Date(),
           })
-          .where(eq(users.id, existingExternal.id))
+          .where(eq(users.id, existing.id))
           .returning({ id: users.id })
       : await tx
           .insert(users)
@@ -822,7 +821,9 @@ async function upsertUserAndSeedAuthz(
             set: {
               role: input.role,
               ...(input.externalId !== undefined ? { externalId: input.externalId } : {}),
-              ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+              ...(input.displayName !== undefined
+                ? { displayName: sql`coalesce(${users.displayName}, ${input.displayName})` }
+                : {}),
               updatedAt: new Date(),
             },
           })
@@ -901,22 +902,6 @@ function authzRoleProjectionTuples(userId: string, role: RoleName): AuthzTuple[]
   const platformRole =
     role === "super_admin" || role === "platform_admin" || role === "operator" ? role : null;
   return platformRoleReplacementTuples({ userId, role: platformRole });
-}
-
-async function insertAuthzOutboxRows(db: AuthSeedDb, tuples: AuthzTuple[]): Promise<void> {
-  if (tuples.length === 0) return;
-  await db.insert(authzOutbox).values(
-    tuples.map((tuple) => ({
-      operation: tuple.operation,
-      resourceType: tuple.resource.type,
-      resourceId: tuple.resource.id,
-      relation: tuple.relation,
-      subjectType: tuple.subject.type,
-      subjectId: tuple.subject.id,
-      subjectRelation: tuple.subject.relation ?? null,
-      payload: tuple.payload ?? {},
-    })),
-  );
 }
 
 /**

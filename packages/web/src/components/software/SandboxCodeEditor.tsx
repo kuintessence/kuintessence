@@ -1,14 +1,17 @@
 import type { SandboxLanguage } from "@kuintessence/shared/browser";
 import * as monaco from "monaco-editor";
 import { useEffect, useRef } from "react";
+import "../../lib/monaco-env";
 import { useTheme } from "../ThemeProvider";
 
 export function SandboxCodeEditor({
   language,
+  ariaLabel,
   onChange,
   value,
 }: {
   language: SandboxLanguage;
+  ariaLabel?: string;
   onChange: (next: string) => void;
   value: string;
 }) {
@@ -16,7 +19,7 @@ export function SandboxCodeEditor({
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const onChangeRef = useRef(onChange);
   const { resolved } = useTheme();
-  const initialOptionsRef = useRef({ language, resolved, value });
+  const initialOptionsRef = useRef({ language, resolved, value, ariaLabel });
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -27,6 +30,7 @@ export function SandboxCodeEditor({
     const initial = initialOptionsRef.current;
     const editor = monaco.editor.create(containerRef.current, {
       value: initial.value,
+      ...(initial.ariaLabel ? { ariaLabel: initial.ariaLabel } : {}),
       language:
         initial.language === "nodejs"
           ? "javascript"

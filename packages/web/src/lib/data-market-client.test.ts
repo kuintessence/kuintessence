@@ -77,6 +77,7 @@ describe("dataMarketClient", () => {
     );
 
     await dataMarketClient.createReplica("version-1", {
+      managedRootId: "root-1",
       agentId: "agent-1",
       clusterId: "cluster-1",
       locationKind: "cp-local",

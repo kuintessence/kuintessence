@@ -25,6 +25,8 @@ export interface AggregatorOptions {
   retentionRawDays?: number;
   retentionHourlyDays?: number;
   retentionDailyDays?: number;
+  /** Earliest day still required for pending daily webhooks. */
+  preserveDailyFrom?: Date;
 }
 
 export interface AggregatorRunReport {
@@ -44,12 +46,14 @@ export class MeteringAggregator {
   private readonly retentionRawDays: number;
   private readonly retentionHourlyDays: number;
   private readonly retentionDailyDays: number;
+  private readonly preserveDailyFrom?: Date;
 
   constructor(opts: AggregatorOptions) {
     this.repo = opts.repo;
     this.now = opts.now ?? (() => new Date());
     this.retentionRawDays = opts.retentionRawDays ?? 7;
     this.retentionHourlyDays = opts.retentionHourlyDays ?? 90;
+    this.preserveDailyFrom = opts.preserveDailyFrom;
     this.retentionDailyDays = opts.retentionDailyDays ?? 730;
   }
 
@@ -71,48 +75,65 @@ export class MeteringAggregator {
     };
   }
 
+  private rollup<T>(work: (repo: MeteringRepository) => Promise<T>) {
+    return this.repo.withRollupTransaction
+      ? this.repo.withRollupTransaction(work)
+      : work(this.repo);
+  }
+
   async runHourlyRollup(): Promise<{ bucketsWritten: number; sourceRowsDeleted: number }> {
-    const cutoff = new Date(this.now().getTime() - this.retentionRawDays * DAY_MS);
-    const rows = await this.repo.selectRaw({
-      scope: ALL_SCOPE,
-      finishedBefore: cutoff,
+    return this.rollup(async (repo) => {
+      const cutoff = new Date(this.now().getTime() - this.retentionRawDays * DAY_MS);
+      const rows = await repo.selectRaw({
+        scope: ALL_SCOPE,
+        finishedBefore: cutoff,
+      });
+      const buckets = rollupRawToHourly(rows);
+      if (buckets.length > 0) {
+        await repo.upsertBuckets("hourly", buckets, true);
+      }
+      const deleted = await repo.deleteRawOlderThan(cutoff);
+      return { bucketsWritten: buckets.length, sourceRowsDeleted: deleted };
     });
-    const buckets = rollupRawToHourly(rows);
-    if (buckets.length > 0) {
-      await this.repo.upsertBuckets("hourly", buckets);
-    }
-    const deleted = await this.repo.deleteRawOlderThan(cutoff);
-    return { bucketsWritten: buckets.length, sourceRowsDeleted: deleted };
   }
 
   async runDailyRollup(): Promise<{ bucketsWritten: number; sourceRowsDeleted: number }> {
-    const cutoff = new Date(this.now().getTime() - this.retentionHourlyDays * DAY_MS);
-    const rows = await this.repo.selectBuckets("hourly", {
-      scope: ALL_SCOPE,
-      from: EPOCH,
-      to: cutoff,
+    return this.rollup(async (repo) => {
+      const cutoff = new Date(this.now().getTime() - this.retentionHourlyDays * DAY_MS);
+      const rows = await repo.selectBuckets("hourly", {
+        scope: ALL_SCOPE,
+        from: EPOCH,
+        to: new Date(cutoff.getTime() - 1),
+      });
+      const buckets = rollupBuckets(rows, "daily");
+      if (buckets.length > 0) {
+        await repo.upsertBuckets("daily", buckets, true);
+      }
+      const deleted = await repo.deleteHourlyOlderThan(cutoff);
+      return { bucketsWritten: buckets.length, sourceRowsDeleted: deleted };
     });
-    const buckets = rollupBuckets(rows, "daily");
-    if (buckets.length > 0) {
-      await this.repo.upsertBuckets("daily", buckets);
-    }
-    const deleted = await this.repo.deleteHourlyOlderThan(cutoff);
-    return { bucketsWritten: buckets.length, sourceRowsDeleted: deleted };
   }
 
   async runMonthlyRollup(): Promise<{ bucketsWritten: number; sourceRowsDeleted: number }> {
-    const cutoff = new Date(this.now().getTime() - this.retentionDailyDays * DAY_MS);
-    const rows = await this.repo.selectBuckets("daily", {
-      scope: ALL_SCOPE,
-      from: EPOCH,
-      to: cutoff,
+    return this.rollup(async (repo) => {
+      const cutoff = new Date(
+        Math.min(
+          this.now().getTime() - this.retentionDailyDays * DAY_MS,
+          this.preserveDailyFrom?.getTime() ?? Infinity,
+        ),
+      );
+      const rows = await repo.selectBuckets("daily", {
+        scope: ALL_SCOPE,
+        from: EPOCH,
+        to: new Date(cutoff.getTime() - 1),
+      });
+      const buckets = rollupBuckets(rows, "monthly");
+      if (buckets.length > 0) {
+        await repo.upsertBuckets("monthly", buckets, true);
+      }
+      const deleted = await repo.deleteDailyOlderThan(cutoff);
+      return { bucketsWritten: buckets.length, sourceRowsDeleted: deleted };
     });
-    const buckets = rollupBuckets(rows, "monthly");
-    if (buckets.length > 0) {
-      await this.repo.upsertBuckets("monthly", buckets);
-    }
-    const deleted = await this.repo.deleteDailyOlderThan(cutoff);
-    return { bucketsWritten: buckets.length, sourceRowsDeleted: deleted };
   }
 }
 
@@ -123,7 +144,7 @@ export class MeteringAggregator {
 export function truncateTo(period: Exclude<Period, "raw">, d: Date): Date {
   const dt = new Date(d);
   if (period === "hourly") {
-    dt.setMinutes(0, 0, 0);
+    dt.setUTCMinutes(0, 0, 0);
   } else if (period === "daily") {
     dt.setUTCHours(0, 0, 0, 0);
   } else {

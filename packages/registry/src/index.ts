@@ -31,10 +31,11 @@ import { createSpackUpstreamRoutes } from "./routes/spack-upstream";
 import { createUsecasePackageRoutes } from "./routes/usecase-packages";
 import { createWorkflowTemplateRoutes } from "./routes/workflow-templates";
 import { AppTemplateService } from "./services/app-template-service";
-import { createBlobStore } from "./services/blob-store";
+import { FilesystemBlobStore } from "./services/blob-store";
 import { EcosystemOciReader } from "./services/ecosystem-oci-reader";
 import { EcosystemReleaseService } from "./services/ecosystem-release-service";
 import { OfflineDeliveryService } from "./services/offline-delivery";
+import { OfflineDeliveryBinaries } from "./services/offline-delivery-binaries";
 import { PgDeliveryReceipts } from "./services/offline-delivery-receipts";
 import { seedOfflineDelivery } from "./services/offline-delivery-seed";
 import { RecipeGitStore } from "./services/recipe-git-store";
@@ -62,7 +63,9 @@ const appTemplateService = new AppTemplateService(db);
 const usecasePackageService = new UsecasePackageService(db, softwareAssetService);
 const workflowTemplateService = new WorkflowTemplateService(db, softwareAssetService);
 const spackCatalogService = new SpackCatalogService(db, softwareAssetService);
-const blobStore = createBlobStore(config.BLOB_STORE_DIR);
+const blobStore = new FilesystemBlobStore(
+  config.BLOB_STORE_DIR ?? "/var/lib/kuintessence/registry/blobs",
+);
 const recipeStore = config.SPACK_RECIPE_STORE_DIR
   ? new RecipeGitStore(config.SPACK_RECIPE_STORE_DIR, {
       maxBundleBytes: config.SPACK_RECIPE_MAX_BUNDLE_BYTES,
@@ -181,12 +184,14 @@ const installBindings =
 const offlineDelivery =
   materialStore && recipeStore && installBindings
     ? new OfflineDeliveryService({
+        binaries: new OfflineDeliveryBinaries(db, registryService, materialStore),
         recipes: recipeStore,
         materials: materialStore,
         bindings: installBindings,
         ecosystem: ecosystemReleaseService,
         receipts: new PgDeliveryReceipts(db, createPgDb(config.DATABASE_URL, { max: 1 })),
         trustedKeys: config.ECOSYSTEM_RELEASE_TRUSTED_KEYS,
+        deliveryKeys: config.OFFLINE_DELIVERY_TRUSTED_KEYS,
         publisherRoles: config.REGISTRY_PUBLISHER_ROLES,
         resolvePrincipal: principalOptions.resolveCanonicalPrincipal,
       })
@@ -301,7 +306,7 @@ app.route("/api", createAppTemplateRoutes(appTemplateService, principalOptions))
 app.route("/api", createUsecasePackageRoutes(usecasePackageService, principalOptions));
 app.route("/api", createWorkflowTemplateRoutes(workflowTemplateService, principalOptions));
 app.route("/api", createSpackCatalogRoutes(spackCatalogService, principalOptions));
-app.route("/api", createSpackRepositoryRoutes(recipeStore, principalOptions));
+app.route("/api", createSpackRepositoryRoutes(recipeStore, principalOptions, materialStore));
 app.route("/api", createSpackMaterialRoutes(materialStore, principalOptions));
 app.route("/api", createSpackInstallBindingRoutes(installBindings, principalOptions));
 app.route("/api", createSpackUpstreamRoutes(upstreamImporter, principalOptions));

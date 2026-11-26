@@ -1,7 +1,7 @@
 # 离线交付与启动 seed
 
 平台通过同一个 `OfflineDeliveryService` 接收运行时上传和部署只读目录。
-导入 recipe/material、生态 stage、安装映射 bind、生态 activate 分项记录；
+Recipe、源码材料、厂商安装包、Spack 预编译包、生态发布和安装映射均有逐项回执。
 这些结果均不代表真实软件安装或作业运行检查成功。
 
 运行时预检会校验完整 recipe，大型目录可能超过一分钟。Web、AIO、Preview、Helm
@@ -63,6 +63,48 @@ seed/
   Git bundle 默认 128 MiB，lock 16 MiB，签名生态 JSON 32 MiB。
   现有 recipe 展开量、文件数和 Git 校验预算继续生效。新入口不接收 tar/zip，不解包 Forge OCI。
 
+### 厂商安装包和 Spack 预编译包
+
+三个交付项共用 Web 导入和启动 seed 入口。
+
+| `kind` | 清单字段 | 导入结果 |
+|---|---|---|
+| `vendor-binary` | `file` 指向 `files[]` 中的安装包，`licensePolicy` 记录许可标识、来源和分发条件 | 返回当前仓库及 OCI manifest 的 SHA-256。通过 OCI API 按摘要读取 manifest，其 config 保存许可声明，唯一的 layer 是原始安装包。 |
+| `buildcache` | `archive` 和 `metadata` 分别指向归档和原生 `.spec.json`，另附 `licensePolicy` | 从根节点读取包名、版本、DAG hash 和架构，核对归档的 SHA-256 后一并登记索引与两个文件。相同包已存在时可重试，同仓库同 hash 出现不同内容时报告冲突。 |
+| `vendor-local` | `mappingId`、`licenseSubject`、`fingerprint` 引用站点已登记的安装包 | 组织仓库只记录映射回执。预检及执行重新核对提供方组织、Agent、软件资产、文件指纹和当前有效的来源／安装授权。安装包留在站点。 |
+
+前两项由发布者提供许可声明。只有分类已知、允许分发、无需单独接受条款且提供方和使用方均无额外授权要求的文件可通过这两个入口分发。签名标识清单的签发方，实际分发权以厂商条款为准。已登记为站点受限材料的指纹不得列入二进制交付的上传文件，即使换了文件名也会被拒绝。厂商文件写入 OCI 仓库时还受 `REGISTRY_MAX_UPLOAD_BYTES` 限制，默认 10 GiB。站点引用的历史回执用于审计，作业提交仍须通过当时的使用授权。
+
+例如，手工清单可将以下条目放入 `items`，并在 `files` 中列出两个实际文件的路径、SHA-256 和字节数。示例许可字段应换成所交付软件的真实条款。
+
+```json
+{
+  "id": "cache-hello",
+  "kind": "buildcache",
+  "archive": "build_cache/hello.spack",
+  "metadata": "build_cache/hello.spec.json",
+  "licensePolicy": {
+    "classification": "open-source",
+    "identifiers": [{"kind": "spdx", "value": "MIT"}],
+    "provenance": {"source": "official-upstream", "reference": "https://example.invalid/hello/LICENSE"},
+    "redistribution": "permitted",
+    "acceptanceRequired": false,
+    "providerEntitlements": [],
+    "consumerEntitlements": []
+  }
+}
+```
+
+`metadata` 上限为 2 MiB。原生 JSON 的 `spec.nodes[0]` 须含 `name`、`version`、`hash`、`arch`，`binary_cache_checksum` 须声明 SHA-256 和对应归档的摘要。导入结束后可通过 `/buildcache/<repository>/index.json` 检查索引，通过同仓库 `build_cache/<name>-<hash>.spack` 和 `.spec.json` 读取文件。
+
+升级时，如果已有 Spack 缓存缺少仓库归属，迁移会整体回滚并提示设置 `SPACK_REPOSITORY_BINDINGS_FILE`。运维人员可查询 `spack_package` 的 `id, namespace_kind, namespace_owner, spec, hash`，按发布记录确认每一行的目标仓库。将 JSON 文件挂载到迁移进程并把该变量指向文件，例如 `{"00000000-0000-4000-8000-000000000001":"public/science"}`。重跑迁移后，索引和下载只在所指定的仓库可见。目标路径必须与原命名空间及所有者一致；缺项、冲突或跨命名空间的映射都会中止迁移。归档没有独立 spec 时，可通过同一 buildcache 接口补传原生元数据。
+
+若接收端要求签名，用上文的合同检查命令校验手工清单，再签名到单独的输出文件。
+
+```sh
+kq-bundle delivery-sign delivery.json --signing-key /path/to/issuer.pem --signing-key-id issuer > signed-delivery.json
+```
+
 Forge `application/vnd.kq.forge.bundle.v1` / config `2.0.0` 是来源候选，
 不是 `application/vnd.kuintessence.ecosystem.release.v1+json` 或 material release。
 `GET /api/offline-deliveries/formats` 提供机器可读转换路径；将 Forge manifest 提交给预检会返回
@@ -119,7 +161,7 @@ Web 材料详情展示逐材料 license/provenance，可下载并校验附件（
 ## 运行时入口
 
 在软件管理 → Spack → 材料管理中选择“离线交付导入”，选择清单与目录，
-上传并预检、检查逐项状态后执行。File 直接作为上传请求体，不把大文件转 JSON 或读入浏览器内存。
+上传并预检、检查逐项状态后执行。浏览器逐个发送文件，超过 8 MiB 的文件按段上传。中断后用同一账户重新选择清单和目录，浏览器会查询仓库已确认的偏移并继续发送。
 查询历史收据或重新执行相同清单可处理后续批次与部分失败。
 
 API 均要求 canonical principal，用户角色/组织从数据库重新读取；沿用 namespace、
@@ -161,6 +203,20 @@ HTTP 200 仅表示返回了报告，必须检查报告状态和逐项结果。
 安装 spec；签名导入项不提供手工目录的编辑、删除入口，更新仍通过生态发布完成。
 重新部署保留数据库和 Registry 数据卷时无需重新导入。用例和正式工作流模板分别
 显示在对应页签；交付中的普通脚本或测试运行不会自动变成工作流模板。
+
+## 整份交付清单签名
+
+发行端使用 Bundles 的 `kq-export`，同时传入 `--offline-repository`、`--signing-key` 和 `--signing-key-id`。签名文件仍为 `offline-delivery.json`。外层包含 `format`、`keyId`、`payload` 和 Base64 编码的 Ed25519 签名。`payload` 保存完整清单的 JSON 文本，包含文件摘要、顺序、目标仓库及导入动作。验签消息是以下三行的 UTF-8 字节，行间使用 LF，末尾无换行。
+
+```text
+kq-signed-offline-delivery-v1
+<keyId>
+<payload UTF-8 字节的 SHA-256 小写十六进制>
+```
+
+接收方通过受信渠道取得公钥，在 Registry 的 `OFFLINE_DELIVERY_TRUSTED_KEYS` 中填写密钥 ID 到 Base64 DER SPKI 公钥的 JSON 映射。设置该变量后，每份清单均须有受信签名。`{}` 表示没有可接受的密钥。未配置该变量时可按发布者原有权限导入普通清单。内嵌生态发行包使用独立的 `ECOSYSTEM_RELEASE_TRUSTED_KEYS`。
+
+Web 在上传选定目录前向 Registry 核验清单，启动 seed 在读取材料前核验。预检、导入和查看回执时均核对当前身份与命名空间权限。签名交付的报告记录密钥 ID 和被签正文的摘要。
 
 ## Compose 与 readiness
 

@@ -9,6 +9,7 @@ import type { PbsProAdapterDeps } from "./adapters/pbs-pro";
 import type { SlurmAdapterDeps } from "./adapters/slurm";
 import { ContainerSpawner } from "./adapters/spawner-container";
 import type { TorqueAdapterDeps } from "./adapters/torque";
+import { AgentUpdateController, agentUpdatePath } from "./agent-update";
 import { ensureCertBundle } from "./auth/bootstrap";
 import { createHttpEnrollmentClient } from "./auth/enrollment-client";
 import { fingerprintOfPem } from "./auth/fingerprint";
@@ -19,6 +20,7 @@ import {
   makeContainerReadOutput,
 } from "./container-io";
 import { DataDeliveryExecutor, LinuxBindReadonlyMountDriver } from "./data-market/data-delivery";
+import { AgentReplicaStore } from "./data-market/data-replica";
 import { createCpLocalDataScanner, createCpLocalDataScanSigner } from "./data-market/data-scan";
 import { AgentDataRoots } from "./data-market/local-data-security";
 import { runFederationWatchdog } from "./federation-watchdog";
@@ -70,6 +72,7 @@ import { ManagedSpackInstallation } from "./spack/managed-installation";
 import { slurmSpackProcess } from "./spack/slurm-process";
 import { SpackSourceAuditor } from "./spack/source-auditor";
 import { SshHandler } from "./ssh";
+import { DownloadPartials } from "./staging/download-partials";
 import { AgentStream } from "./stream";
 
 async function main() {
@@ -78,7 +81,7 @@ async function main() {
   logger.info({ agentId: config.AGENT_ID, site: config.AGENT_SITE_NAME }, "Agent starting");
 
   // Open local SQLite (initializes schema via runSqliteMigrations)
-  const db = createSqliteDb(config.AGENT_DB_PATH);
+  const db = createSqliteDb(config.AGENT_DB_PATH, config.AGENT_SQLITE_JOURNAL_MODE);
   logger.info({ path: config.AGENT_DB_PATH }, "Local SQLite ready");
 
   // Persistent outbound spillover for offline windows. The heartbeat cap
@@ -148,8 +151,7 @@ async function main() {
     }
     spawner = new ContainerSpawner(containerId);
     const containerLogDir = "/var/tmp/kq-slurm-shared";
-    const makeContainerDirectory = makeContainerMkdir(containerId);
-    await makeContainerDirectory(containerLogDir);
+    await makeContainerMkdir(containerId, true)(containerLogDir);
     slurmDeps = {
       logDir: containerLogDir,
       terminalStatusBackend: "scontrol",
@@ -168,7 +170,7 @@ async function main() {
     };
     outputReader = makeContainerReadOutput(containerId);
     globScanner = makeContainerGlobScanner(containerId);
-    ensureWorkingDir = makeContainerDirectory;
+    ensureWorkingDir = makeContainerMkdir(containerId);
   } else {
     spawner = realSpawner;
     const logDir = dataRoots.schedulerLogDir();
@@ -618,7 +620,21 @@ async function main() {
       : undefined;
 
   // Start bidirectional stream loop
+  const updateController = new AgentUpdateController(
+    agentUpdatePath(config.AGENT_DB_PATH),
+    process.env.KQ_AGENT_REMOTE_UPDATE === "1" && process.env.KQ_AGENT_SUPERVISED === "1",
+    process.env.KQ_RUNNING_RELEASE,
+  );
+  const downloadPartials = new DownloadPartials(db);
   const stream = new AgentStream({
+    downloadPartials,
+    ...(process.env.KQ_AGENT_SUPERVISED === "1"
+      ? {
+          confirmAgentUpdate: () => updateController.confirm(),
+          receiveAgentUpdate: (requestId: string, release: string) =>
+            updateController.receive(requestId, release),
+        }
+      : {}),
     federationResultCopy: config.AGENT_FEDERATION_RESULT_COPY ?? undefined,
     federationInputCopy: config.AGENT_FEDERATION_INPUT_COPY ?? undefined,
     federationMediaExport: config.AGENT_FEDERATION_MEDIA_EXPORT
@@ -647,7 +663,10 @@ async function main() {
       installation: { state: config.AGENT_SPACK_INSTALL_ENABLED ? "idle" : "disabled", active: 0 },
       jobs: { state: "unknown", active: 0 },
       transfers: { state: "unknown", active: 0 },
-      update: await readSiteUpdate(config.AGENT_DB_PATH),
+      update: {
+        ...(await readSiteUpdate(config.AGENT_DB_PATH)),
+        request: await updateController.report(),
+      },
       auditContext: await materialAuditor?.context().catch(() => undefined),
     }),
     adapter,
@@ -715,6 +734,7 @@ async function main() {
     removeJobWorkRoot: (jobId) => dataRoots.removeJobRoot(jobId),
     dataDeliveryExecutor,
     dataScanner,
+    replicaStore: mtls.enabled ? new AgentReplicaStore(dataRoots) : undefined,
     managedDatasetRootIds: Object.keys(config.AGENT_DATASET_ROOTS_JSON),
   });
 
@@ -742,6 +762,7 @@ async function main() {
           return true;
         }),
       resume: (lease) => stream.resumeAfterMaintenance(lease),
+      stop: () => stream.stop(),
     },
   ).catch(() => {
     logger.warn("Maintenance socket unavailable; automatic maintenance permission is disabled");
@@ -759,9 +780,23 @@ async function main() {
     void stream.stop();
   });
 
+  let cleanup: Promise<void> | undefined;
+  const sweepPartials = () => {
+    cleanup ??= downloadPartials
+      .sweep()
+      .catch((err) => logger.warn({ err }, "Download partial cleanup will retry"))
+      .finally(() => {
+        cleanup = undefined;
+      });
+  };
+  sweepPartials();
+  const partialTimer = setInterval(sweepPartials, 3_600_000);
+  partialTimer.unref();
   try {
     await stream.start();
   } finally {
+    clearInterval(partialTimer);
+    await cleanup;
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
     await stream.stop();
     await maintenance?.close();

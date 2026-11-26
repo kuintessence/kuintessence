@@ -399,7 +399,15 @@ export interface SpackCatalogPackageCreate {
   packageFile?: string;
 }
 
-export type SpackCatalogPackageUpdate = SpackCatalogPackageCreate;
+export type SpackCatalogPackageUpdate = SpackCatalogPackageCreate & {
+  expectedSourceDigest?: string | null;
+};
+
+export function getSpackCatalogSource(id: string) {
+  return requestJson<{ content: string | null; digest: string | null }>(
+    `/spack/catalog/packages/${encodeURIComponent(id)}/source`,
+  );
+}
 
 export interface SpackCatalog {
   source: string;

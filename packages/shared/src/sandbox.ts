@@ -1,11 +1,14 @@
 import { z } from "zod";
+import { DataAssetEntryPathSchema } from "./data-market/data-assets";
 import { UuidSchema } from "./workflow-dsl/common";
 import {
   ArtifactDurabilitySchema,
   ExecutionIdentitySchema,
   PlacementConstraintSchema,
   SandboxLanguageSchema,
+  ScriptInputSpecSchema,
   ScriptIoTypeSchema,
+  ScriptOutputSpecSchema,
 } from "./workflow-dsl/script";
 
 export type {
@@ -17,6 +20,37 @@ export type {
   ScriptIoType,
   ScriptOutputSpec,
 } from "./workflow-dsl/script";
+
+const GitObjectIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+
+export const SandboxGitLocationSchema = z.strictObject({
+  repository: z
+    .url({ protocol: /^https$/ })
+    .max(4096)
+    .refine((value) => {
+      const url = URL.parse(value);
+      return !!url && !url.username && !url.password && !/[?#\s\\]/.test(value);
+    }, "Use an HTTPS repository URL without credentials, query or fragment")
+    .optional(),
+  commit: GitObjectIdSchema,
+  path: DataAssetEntryPathSchema.refine(
+    (path) => !Array.from(path).some((c) => c.charCodeAt(0) < 32),
+  ),
+});
+
+export const SandboxGitSourceSchema = SandboxGitLocationSchema.extend({
+  blob: GitObjectIdSchema,
+}).refine((source) => source.commit.length === source.blob.length, "Git object formats differ");
+
+export const SandboxScriptDefinitionSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  version: z.string().min(1).max(100).default("0.1.0"),
+  language: SandboxLanguageSchema,
+  runtimeProfileId: z.string().uuid(),
+  entrypoint: z.string().regex(/^(?!\.{1,2}$)[a-zA-Z0-9._-]{1,128}$/),
+  inputs: z.record(z.string().min(1), ScriptInputSpecSchema).default({}),
+  outputs: z.record(z.string().min(1), ScriptOutputSpecSchema).default({}),
+});
 
 export const SandboxAdapterSchema = z.enum(["slurm", "pbs-pro", "torque", "kubernetes"]);
 export type SandboxAdapter = z.infer<typeof SandboxAdapterSchema>;

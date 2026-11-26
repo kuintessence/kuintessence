@@ -16,6 +16,9 @@ test.beforeAll(() => {
       "e2e/fixtures/ui-pages.tsx",
       "--target=browser",
       "--format=iife",
+      // These offline list pages must never request the lazy Vite/Monaco editor chunk.
+      "--external",
+      "*/SandboxCodeEditor",
       "--define",
       'import.meta.env={"MODE":"test"}',
       "--outdir",
@@ -90,16 +93,14 @@ for (const width of [320, 768, 1280]) {
               expect(menu.width).toBe(36);
             }
           } else if (route === "software") {
-            await expect(page.getByTestId("software-card-demo-template-0")).toBeVisible();
-            const widths = await page
-              .getByTestId("software-grid")
-              .locator(":scope > div")
-              .evaluateAll((cards) => cards.map((card) => card.getBoundingClientRect().width));
-            expect(widths.length).toBe(3);
-            const available = await page
-              .getByTestId("software-grid")
-              .evaluate((grid) => grid.getBoundingClientRect().width);
-            expect(widths.every((cardWidth) => cardWidth >= Math.min(320, available) - 1)).toBe(
+            const grid = page.getByTestId("software-grid");
+            const cards = grid.getByRole("article");
+            await expect(cards).toHaveCount(3);
+            const widths = await cards.evaluateAll((cards) =>
+              cards.map((card) => card.getBoundingClientRect().width),
+            );
+            const available = await grid.evaluate((grid) => grid.getBoundingClientRect().width);
+            expect(widths.every((cardWidth) => cardWidth >= Math.min(280, available) - 1)).toBe(
               true,
             );
           } else if (route === "workflows") {

@@ -32,6 +32,9 @@ concurrency:
 
 jobs:
   spack-managed:
+    permissions:
+      contents: read
+      packages: read
     name: Spack ${{ matrix.label }} managed installation
     if: inputs.run_spack
     runs-on: ubuntu-24.04
@@ -79,7 +82,7 @@ jobs:
         working-directory: packages/web
         run: bun run e2e:install
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: ./.github/actions/registry-build-cache
       - name: Permit the pinned Apptainer starter to create user namespaces
         id: managed-apparmor
         run: sudo apparmor_parser --replace deploy/pr-test/spack-managed/apparmor.profile
@@ -92,6 +95,9 @@ jobs:
         run: sudo apparmor_parser --remove deploy/pr-test/spack-managed/apparmor.profile
 
   spack-case:
+    permissions:
+      contents: read
+      packages: read
     name: Spack GNU Hello single-step case
     if: inputs.run_spack
     runs-on: ubuntu-24.04
@@ -102,11 +108,14 @@ jobs:
           ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: ./.github/actions/registry-build-cache
       - name: Deliver materials, compile offline and run one Slurm step
         run: timeout --signal=TERM --kill-after=60s 55m bash deploy/pr-test/run.sh slurm --spack-case
 
   scheduler:
+    permissions:
+      contents: read
+      packages: read
     name: Scheduler (${{ matrix.scheduler }})
     if: inputs.run_schedulers
     runs-on: ubuntu-24.04
@@ -121,7 +130,7 @@ jobs:
           ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: ./.github/actions/registry-build-cache
       - name: Build and test disposable scheduler stack
         env:
           SCHEDULER: ${{ matrix.scheduler }}

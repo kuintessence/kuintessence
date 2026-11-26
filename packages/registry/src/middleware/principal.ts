@@ -287,7 +287,7 @@ function normalizeOrgIds(orgIds: unknown, orgId: unknown): string[] {
   return typeof orgId === "string" ? [orgId] : [];
 }
 
-export type OciErrorStatus = 400 | 401 | 403 | 404 | 405 | 409 | 413 | 416 | 500;
+export type OciErrorStatus = 400 | 401 | 403 | 404 | 405 | 409 | 413 | 416 | 429 | 500;
 
 /**
  * Emit an OCI Distribution v2 error envelope. The buildcache routes mount

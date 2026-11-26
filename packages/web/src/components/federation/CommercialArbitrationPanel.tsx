@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementFact } from "./AgreementTerms";
 
 const receivedSchema = z.object({
@@ -166,16 +167,15 @@ export function CommercialArbitrationPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h4 className="font-semibold">{t("federation.arbitration.title")}</h4>
         {canRead ? (
-          <Button
+          <RefreshButton
             variant="ghost"
             disabled={blocked}
             onClick={() => {
               void decision.refetch();
               void onChanged();
             }}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
         ) : null}
       </div>
       {!canRead ? (

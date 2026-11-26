@@ -9,6 +9,7 @@ import {
 
 export const SoftwareAssetKindSchema = z.enum([
   "spack-package",
+  "site-runtime",
   "usecase",
   "workflow-template",
   "sandbox-script",
@@ -228,7 +229,39 @@ export const SpackRecipePayloadSchema = z.strictObject({
 });
 export type SpackRecipePayload = z.infer<typeof SpackRecipePayloadSchema>;
 
+const SiteRuntimeFileSchema = z.strictObject({
+  path: z
+    .string()
+    .max(4096)
+    .startsWith("/")
+    .refine(
+      (value) =>
+        value
+          .slice(1)
+          .split("/")
+          .every((part) => part && part !== "." && part !== "..") &&
+        ![...value].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127),
+      "Expected a canonical absolute path",
+    ),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+export const SiteRuntimePayloadSchema = z.strictObject({
+  kind: z.literal("site-runtime"),
+  siteIds: z.array(z.string().trim().min(1).max(255)).min(1).max(256),
+  runtime: z.discriminatedUnion("kind", [
+    SiteRuntimeFileSchema.extend({ kind: z.literal("Bare") }),
+    SiteRuntimeFileSchema.extend({
+      kind: z.literal("Singularity"),
+      image: z.string().min(1),
+      tag: z.string().min(1),
+    }),
+  ]),
+});
+export type SiteRuntime = z.infer<typeof SiteRuntimePayloadSchema>["runtime"];
+
 export const SoftwareAssetPayloadSchema = z.discriminatedUnion("kind", [
+  SiteRuntimePayloadSchema,
   z.strictObject({
     kind: z.literal("spack-package"),
     legacyAppTemplateId: z.string().uuid().optional(),
@@ -411,6 +444,7 @@ export const SoftwareAvailabilityRequestSchema = z.strictObject({
   assetRef: SoftwareAssetRefSchema.optional(),
   usecaseRef: SoftwareAvailabilityUsecaseRefSchema.optional(),
   rawSpec: z.string().min(1).optional(),
+  siteRuntimeRevisionId: z.string().uuid().optional(),
   targetAgentIds: z.array(z.string()).optional(),
   providerOrgIds: z.array(z.string().uuid()).optional(),
   installable: z.boolean().default(false),

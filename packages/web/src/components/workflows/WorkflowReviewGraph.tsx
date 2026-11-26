@@ -21,7 +21,7 @@ export function WorkflowReviewGraph({
   const parsed = useMemo(() => yamlToGraph(yaml), [yaml]);
   if (!parsed.ok || parsed.graph.nodes.length === 0) {
     return (
-      <div className=" border-border p-8 text-center text-sm text-muted-foreground">
+      <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
         {t("workflows.creation.review.graphEmpty")}
       </div>
     );

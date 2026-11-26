@@ -1,42 +1,43 @@
-import type { PreferenceSpec } from "@kuintessence/shared/browser";
 import { Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { getAuthState } from "../../lib/auth";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { ResourceSelectField } from "../ui/resource-select-field";
 
-/**
- * Platform-wide per-cluster cost-rate editor (PreferenceSpec.costRates).
- *
- * Visible only to super_admin (PUT /api/preferences/global is super_admin-only;
- * the parent SettingsPage gates on the resolved role). Read-modify-write: the
- * full loaded spec is held in state so a save preserves hardLimits / sitePolicy
- * / softWeights and replaces only costRates.
- */
+interface CostRateDirectory {
+  clusters: Array<{ id: string; organizationName: string; zoneName: string; clusterName: string }>;
+  rates: Record<string, number>;
+  legacyRates: Record<string, number>;
+}
 
 interface RateRow {
+  id: string;
   cluster: string;
   rate: string;
 }
 
-function specToRows(spec: PreferenceSpec | null): RateRow[] {
-  const rates = spec?.costRates;
-  if (!rates) return [];
+function rateRows(rates: Record<string, number>): RateRow[] {
   return Object.entries(rates).map(([cluster, rate]) => ({
+    id: cluster,
     cluster,
     rate: String(rate),
   }));
 }
 
-export function CostRatesForm() {
+export function CostRatesForm({ organizationId }: { organizationId?: string } = {}) {
   const { t } = useTranslation();
-  const mobileReadOnly = useMobileMutationBlocked("/preferences/global");
-  const [spec, setSpec] = useState<PreferenceSpec | null>(null);
+  const path = organizationId
+    ? `/preferences/org/${organizationId}/cost-rates`
+    : "/preferences/global/cost-rates";
+  const mobileReadOnly = useMobileMutationBlocked(path);
+  const [directory, setDirectory] = useState<CostRateDirectory | null>(null);
   const [rows, setRows] = useState<RateRow[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -49,11 +50,11 @@ export function CostRatesForm() {
     let cancelled = false;
     setRows(null);
     api
-      .get<{ spec: PreferenceSpec | null }>("/preferences/global")
+      .get<CostRateDirectory>(path)
       .then((res) => {
         if (cancelled) return;
-        setSpec(res.spec);
-        setRows(specToRows(res.spec));
+        setDirectory(res);
+        setRows(rateRows(res.rates));
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -62,7 +63,7 @@ export function CostRatesForm() {
     return () => {
       cancelled = true;
     };
-  }, [loadFailedLabel, loadError]);
+  }, [loadFailedLabel, loadError, path]);
 
   if (loadError) {
     return (
@@ -102,6 +103,13 @@ export function CostRatesForm() {
     );
   }
 
+  const clusterLabel = (id: string) => {
+    const cluster = directory?.clusters.find((item) => item.id === id);
+    return cluster
+      ? `${cluster.organizationName} – ${cluster.zoneName} – ${cluster.clusterName}`
+      : id;
+  };
+
   function updateRow(idx: number, patch: Partial<RateRow>) {
     setRows((prev) =>
       prev ? prev.map((row, i) => (i === idx ? { ...row, ...patch } : row)) : prev,
@@ -109,7 +117,9 @@ export function CostRatesForm() {
   }
 
   function addRow() {
-    setRows((prev) => (prev ? [...prev, { cluster: "", rate: "" }] : prev));
+    setRows((prev) =>
+      prev ? [...prev, { id: crypto.randomUUID(), cluster: "", rate: "" }] : prev,
+    );
   }
 
   function removeRow(idx: number) {
@@ -118,12 +128,12 @@ export function CostRatesForm() {
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
-    if (!rows || saving) return;
+    if (!rows || !directory || saving || mobileReadOnly) return;
 
     const costRates: Record<string, number> = {};
     for (const row of rows) {
       const cluster = row.cluster.trim();
-      if (cluster.length === 0) {
+      if (!directory.clusters.some((item) => item.id === cluster)) {
         toast.error(
           t("settings.costRates.errorEmptyCluster", {
             defaultValue: "Cluster name cannot be empty",
@@ -135,7 +145,7 @@ export function CostRatesForm() {
         toast.error(
           t("settings.costRates.errorDuplicateCluster", {
             defaultValue: "Duplicate cluster name: {{cluster}}",
-            cluster,
+            cluster: clusterLabel(cluster),
           }),
         );
         return;
@@ -145,7 +155,7 @@ export function CostRatesForm() {
         toast.error(
           t("settings.costRates.errorInvalidRate", {
             defaultValue: "Rate for {{cluster}} must be a non-negative number",
-            cluster,
+            cluster: clusterLabel(cluster),
           }),
         );
         return;
@@ -153,12 +163,15 @@ export function CostRatesForm() {
       costRates[cluster] = rate;
     }
 
-    const merged: PreferenceSpec = { ...spec, costRates };
     setSaving(true);
     try {
-      const res = await api.put<{ spec: PreferenceSpec | null }>("/preferences/global", merged);
-      setSpec(res.spec);
-      setRows(specToRows(res.spec));
+      const res = await api.put<CostRateDirectory>(
+        path,
+        costRates,
+        organizationId ? { organizationId, authRevision: getAuthState().revision } : undefined,
+      );
+      setDirectory(res);
+      setRows(rateRows(res.rates));
       toast.success(t("settings.costRates.saved", { defaultValue: "Cost rates saved" }));
     } catch (err) {
       toast.error(
@@ -181,11 +194,25 @@ export function CostRatesForm() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          {t("settings.costRates.description", {
-            defaultValue:
-              "Per-cluster cost per CPU-hour. Feeds the scheduler's cost scorer. Applies platform-wide.",
-          })}
+          {t(
+            organizationId
+              ? "settings.costRates.providerDescription"
+              : "settings.costRates.description",
+          )}
         </p>
+        {directory && Object.keys(directory.legacyRates).length > 0 && (
+          <details className="text-sm text-muted-foreground">
+            <summary className="cursor-pointer">{t("settings.costRates.legacyRates")}</summary>
+            <dl className="divide-y divide-border">
+              {Object.entries(directory.legacyRates).map(([label, rate]) => (
+                <div className="flex justify-between gap-2 py-1" key={label}>
+                  <dt>{label}</dt>
+                  <dd>{rate}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
+        )}
         <form className="space-y-3" onSubmit={onSave}>
           {mobileReadOnly && (
             <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
@@ -200,21 +227,35 @@ export function CostRatesForm() {
             ) : null}
             {rows.map((row, idx) => (
               <div
-                // biome-ignore lint/suspicious/noArrayIndexKey: rows are list-like, no animation, no stable id available
-                key={`row-${idx}`}
+                key={row.id}
                 data-testid={`cost-rates-row-${idx}`}
                 className="flex items-center gap-2"
               >
-                <Input
+                <ResourceSelectField
+                  resourceType="clusters"
                   data-testid={`cost-rates-cluster-${idx}`}
                   aria-label={t("settings.costRates.clusterPlaceholder")}
                   value={row.cluster}
-                  onChange={(e) => updateRow(idx, { cluster: e.target.value })}
-                  placeholder={t("settings.costRates.clusterPlaceholder", {
-                    defaultValue: "cluster-name",
-                  })}
-                  className="flex-1"
-                />
+                  onChange={(event) => updateRow(idx, { cluster: event.target.value })}
+                  className="min-w-0 flex-1"
+                  disabled={saving || mobileReadOnly}
+                >
+                  <option value="">{t("settings.costRates.clusterPlaceholder")}</option>
+                  {row.cluster && !directory?.clusters.some((item) => item.id === row.cluster) && (
+                    <option value={row.cluster}>
+                      {t("settings.costRates.unavailableCluster", { id: row.cluster })}
+                    </option>
+                  )}
+                  {directory?.clusters.map(({ id }) => (
+                    <option
+                      key={id}
+                      value={id}
+                      disabled={row.cluster !== id && rows.some((entry) => entry.cluster === id)}
+                    >
+                      {clusterLabel(id)}
+                    </option>
+                  ))}
+                </ResourceSelectField>
                 <Input
                   data-testid={`cost-rates-rate-${idx}`}
                   aria-label={t("settings.costRates.rateLabel")}

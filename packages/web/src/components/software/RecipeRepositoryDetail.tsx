@@ -3,6 +3,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Check, Eye, Play, Power, RefreshCw, Undo2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { listSoftwareOperations } from "../../lib/cp-client";
+import { isLocalMode } from "../../lib/local-mode";
 import {
   activateRecipeRepository,
   deactivateRecipeRepository,
@@ -32,12 +34,14 @@ export function RecipeRepositoryDetail({
   id,
   queryKey,
   canWriteRepository,
+  namespaceWrite,
   onUpdated,
   onRefresh,
 }: {
   id: string;
   queryKey: readonly (string | null)[];
-  canWriteRepository: (repository: string) => boolean;
+  canWriteRepository: (repository: string, detail?: RecipeRepository) => boolean;
+  namespaceWrite: (repository: string) => boolean;
   onUpdated: (repository: RecipeRepository) => Promise<void>;
   onRefresh: () => void;
 }) {
@@ -48,7 +52,7 @@ export function RecipeRepositoryDetail({
   const [trusted, setTrusted] = useState(false);
   const mutation = useMutation({
     mutationFn: (input: Change) => {
-      if (!detail.data || !canWriteRepository(detail.data.repository)) {
+      if (!detail.data || !canWriteRepository(detail.data.repository, detail.data)) {
         throw new SoftwareError(403, "FORBIDDEN", "Recipe write access is no longer available");
       }
       return input.kind === "activate"
@@ -99,7 +103,7 @@ export function RecipeRepositoryDetail({
     );
   }
   const repository = detail.data;
-  const canManage = canWriteRepository(repository.repository);
+  const canManage = canWriteRepository(repository.repository, repository);
   const snapshots = [...repository.snapshots].sort((a, b) =>
     b.importedAt.localeCompare(a.importedAt),
   );
@@ -220,6 +224,9 @@ export function RecipeRepositoryDetail({
         </div>
       )}
       {inspected ? <RecipeSnapshotReport snapshot={inspected} /> : null}
+      {inspected && namespaceWrite(repository.repository) && !isLocalMode() ? (
+        <RecipeInstallHistory scope={queryKey} repositoryId={id} commit={inspected.commit} />
+      ) : null}
       <Dialog
         open={change !== null}
         onOpenChange={(open) => {
@@ -290,6 +297,45 @@ export function RecipeRepositoryDetail({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </section>
+  );
+}
+
+function RecipeInstallHistory({
+  scope,
+  repositoryId,
+  commit,
+}: {
+  scope: readonly unknown[];
+  repositoryId: string;
+  commit: string;
+}) {
+  const { t } = useTranslation();
+  const history = useQuery({
+    queryKey: [...scope, "installations", commit],
+    queryFn: () =>
+      listSoftwareOperations({ recipe: { repositoryId, commit }, action: "install", limit: 10 }),
+    retry: false,
+  });
+  return (
+    <section className="space-y-1 text-xs">
+      <h4 className="font-medium">{t("recipes.installHistory")}</h4>
+      {history.isPending ? (
+        <p role="status">{t("recipes.loading")}</p>
+      ) : history.error ? (
+        <p role="alert">{toUserFacingError(history.error, t("recipes.historyFailed"))}</p>
+      ) : history.data?.length ? (
+        <ul>
+          {history.data.map((op) => (
+            <li key={op.id}>
+              {op.agentId} · {op.spec} · {t(`cp.software.operations.status.${op.status}`)} ·{" "}
+              <time dateTime={op.updatedAt}>{new Date(op.updatedAt).toLocaleString()}</time>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>{t("recipes.noInstallHistory")}</p>
+      )}
     </section>
   );
 }

@@ -57,6 +57,7 @@ describe("createFileStager", () => {
     await tick();
     expect(h.pushes[0]?.payload).toEqual({
       direction: "cloud_to_cluster",
+      workflowInput: true,
       sourceUrl: "https://minio/input",
       targetPath: "/run/input",
       totalBytes: 0,
@@ -90,6 +91,7 @@ describe("createFileStager", () => {
     });
     expect(h.pushes[0]?.payload).toEqual({
       direction: "cloud_to_cluster",
+      workflowInput: true,
       sourceUrl: "https://minio/get/fm-1",
       targetPath: "/run/mesh",
       totalBytes: 0,

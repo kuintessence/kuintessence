@@ -154,6 +154,28 @@ function makeFactory(): { factory: Ssh2Factory; clients: FakeClient[] } {
 // -----------------------------------------------------------------------------
 
 describe("SshClient", () => {
+  test("relays SFTP bytes on the subsystem with no terminal shell", () => {
+    const fake = makeFakeClient();
+    const init = fake.shell.bind(fake);
+    fake.shell = () => {
+      throw new Error("unexpected shell");
+    };
+    fake.subsys = (name, cb) => {
+      expect(name).toBe("sftp");
+      init(cb);
+      return fake;
+    };
+    const client = new SshClient({ ssh2Factory: () => fake, logger: silent });
+    client.open("transfer", { host: "example.test", port: 22, username: "user", sftp: true });
+    const bytes = Buffer.from([0, 27, 127, 255]);
+    client.write("transfer", bytes);
+    fake.driver.fireReady();
+    expect(fake.driver.channel?.writes).toEqual([bytes]);
+    const received: Buffer[] = [];
+    client.onOutput((_session, data) => received.push(data));
+    fake.driver.channel?.emitData(bytes);
+    expect(received).toEqual([bytes]);
+  });
   test("host-key pin installs a hostVerifier that accepts the match and rejects others", () => {
     const { factory, clients } = makeFactory();
     const client = new SshClient({ ssh2Factory: factory, logger: silent });
@@ -443,4 +465,94 @@ describe("SshClient", () => {
 
     expect(closes[0]).toMatch(/connect threw: dns failure/);
   });
+});
+
+test.each([false, true])("a pinned jump forwards to the final channel (sftp=%s)", (sftp) => {
+  const clients: FakeClient[] = [];
+  const forwarded: string[] = [];
+  const tunnel = {} as import("ssh2").ClientChannel;
+  const ssh = new SshClient({
+    logger: silent,
+    ssh2Factory: () => {
+      const c = makeFakeClient();
+      c.forwardOut = (_src, _sp, host, port, done) => {
+        forwarded.push(host + ":" + port);
+        done(undefined, tunnel);
+        return c;
+      };
+      clients.push(c);
+      return c;
+    },
+  });
+  const hop = {
+    host: "jump.invalid",
+    port: 22,
+    username: "jump",
+    password: "fixture-jump",
+    expectedHostKeySha256: hostKeySha256(Buffer.from("jump")),
+  };
+  ssh.open("route", {
+    ...hop,
+    host: "dest.invalid",
+    username: "dest",
+    password: "fixture-dest",
+    expectedHostKeySha256: hostKeySha256(Buffer.from("dest")),
+    jumps: [hop],
+    sftp,
+  });
+  const [dest, jump] = clients;
+  if (!dest || !jump) throw new Error("missing SSH clients");
+  expect(dest.driver.connectCalls).toHaveLength(0);
+  const cfg = jump.driver.connectCalls[0];
+  expect(cfg?.password).toBe("fixture-jump");
+  expect((cfg?.hostVerifier as (key: Buffer) => boolean)(Buffer.from("jump"))).toBe(true);
+  jump.driver.fireReady();
+  expect(forwarded).toEqual(["dest.invalid:22"]);
+  expect(dest.driver.connectCalls[0]?.sock).toBe(tunnel);
+  expect(dest.driver.connectCalls[0]?.password).toBe("fixture-dest");
+  if (sftp) {
+    const open = dest.shell.bind(dest);
+    dest.shell = () => {
+      throw new Error("unexpected shell");
+    };
+    dest.subsys = (name, cb) => {
+      expect(name).toBe("sftp");
+      open(cb);
+      return dest;
+    };
+  }
+  dest.driver.fireReady();
+  ssh.write("route", Buffer.from([0, 255]));
+  expect(dest.driver.channel?.writes).toEqual([Buffer.from([0, 255])]);
+  jump.driver.fireEnd();
+  expect(ssh.activeCount()).toBe(0);
+  expect(dest.driver.ended && jump.driver.ended).toBe(true);
+});
+
+test("late terminal and transport events cannot reach a reused session ID", () => {
+  const { factory, clients } = makeFactory();
+  const client = new SshClient({ ssh2Factory: factory, logger: silent });
+  const data: Buffer[] = [];
+  const reasons: string[] = [];
+  client.onOutput((_id, chunk) => data.push(chunk));
+  client.onClosed((_id, reason) => reasons.push(reason));
+  const target = { host: "example.test", port: 22, username: "user" };
+  client.open("reused", target);
+  const old = clients[0]?.driver;
+  if (!old) throw new Error("Missing original connection");
+  old.fireReady();
+  client.close("reused");
+  client.open("reused", target);
+  const current = clients[1]?.driver;
+  if (!current) throw new Error("Missing replacement connection");
+  current.fireReady();
+  old.channel?.emitData(Buffer.from("old"));
+  old.channel?.emitClose();
+  old.fireEnd();
+  old.fireClose();
+  current.channel?.emitData(Buffer.from("new"));
+  expect(data.map((b) => b.toString())).toEqual(["new"]);
+  expect(reasons).toHaveLength(1);
+  expect(client.activeCount()).toBe(1);
+  client.closeAll();
 });

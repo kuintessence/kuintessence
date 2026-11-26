@@ -1,17 +1,15 @@
 import { agentMetrics, type PgDb } from "@kuintessence/db";
+import { lt } from "drizzle-orm";
 import type { AgentMetricsRecorder } from "../grpc/agent-handler";
 
-/**
- * append-only metrics recorder. Single batch insert per
- * heartbeat so the ingest path stays bounded.
- *
- * Retention is not enforced by this recorder.
- * The schema is intentionally TimescaleDB-friendly (generic
- * agent_id / metric / value / ts shape) so the swap is one
- * `SELECT create_hypertable('agent_metrics', 'ts')` away.
- */
 export class PgAgentMetricsRecorder implements AgentMetricsRecorder {
   constructor(private readonly db: PgDb) {}
+
+  async prune(now = new Date()): Promise<void> {
+    await this.db
+      .delete(agentMetrics)
+      .where(lt(agentMetrics.ts, new Date(now.getTime() - 7 * 86_400_000)));
+  }
 
   async record(
     samples: Array<{

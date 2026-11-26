@@ -199,7 +199,7 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 联邦任务仍需完整环境锁、目标绑定与本站软件授权。仅启用 Agent 能力不表示 native lock 已导入或软件已经安装。
 
-结果存储协调器已挂入生产后台。存储角色需要 `s3:GetObjectVersion` 读取 netdrive、federation-results 与 federation-inputs 固定版本，并需要仅限 `federation-results/*`、`federation-inputs/*` 的 `s3:ListBucketMultipartUploads`、`s3:ListBucketVersions` 及 `s3:DeleteObjectVersion`。仓库 RustFS 和 Helm 初始化脚本已同步更新；外部 S3 需由存储管理员配置等效权限。已有部署须重新应用初始化策略（外部 S3 更新等效 IAM），单独升级 Server 不会补齐输入目录权限。不要扩大普通云盘历史版本的删除权限或取消不可变存储的显式删除拒绝。
+联邦回收需要在 `federation-results/*` 和 `federation-inputs/*` 读取固定版本、列出分片与版本并删除指定版本。普通云盘另需在 `netdrive/objects/*` 列出未完成的分片上传和删除指定版本。不可变存储保留显式删除拒绝。升级时重新应用 RustFS 或 Helm 初始化策略，外部 S3 配置等效 IAM。
 
 Agent 输入搬运独立默认关闭。可向接收端 Agent 进程注入 `AGENT_FEDERATION_INPUT_COPY='{"stagingRoot":"/var/lib/kq/input-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://source-storage.example.org"],"allowedDestinationOrigins":["https://receiver-storage.example.org"]}'`；目录须归 Agent 独占（0700、无符号链接），地址与 Server 的输入 origins 对应，使用 Agent 实际可访问的 HTTPS 域名。输入和结果客户端共用一个传输槽，限制同时暂存/读写的文件数；原结果配置不会自动开启输入搬运。Server 与 Agent 同步升级后才能协商输入复制和目的校验能力，要求 mTLS。两端 Server 的协议/材料/签名信任和存储权限仍须配置。
 
@@ -285,7 +285,7 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 
 进入一级菜单“联邦协同 → 合作协议”，选择当前签约机构。平台管理员先在联邦权限页为该机构的指定成员授予 agreement.approve；只读人员授予 agreement.read。平台管理角色不自动取得代签权。本站须配置联邦签名身份，双方机构/公钥须已登记且允许 agreement 用途。
 
-1. 双方约定同一份符合 FederationAgreementSchema 的 JSON（见共享协议定义），包含站点、有效期、额度、允许模板和资源、文件传输政策及合同材料摘要。协议版本不可改写，改变条款须用新版本。当前页面可导入文件或粘贴 JSON，完整可视化合同编辑器尚未提供。
+1. 双方约定同一份符合 FederationAgreementSchema 的 JSON（见共享协议定义），包含站点、有效期、额度、允许模板和资源、文件传输政策及合同材料摘要。协议版本不可改写，改变条款须用新版本。在协议页面选择「按字段编辑协议」，填写双方站点、额度、期限、资源、模板及可选文件授权。也可导入或粘贴 JSON 后编辑。核对条款后再确认签署。
 2. 导入后核对摘要与完整条款。接收方选择本机构有效的受限执行账户；必须预先建好该账户、队列/沙箱及相应使用授权，页面不替代这些配置。委派方无需执行账户。
 3. 明确确认签署，复制本方 JWS，经双方认可的受控通道交换；在各自协议详情粘贴对方 JWS，点击“验证并导入对方签名”。Server 核验机构、完整条款和实时授权后，接收方安装约定额度。普通文件内容或未经验证的签名不能激活协议。
 4. 查看双方签名与本地状态。直接合作无需链；异步存证须另行配置 Adapter，链故障不阻塞合作；此页面不提供协调模式签署，协调商业合同和 Workflow 使用各自入口。启用还受有效期、信任、材料、执行身份和本地资源策略约束，不代表可以任意执行脚本。

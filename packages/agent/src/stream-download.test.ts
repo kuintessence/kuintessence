@@ -17,6 +17,7 @@ type Request = {
   targetPath: string;
   totalBytes: number;
   expectedSha256?: string;
+  workflowInput?: boolean;
   uploadId: string;
   partSize: number;
 };
@@ -72,10 +73,12 @@ test("wire download carries the trusted digest and size to host staging", async 
             targetPath: "/shared/input",
             totalBytes: 6n,
             expectedSha256: "a".repeat(64),
+            workflowInput: true,
           }),
         },
       }),
     );
+    expect((await seen.promise).workflowInput).toBe(true);
     expect((await seen.promise).expectedSha256).toBe("a".repeat(64));
     expect((await seen.promise).totalBytes).toBe(6);
   } finally {

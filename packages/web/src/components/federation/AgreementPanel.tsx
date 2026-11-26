@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementBacklog } from "./AgreementBacklog";
 import { AgreementExchangeStatus } from "./AgreementExchangeStatus";
 import { AgreementImport } from "./AgreementImport";
@@ -145,9 +146,11 @@ export function AgreementPanel({
     return (
       <div role="alert">
         <p>{t("federation.loadFailed")}</p>
-        <Button variant="outline" onClick={refresh}>
-          {t("federation.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          onClick={refresh}
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
     );
   if (!canRead)

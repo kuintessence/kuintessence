@@ -37,7 +37,7 @@ Registry 内置以下官方 Spack package 缓存，运行时无需临时从上�
 - `spack-package-catalog.json`
 - `spack-package-metadata.json`
 
-启动时会把 upstream recipes/metadata 幂等同步为 `official-upstream` asset。source mirror、buildcache pass-through 和 signed air-gap bundle 的执行器尚未实现。
+启动时将 upstream recipes/metadata 幂等同步为 `official-upstream` asset。发布后的源码和原生 buildcache 根据镜像声明进入材料后台队列。
 
 ## Review 与 Official Fork
 
@@ -112,11 +112,8 @@ VASP POTCAR 支持算力中心 Agent 本地 selector/fingerprint/element set，�
 
 ## 运行条件与限制
 
-以下操作不在当前支持范围：
+## 软件交付和安装
 
-- sandbox 中的 `spack concretize/install`。
-- source mirror/pass-through buildcache worker。
-- signed air-gap bundle export/import。
-- 通知执行器。
-- Monaco + 结构化 `package.py` 编辑器。
-- 算力中心预装映射审核操作和安装成本估算。
+Registry 导入签名离线交付清单时，会核对站点信任密钥和文件摘要。生态材料后台任务按已发布的源码和原生 Spack buildcache 声明拉取材料并登记回执。软件目录编辑器支持完整 package.py 源码和常见声明的结构化编辑，保存时复查原摘要。
+
+在算力中心的软件治理页选择 Agent 和目标 spec 后，可指定预计核数、时长，或使用该 Agent 最近 20 次相同 spec 的成功安装耗时中位数。估算费用为预计核时乘以集群费率。缺少样本或费率的字段显示为未知。估算操作不会提交作业。

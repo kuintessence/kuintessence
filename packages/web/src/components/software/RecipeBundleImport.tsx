@@ -16,7 +16,7 @@ interface ImportItem {
 }
 
 function validDestination(value: string) {
-  return /^(public|org)\//.test(value) && RecipeRepositoryNameSchema.safeParse(value).success;
+  return RecipeRepositoryNameSchema.safeParse(value).success;
 }
 
 export function RecipeBundleImport({

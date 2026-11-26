@@ -1,9 +1,10 @@
 import {
   type FederationAgreementApproval,
   FederationAgreementApprovalSchema,
-  type FederationDelegation,
-  FederationDelegationSchema,
+  type FederationInputSelection,
   type FederationMode,
+  type FederationSubmission,
+  FederationSubmissionSchema,
 } from "@kuintessence/shared/federation";
 import { FederationMaterialOptionSchema } from "@kuintessence/shared/federation/outbound-views";
 import { useQuery } from "@tanstack/react-query";
@@ -11,8 +12,10 @@ import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
+import { PathPickerField } from "../files/PathPickerSheet";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 
 export function FederationTaskCreate({
   scope,
@@ -26,7 +29,7 @@ export function FederationTaskCreate({
   localSiteId: string;
   supportedModes: readonly FederationMode[];
   disabled: boolean;
-  onReview: (request: FederationDelegation) => void;
+  onReview: (request: FederationSubmission) => void;
   onCancel: () => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -39,6 +42,7 @@ export function FederationTaskCreate({
   const [environment, setEnvironment] = useState("");
   const [resources, setResources] = useState({ cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 60 });
   const [amount, setAmount] = useState("0");
+  const [groups, setGroups] = useState<(FederationInputSelection[number] & { key: string })[]>([]);
   const [error, setError] = useState(false);
   const key = ["federation", "task-options", scope.organizationId, scope.authRevision];
   const agreements = useQuery({
@@ -104,7 +108,7 @@ export function FederationTaskCreate({
         setError(false);
         if (busy || agreements.isError || materials.isError || !terms) return;
         const now = Date.now();
-        const request = FederationDelegationSchema.safeParse({
+        const request = FederationSubmissionSchema.safeParse({
           protocolVersion: 1,
           kind: "delegation",
           operationId: crypto.randomUUID(),
@@ -123,6 +127,15 @@ export function FederationTaskCreate({
           ).toISOString(),
           template: terms.templates[template],
           inputManifestDigest: inputs,
+          ...(groups.length
+            ? {
+                localInputFiles: groups.map(({ descriptor, type, files }) => ({
+                  descriptor,
+                  type,
+                  files,
+                })),
+              }
+            : {}),
           environmentLockDigest: environment,
           resources,
           maxAmount: amount,
@@ -130,6 +143,14 @@ export function FederationTaskCreate({
         });
         if (
           !request.success ||
+          groups.some(
+            (group) =>
+              !group.files.length ||
+              new Set(group.files.map((f) => f.path)).size !== group.files.length,
+          ) ||
+          new Set(groups.map((g) => g.descriptor)).size !== groups.length ||
+          groups.reduce((total, g) => total + g.files.length, 0) >
+            (terms.inputPolicy?.maxFiles ?? 0) ||
           BigInt(request.data.maxAmount) > BigInt(terms.maxTaskAmount) ||
           Object.entries(resources).some(
             ([field, value]) => value > terms.resourceLimit[field as keyof typeof resources],
@@ -150,16 +171,15 @@ export function FederationTaskCreate({
       {agreements.isError || materials.isError ? (
         <div role="alert" className="space-y-2 text-sm">
           <p>{t("federation.tasks.optionsFailed")}</p>
-          <Button
+          <RefreshButton
             type="button"
             variant="outline"
             onClick={() => {
               void agreements.refetch();
               void materials.refetch();
             }}
-          >
-            {t("federation.refresh")}
-          </Button>
+            label={t("federation.refresh")}
+          ></RefreshButton>
         </div>
       ) : null}
       <fieldset disabled={busy} className="space-y-5">
@@ -175,6 +195,7 @@ export function FederationTaskCreate({
               if (!row) return;
               setSelected(row);
               setTemplate(0);
+              setGroups([]);
               setAmount("0");
               setResources({
                 cpus: 1,
@@ -281,6 +302,111 @@ export function FederationTaskCreate({
                 );
               })}
             </div>
+            {terms.inputPolicy && (
+              <div className="space-y-3">
+                {groups.map((group) => {
+                  const update = (patch: Partial<FederationInputSelection[number]>) =>
+                    setGroups((rows) =>
+                      rows.map((row) => (row.key === group.key ? { ...row, ...patch } : row)),
+                    );
+                  return (
+                    <fieldset key={group.key} className="space-y-2 rounded-md border p-3">
+                      <label className="block space-y-1 text-sm">
+                        {t("federation.tasks.inputDescriptor")}
+                        <Input
+                          required
+                          value={group.descriptor}
+                          onChange={(e) => update({ descriptor: e.target.value })}
+                        />
+                      </label>
+                      <select
+                        className={selectClass}
+                        aria-label={t("federation.tasks.inputType")}
+                        value={group.type}
+                        onChange={(e) =>
+                          update({
+                            type: e.target.value === "FileBatch" ? "FileBatch" : "File",
+                            files: [],
+                          })
+                        }
+                      >
+                        <option value="File">File</option>
+                        <option value="FileBatch">FileBatch</option>
+                      </select>
+                      <ul className="space-y-1">
+                        {group.files.map((file) => (
+                          <li className="flex items-center gap-2" key={file.fileId}>
+                            <Input
+                              aria-label={t("federation.tasks.inputPath")}
+                              value={file.path}
+                              required
+                              onChange={(e) =>
+                                update({
+                                  files: group.files.map((f) =>
+                                    f.fileId === file.fileId ? { ...f, path: e.target.value } : f,
+                                  ),
+                                })
+                              }
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              onClick={() =>
+                                update({
+                                  files: group.files.filter((f) => f.fileId !== file.fileId),
+                                })
+                              }
+                            >
+                              {t("federation.tasks.removeInput")}
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                      <PathPickerField
+                        value=""
+                        testId={`task-input-${group.key}`}
+                        mode="file"
+                        locations={["cloud"]}
+                        title={t("federation.tasks.selectFile")}
+                        description={t("federation.tasks.selectFileHelp")}
+                        onSelect={(file) => {
+                          if (!file.id || file.location !== "cloud") return;
+                          const selected = {
+                            fileId: file.id,
+                            path: file.name ?? file.path.split("/").pop() ?? "",
+                          };
+                          if (group.type === "File") update({ files: [selected] });
+                          else if (!group.files.some((f) => f.fileId === file.id))
+                            update({ files: [...group.files, selected] });
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() =>
+                          setGroups((rows) => rows.filter((row) => row.key !== group.key))
+                        }
+                      >
+                        {t("federation.tasks.removeGroup")}
+                      </Button>
+                    </fieldset>
+                  );
+                })}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={groups.length >= terms.inputPolicy.maxFiles}
+                  onClick={() =>
+                    setGroups((rows) => [
+                      ...rows,
+                      { key: crypto.randomUUID(), descriptor: "", type: "File", files: [] },
+                    ])
+                  }
+                >
+                  {t("federation.tasks.addInput")}
+                </Button>
+              </div>
+            )}
             {materialPage > 0 || materials.data?.hasMore ? (
               <div className="flex flex-wrap gap-2">
                 <Button

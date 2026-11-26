@@ -7,10 +7,10 @@ import { AgentRegistrationPage } from "../cp/AgentRegistrationPage";
 import { CpAccountsPage } from "../cp/CpAccountsPage";
 import { CpAgentsTable } from "../cp/CpAgentsTable";
 import { CpQueuesPage } from "../cp/CpQueuesPage";
-import { ProviderOrganizationSelector } from "../cp/ProviderOrganizationSelector";
 import { SoftwarePolicyTable } from "../cp/SoftwarePolicyTable";
 import { Button } from "../ui/button";
 import { PageHeader } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { OperationsAttentionCards } from "./OperationsAttentionCards";
 import { PlatformUsersTable } from "./PlatformUsersTable";
 
@@ -33,14 +33,13 @@ export function OperationsResources({ area }: { area: ResourceArea }) {
   const organizationId = useActiveOrganizationId();
   return (
     <div className="space-y-5" data-testid="operations-resources">
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        <ProviderOrganizationSelector />
-        {area === "clusters" && (
+      {area === "clusters" && (
+        <div className="flex justify-end">
           <Button asChild>
             <a href="/operations#registration">{t("cp.nav.agentRegistration")}</a>
           </Button>
-        )}
-      </div>
+        </div>
+      )}
       <Fragment key={`${area}:${organizationId ?? "all"}`}>
         {area === "overview" && <OperationsOverview />}
         {area === "clusters" && <CpAgentsTable />}
@@ -74,9 +73,11 @@ function OperationsOverview() {
       {query.error ? (
         <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-status-failed">
           <span>{toUserFacingError(query.error, t("cp.dashboard.loadFailed"))}</span>
-          <Button variant="outline" onClick={() => void query.refetch()}>
-            {t("cp.common.refresh")}
-          </Button>
+          <RefreshButton
+            variant="outline"
+            onClick={() => void query.refetch()}
+            label={t("cp.common.refresh")}
+          ></RefreshButton>
         </div>
       ) : null}
       <dl className="grid grid-cols-2 gap-5 border-border py-5 md:grid-cols-4">
@@ -94,7 +95,6 @@ function OperationsOverview() {
           </div>
         ))}
       </dl>
-      <CpAgentsTable embedded />
       <OperationsAttentionCards />
     </div>
   );

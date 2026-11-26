@@ -1,4 +1,8 @@
-import { apiErrorReason, type CloudObject, type ClusterEntry } from "@kuintessence/shared/browser";
+import {
+  apiErrorReason,
+  type ClusterEntry,
+  type NetDriveListItem,
+} from "@kuintessence/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowUp,
@@ -56,21 +60,6 @@ export interface PathPickerSelection {
   siteId?: string;
   name?: string;
   size?: number | null;
-}
-
-interface NetDriveListResp {
-  success: true;
-  data: {
-    files: Array<{
-      id: string;
-      path: string;
-      size: number;
-      mtime: string;
-      canUse: boolean;
-      canDelete: boolean;
-    }>;
-    total: number;
-  };
 }
 
 interface ClusterResp {
@@ -242,7 +231,7 @@ export function PathPickerSheet({
 
   const cloudQ = useQuery({
     queryKey: ["files-cloud", activeOrganizationId],
-    queryFn: () => listAllNetDriveFiles() as Promise<NetDriveListResp>,
+    queryFn: listAllNetDriveFiles,
     enabled: open && locations.includes("cloud"),
     refetchInterval: open ? 30_000 : false,
   });
@@ -266,21 +255,7 @@ export function PathPickerSheet({
     refetchInterval: open ? 30_000 : false,
   });
 
-  const cloudObjects: CloudObject[] = useMemo(
-    () =>
-      (cloudQ.data?.data.files ?? []).map((file) => ({
-        id: file.id,
-        userId: "",
-        key: file.path,
-        size: file.size,
-        contentType: "application/octet-stream",
-        createdAt: file.mtime,
-        modifiedAt: file.mtime,
-        etag: "",
-        canUse: file.canUse === true,
-      })),
-    [cloudQ.data],
-  );
+  const cloudObjects = useMemo(() => cloudQ.data?.data.files ?? [], [cloudQ.data]);
   const cloudRows = useMemo(
     () => buildCloudBrowserRows(cloudObjects, cloudPrefix),
     [cloudObjects, cloudPrefix],
@@ -716,7 +691,7 @@ function CloudBrowser({
                     </TableRow>
                   );
                 }
-                const selected = selectedPath === row.obj.key;
+                const selected = selectedPath === row.obj.path;
                 const usable = cloudObjectCanUse(row.obj);
                 const FileIcon = selected ? Check : File;
                 return (
@@ -728,7 +703,7 @@ function CloudBrowser({
                       onSelect({
                         location: "cloud",
                         mode,
-                        path: row.obj.key,
+                        path: row.obj.path,
                         id: row.obj.id,
                         name: row.displayName,
                         size: row.obj.size,
@@ -766,7 +741,7 @@ function CloudBrowser({
                       {fmtBytes(row.obj.size)}
                     </TableCell>
                     <TableCell className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground md:table-cell">
-                      {relativeFromNow(row.obj.modifiedAt, undefined, language)}
+                      {relativeFromNow(row.obj.mtime, undefined, language)}
                     </TableCell>
                     {mode === "directory" ? <TableCell className="px-3 py-2" /> : null}
                   </TableRow>
@@ -1048,7 +1023,7 @@ function BrowserBody({ loading, error, empty, children }: BrowserBodyProps) {
 function isSelectionConfirmable(
   selection: PathPickerSelection | null,
   context: {
-    cloudObjects: CloudObject[];
+    cloudObjects: NetDriveListItem[];
     cloudReady: boolean;
     clusterEntries: ClusterEntry[];
     clusterPath: string;
@@ -1066,7 +1041,7 @@ function isSelectionConfirmable(
     if (selection.mode === "directory") return true;
     return context.cloudObjects.some(
       (entry) =>
-        entry.id === selection.id && entry.key === selection.path && cloudObjectCanUse(entry),
+        entry.id === selection.id && entry.path === selection.path && cloudObjectCanUse(entry),
     );
   }
   if (!context.clusterReady || selection.agentId !== context.clusterAgentId) return false;
@@ -1078,7 +1053,7 @@ function isSelectionConfirmable(
   );
 }
 
-function cloudObjectCanUse(entry: CloudObject): boolean {
+function cloudObjectCanUse(entry: NetDriveListItem): boolean {
   return entry.canUse === true;
 }
 

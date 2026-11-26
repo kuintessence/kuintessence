@@ -267,6 +267,7 @@
           "approve": "审批外部付款凭证"
         },
         "case": {
+          "retain": "管理案件证据保留",
           "publish": "批准案件存证"
         },
         "disclosure": {
@@ -336,6 +337,7 @@
           "approve": "确认外部付款事实与更正、交换双方签名并重试存证；包含合同查看，不授予转账或额度发行权限。"
         },
         "case": {
+          "retain": "可归档、延长保留、冻结及清除获准接收的案件证据正文。",
           "publish": "独立批准或撤回本机构案件材料的长期私有链存证；不授予材料披露、仲裁或财务操作权限。"
         },
         "disclosure": {
@@ -368,6 +370,51 @@
       "empty": "暂无合作协议",
       "back": "返回协议列表",
       "importTerms": "导入协议条款",
+      "editFields": "按字段编辑协议",
+      "addRow": "添加到{{name}}",
+      "removeRow": "移除第 {{number}} 项",
+      "enableField": "设置{{name}}",
+      "correctJson": "请先修正协议 JSON，再按字段编辑。",
+      "fields": {
+        "agreementRevisionId": "协议修订 ID",
+        "sourceSiteId": "委托站点 ID",
+        "targetSiteId": "执行站点 ID",
+        "mode": "合作模式",
+        "budgetDomainId": "额度域 ID",
+        "epoch": "额度周期 ID",
+        "unit": "额度单位",
+        "budgetLimit": "总额度",
+        "maxTaskAmount": "单任务额度上限",
+        "maxReservations": "累计预留次数上限",
+        "attestationLimits": "存证积压限制",
+        "maxOutstandingTasks": "待存证任务数上限",
+        "maxOutstandingAmount": "待存证额度上限",
+        "maxOutstandingAgeSec": "最大待存证时长（秒）",
+        "validFrom": "生效时间（ISO 8601 UTC）",
+        "validUntil": "失效时间（ISO 8601 UTC）",
+        "templates": "允许的模板",
+        "originSiteId": "模板来源站点 ID",
+        "kind": "模板类型",
+        "id": "模板 ID",
+        "revision": "模板修订",
+        "digest": "模板摘要（sha256:…）",
+        "resourceLimit": "资源上限",
+        "cpus": "CPU 核数",
+        "memoryMb": "内存（MB）",
+        "gpus": "GPU 数量",
+        "wallTimeSec": "运行时长（秒）",
+        "executionTargets": "执行队列",
+        "providerOrgId": "算力提供方组织 ID",
+        "clusterId": "集群 ID",
+        "agentId": "Agent ID",
+        "queueId": "队列 ID",
+        "resultPolicy": "结果文件授权",
+        "inputPolicy": "输入文件授权",
+        "maxFiles": "文件数上限",
+        "maxBytes": "总字节数上限",
+        "availableUntil": "可用截止时间（ISO 8601 UTC）",
+        "termsDigest": "合同材料摘要（sha256:…）"
+      },
       "termsFile": "条款文件",
       "termsJson": "条款 JSON",
       "review": "核对条款",
@@ -1174,6 +1221,14 @@
       "retryConfirmation": "使用原恢复记录重试存证，不会再次批准或应用收费。"
     },
     "tasks": {
+      "inputDescriptor": "模板输入名",
+      "inputType": "输入类型",
+      "inputPath": "交付相对路径",
+      "removeInput": "移除文件",
+      "selectFile": "从云盘选择输入文件",
+      "selectFileHelp": "接收方按清单中的相对路径读取所选文件。",
+      "removeGroup": "移除输入",
+      "addInput": "添加云盘输入",
       "title": "联邦任务",
       "new": "提交任务",
       "task": "任务",
@@ -1370,6 +1425,7 @@
       }
     },
     "market": {
+      "reopen": "重新发布需求",
       "title": "任务市场",
       "directory": "需求目录",
       "operations": "本机构操作",

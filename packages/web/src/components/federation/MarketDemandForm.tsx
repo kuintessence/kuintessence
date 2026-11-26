@@ -1,5 +1,6 @@
 import {
   MarketDemandSchema,
+  type MarketDemandState,
   type MarketProposalInput,
 } from "@kuintessence/shared/federation/market";
 import { useId, useState } from "react";
@@ -9,11 +10,13 @@ import { Input } from "../ui/input";
 
 export function MarketDemandForm({
   localSiteId,
+  previous,
   disabled,
   onReview,
   onCancel,
 }: {
   localSiteId: string;
+  previous?: MarketDemandState;
   disabled: boolean;
   onReview: (input: MarketProposalInput) => void;
   onCancel: () => void;
@@ -32,6 +35,9 @@ export function MarketDemandForm({
         const demand = MarketDemandSchema.safeParse({
           protocolVersion: 1,
           demandId: crypto.randomUUID(),
+          ...(previous
+            ? { reopens: { demandId: previous.demand.demandId, version: previous.version } }
+            : {}),
           sourceSiteId: localSiteId,
           createdAt: new Date().toISOString(),
           expiresAt: Number.isFinite(expiresAt) ? new Date(expiresAt).toISOString() : "",
@@ -50,7 +56,9 @@ export function MarketDemandForm({
         if (demand.success) onReview({ operation: "publish-demand", demand: demand.data });
       }}
     >
-      <h3 className="font-semibold">{t("federation.market.publish")}</h3>
+      <h3 className="font-semibold">
+        {t(previous ? "federation.market.reopen" : "federation.market.publish")}
+      </h3>
       <p className="text-sm text-muted-foreground">{t("federation.market.publicWarning")}</p>
       <fieldset disabled={disabled} className="grid gap-4 sm:grid-cols-2">
         {[
@@ -80,7 +88,16 @@ export function MarketDemandForm({
                 step={numeric ? 1 : undefined}
                 maxLength={field === "title" ? 160 : 64}
                 defaultValue={
-                  numeric ? { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 60 }[field] : undefined
+                  numeric
+                    ? (previous?.demand.resources ?? {
+                        cpus: 1,
+                        memoryMb: 128,
+                        gpus: 0,
+                        wallTimeSec: 60,
+                      })[field as "cpus" | "memoryMb" | "gpus" | "wallTimeSec"]
+                    : field === "title" || field === "platform" || field === "architecture"
+                      ? previous?.demand[field]
+                      : undefined
                 }
               />
             </label>
@@ -91,6 +108,7 @@ export function MarketDemandForm({
           <textarea
             id={`${id}-description`}
             name="description"
+            defaultValue={previous?.demand.description}
             maxLength={4096}
             rows={3}
             className="w-full rounded-md border border-input bg-background p-3"

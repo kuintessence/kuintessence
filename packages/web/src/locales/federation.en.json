@@ -267,6 +267,7 @@
           "approve": "Approve external payment receipts"
         },
         "case": {
+          "retain": "Manage evidence retention",
           "publish": "Approve case publication"
         },
         "disclosure": {
@@ -336,6 +337,7 @@
           "approve": "Confirm external payment facts and corrections, exchange signatures and retry evidence; includes agreement reading, not bank transfers or credit issuance."
         },
         "case": {
+          "retain": "Archive, extend, hold or explicitly purge received case evidence.",
           "publish": "Independently approve or revoke durable private-ledger storage of this institution’s case evidence. Grants no disclosure, arbitration or financial authority."
         },
         "disclosure": {
@@ -368,6 +370,51 @@
       "empty": "No cooperation agreements",
       "back": "Back to agreements",
       "importTerms": "Import agreement terms",
+      "editFields": "Edit agreement fields",
+      "addRow": "Add to {{name}}",
+      "removeRow": "Remove item {{number}}",
+      "enableField": "Include {{name}}",
+      "correctJson": "Correct the terms JSON before opening it in the field editor.",
+      "fields": {
+        "agreementRevisionId": "Agreement revision ID",
+        "sourceSiteId": "Delegating site ID",
+        "targetSiteId": "Executing site ID",
+        "mode": "Cooperation mode",
+        "budgetDomainId": "Allowance domain ID",
+        "epoch": "Allowance epoch ID",
+        "unit": "Allowance unit",
+        "budgetLimit": "Total allowance",
+        "maxTaskAmount": "Per-task allowance limit",
+        "maxReservations": "Maximum reservations",
+        "attestationLimits": "Attestation limits",
+        "maxOutstandingTasks": "Maximum outstanding tasks",
+        "maxOutstandingAmount": "Maximum outstanding amount",
+        "maxOutstandingAgeSec": "Maximum outstanding age (seconds)",
+        "validFrom": "Valid from (ISO 8601 UTC)",
+        "validUntil": "Valid until (ISO 8601 UTC)",
+        "templates": "Allowed templates",
+        "originSiteId": "Template origin site ID",
+        "kind": "Template type",
+        "id": "Template ID",
+        "revision": "Template revision",
+        "digest": "Template digest (sha256:…)",
+        "resourceLimit": "Resource limits",
+        "cpus": "CPU cores",
+        "memoryMb": "Memory (MB)",
+        "gpus": "GPUs",
+        "wallTimeSec": "Wall time (seconds)",
+        "executionTargets": "Execution queues",
+        "providerOrgId": "Provider organization ID",
+        "clusterId": "Cluster ID",
+        "agentId": "Agent ID",
+        "queueId": "Queue ID",
+        "resultPolicy": "Result file authorization",
+        "inputPolicy": "Input file authorization",
+        "maxFiles": "Maximum file count",
+        "maxBytes": "Maximum total bytes",
+        "availableUntil": "Available until (ISO 8601 UTC)",
+        "termsDigest": "Contract material digest (sha256:…)"
+      },
       "termsFile": "Terms file",
       "termsJson": "Terms JSON",
       "review": "Review terms",
@@ -1174,6 +1221,14 @@
       "retryConfirmation": "Retry the existing attestation using its recovery record. This does not approve or apply the charge again."
     },
     "tasks": {
+      "inputDescriptor": "Template input name",
+      "inputType": "Input type",
+      "inputPath": "Relative delivery path",
+      "removeInput": "Remove file",
+      "selectFile": "Select a NetDrive input file",
+      "selectFileHelp": "The recipient reads the selected file at its relative path in the inventory.",
+      "removeGroup": "Remove input",
+      "addInput": "Add NetDrive input",
       "title": "Federation tasks",
       "new": "New task",
       "task": "Task",
@@ -1370,6 +1425,7 @@
       }
     },
     "market": {
+      "reopen": "Reopen demand",
       "title": "Task market",
       "directory": "Demand directory",
       "operations": "Institution operations",

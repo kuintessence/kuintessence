@@ -58,9 +58,9 @@ const cases = [
   {
     id: "cost-rates-form",
     error: "cost-rates-load-error",
-    path: "/preferences/global",
+    path: "/preferences/global/cost-rates",
     form: <CostRatesForm />,
-    data: { spec: { costRates: { cluster: 1 } } },
+    data: { clusters: [], rates: {}, legacyRates: {} },
     save: "cost-rates-save",
   },
 ];

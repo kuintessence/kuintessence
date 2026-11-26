@@ -5,6 +5,7 @@ import {
   dataLocations,
   dataUploadSessions,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { and, eq } from "drizzle-orm";
@@ -295,7 +296,7 @@ export class DataMarketObjectUploadService implements DataUploadPort {
 
 export class PgDataMarketObjectUploadRepository implements DataMarketObjectUploadRepository {
   constructor(
-    private readonly db: PgDb,
+    private readonly db: PgDb | PgTransaction,
     private readonly bucket: string,
   ) {}
 

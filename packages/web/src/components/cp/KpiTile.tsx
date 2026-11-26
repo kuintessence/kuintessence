@@ -30,8 +30,8 @@ export function KpiTile({
   testId,
 }: KpiTileProps) {
   return (
-    <Card data-testid={testId} className="flex min-h-24 flex-col">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3 pb-1">
+    <Card data-testid={testId} className="flex min-h-20 flex-col">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 p-2 pb-1">
         <CardTitle className="min-w-0 text-sm leading-snug font-medium text-muted-foreground">
           {title}
           {titleSuffix ? (
@@ -43,7 +43,7 @@ export function KpiTile({
         </CardTitle>
         {Icon ? <Icon className={cn("h-4 w-4 shrink-0", toneClasses[tone])} aria-hidden /> : null}
       </CardHeader>
-      <CardContent className="flex flex-1 flex-col justify-end p-3 pt-1">
+      <CardContent className="flex flex-1 flex-col justify-end p-2 pt-1">
         <div
           className="text-xl font-semibold tracking-tight tabular-nums"
           data-testid={testId ? `${testId}-value` : undefined}

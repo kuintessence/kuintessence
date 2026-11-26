@@ -86,10 +86,11 @@ export function MeteringPage({
   const organizationName = useOrganizationName(grouping === "org");
   const groupLabel = (id: string) => (grouping === "org" ? organizationName(id) : id);
 
+  const [format, setFormat] = useState("csv");
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  async function onExportCsv(): Promise<void> {
+  async function onExport(): Promise<void> {
     if (!fromIso || !toIso || rangeError) return;
     setExporting(true);
     setExportError(null);
@@ -99,13 +100,12 @@ export function MeteringPage({
         to: toIso,
         period,
         grouping,
-        format: "csv",
-        limit: String(QUERY_LIMIT),
+        format,
       });
       if (activeOrganizationId) qs.set("orgIds", activeOrganizationId);
       await downloadAuthedFile(
         `/metering/export?${qs.toString()}`,
-        `metering-${period}-${grouping}.csv`,
+        `metering-${period}-${grouping}.${format}`,
       );
     } catch (err) {
       setExportError(toUserFacingError(err, t("cp.metering.loadFailed")));
@@ -114,24 +114,116 @@ export function MeteringPage({
     }
   }
 
+  const overview = q.error ? null : q.isLoading ? (
+    <div className="text-sm text-muted-foreground">{t("cp.metering.loading")}</div>
+  ) : rows.length === 0 ? (
+    <div
+      className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
+      data-testid="metering-empty"
+    >
+      {t("cp.metering.empty")}
+    </div>
+  ) : (
+    <>
+      {q.data && q.data.total > rows.length ? (
+        <div className="text-xs text-muted-foreground" data-testid="metering-partial-result">
+          {t("cp.metering.partialResult", { shown: rows.length, total: q.data.total })}
+        </div>
+      ) : null}
+      <section>
+        <CardContent className="pt-4">
+          <div
+            className="overflow-x-auto overscroll-x-contain border-border"
+            data-testid="metering-table-scroll"
+          >
+            <Table className="min-w-[44rem] w-full text-sm" data-testid="metering-table">
+              <TableHeader className=" text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <TableRow>
+                  <TableHead className="px-3 py-2 font-medium">
+                    {t("cp.metering.col.key")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium text-right">
+                    {t("cp.metering.col.cpuHours")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium text-right">
+                    {t("cp.metering.col.gpuHours")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium text-right">
+                    {t("cp.metering.col.memMbHours")}
+                  </TableHead>
+                  <TableHead className="px-3 py-2 font-medium text-right">
+                    {t("cp.metering.col.jobCount")}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r, i) => (
+                  <TableRow
+                    key={r.groupKey}
+                    data-testid={`metering-row-${i}`}
+                    className=" border-border last:border-b-0"
+                  >
+                    <TableCell className="px-3 py-2 text-xs" title={r.groupKey}>
+                      {groupLabel(r.groupKey)}
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
+                      {hours(r.cpuCoreSeconds)}
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
+                      {hours(r.gpuSeconds)}
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
+                      {hours(r.memoryMbSeconds)}
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
+                      {r.jobCount.toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </section>
+
+      <section>
+        <CardHeader>
+          <CardTitle>{t("cp.metering.col.cpuHours")}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <MeteringChart rows={rows} groupLabel={groupLabel} />
+        </CardContent>
+      </section>
+    </>
+  );
   return (
     <PageShell data-testid="cp-metering-page">
       <PageHeader
         title={t("cp.metering.title")}
         subtitle={t("cp.metering.subtitle")}
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="metering-export"
-            disabled={exporting || rows.length === 0 || Boolean(rangeError)}
-            onClick={onExportCsv}
-          >
-            {exporting ? t("cp.metering.exporting") : t("cp.metering.export")}
-          </Button>
+          <>
+            <NativeSelect
+              aria-label={t("cp.metering.exportFormat")}
+              value={format}
+              onChange={(e) => setFormat(e.target.value)}
+            >
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+              <option value="parquet">Parquet</option>
+            </NativeSelect>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="metering-export"
+              disabled={exporting || rows.length === 0 || Boolean(rangeError)}
+              onClick={onExport}
+            >
+              {exporting ? t("cp.metering.exporting") : t("cp.metering.export")}
+            </Button>
+          </>
         }
       />
-      {showWebhooks ? <FunctionMaps ids={["G10"]} /> : null}
 
       {exportError ? (
         <div className="text-xs text-status-failed" data-testid="metering-export-error">
@@ -146,8 +238,8 @@ export function MeteringPage({
       ) : null}
 
       <section>
-        <CardContent className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="flex flex-col gap-1">
+        <CardContent className="grid grid-cols-1 gap-3 py-3 sm:grid-cols-2 lg:grid-cols-[minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(0,1.5fr)_minmax(0,1.5fr)]">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-period" className="text-xs font-medium">
               {t("cp.metering.periodLabel")}
             </label>
@@ -164,7 +256,7 @@ export function MeteringPage({
               ))}
             </NativeSelect>
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-grouping" className="text-xs font-medium">
               {t("cp.metering.groupingLabel")}
             </label>
@@ -181,7 +273,7 @@ export function MeteringPage({
               ))}
             </NativeSelect>
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-from" className="text-xs font-medium">
               {t("cp.metering.from")}
             </label>
@@ -193,7 +285,7 @@ export function MeteringPage({
               onChange={(e) => setFrom(e.target.value)}
             />
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-col gap-1">
             <label htmlFor="metering-to" className="text-xs font-medium">
               {t("cp.metering.to")}
             </label>
@@ -225,88 +317,8 @@ export function MeteringPage({
             {t("common.retry")}
           </Button>
         </div>
-      ) : q.isLoading ? (
-        <div className="text-sm text-muted-foreground">{t("cp.metering.loading")}</div>
-      ) : rows.length === 0 ? (
-        <div
-          className="flex h-32 items-center justify-center border-border text-sm text-muted-foreground"
-          data-testid="metering-empty"
-        >
-          {t("cp.metering.empty")}
-        </div>
-      ) : (
-        <>
-          {q.data && q.data.total > rows.length ? (
-            <div className="text-xs text-muted-foreground" data-testid="metering-partial-result">
-              {t("cp.metering.partialResult", { shown: rows.length, total: q.data.total })}
-            </div>
-          ) : null}
-          <section>
-            <CardContent className="pt-4">
-              <div
-                className="overflow-x-auto overscroll-x-contain border-border"
-                data-testid="metering-table-scroll"
-              >
-                <Table className="min-w-[44rem] w-full text-sm" data-testid="metering-table">
-                  <TableHeader className=" text-left text-xs uppercase tracking-wide text-muted-foreground">
-                    <TableRow>
-                      <TableHead className="px-3 py-2 font-medium">
-                        {t("cp.metering.col.key")}
-                      </TableHead>
-                      <TableHead className="px-3 py-2 font-medium text-right">
-                        {t("cp.metering.col.cpuHours")}
-                      </TableHead>
-                      <TableHead className="px-3 py-2 font-medium text-right">
-                        {t("cp.metering.col.gpuHours")}
-                      </TableHead>
-                      <TableHead className="px-3 py-2 font-medium text-right">
-                        {t("cp.metering.col.memMbHours")}
-                      </TableHead>
-                      <TableHead className="px-3 py-2 font-medium text-right">
-                        {t("cp.metering.col.jobCount")}
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {rows.map((r, i) => (
-                      <TableRow
-                        key={r.groupKey}
-                        data-testid={`metering-row-${i}`}
-                        className=" border-border last:border-b-0"
-                      >
-                        <TableCell className="px-3 py-2 text-xs" title={r.groupKey}>
-                          {groupLabel(r.groupKey)}
-                        </TableCell>
-                        <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
-                          {hours(r.cpuCoreSeconds)}
-                        </TableCell>
-                        <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
-                          {hours(r.gpuSeconds)}
-                        </TableCell>
-                        <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
-                          {hours(r.memoryMbSeconds)}
-                        </TableCell>
-                        <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">
-                          {r.jobCount.toLocaleString()}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </section>
-
-          <section>
-            <CardHeader>
-              <CardTitle>{t("cp.metering.col.cpuHours")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <MeteringChart rows={rows} groupLabel={groupLabel} />
-            </CardContent>
-          </section>
-        </>
-      )}
+      ) : null}
+      {showWebhooks ? <FunctionMaps ids={["G10"]} dashboard={overview} /> : overview}
 
       {showWebhooks ? <MeteringWebhooks organizationId={activeOrganizationId} /> : null}
     </PageShell>

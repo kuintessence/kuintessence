@@ -124,8 +124,8 @@ export class WorkflowAsyncRunner {
         throw new Error("Federation nodes require a canonical principal and active organization");
       if (!this.deps.journal)
         throw new Error("Federation nodes require durable workflow execution");
-      input = { ...input, executionModel: "durable-v2" };
     }
+    if (this.deps.journal) input = { ...input, executionModel: "durable-v2" };
     const resolvedYaml =
       this.deps.resolveNamedReferences || this.deps.prepareFederationPlacement
         ? stringify(wf)

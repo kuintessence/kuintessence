@@ -5,7 +5,7 @@
 升级屏障衔接[持久化引用账本](spack-material-delivery.md)：
 通过离线 DB API `SpackMaterialRollout.execute(command)` 执行
 `inspect`、`pause`、`reconcile`、`activate`，将历史配置对账后显式启用 runtime。
-不是完整生命周期管理：尚无 rollout HTTP API 或 GC。
+升级屏障由离线 CLI 操作。上传回执释放和无引用文件回收由 Registry 维护 API 执行，见[材料交付](spack-material-delivery.md)。
 下架和恢复见[材料生命周期](spack-material-lifecycle.md)；
 附加可见限制需要进一步启用[材料可见策略](spack-material-visibility.md)。
 另提供[离线配置绑定退役](spack-binding-retirement.md)，

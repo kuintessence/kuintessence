@@ -37,12 +37,17 @@ import {
   meteringUsageMonthly,
   meteringUsageRaw,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
-import { and, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, eq, getTableName, gte, inArray, lt, lte, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type {
+  ExportRequest,
   JobUsageRecord,
   MeteringRepository,
   Period,
+  QueryResult,
+  QueryResultRow,
   RawQueryFilter,
   TenantScope,
   UsageBucketRow,
@@ -55,7 +60,18 @@ type BucketTable =
   | typeof meteringUsageMonthly;
 
 export class DrizzleMeteringRepository implements MeteringRepository {
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly connection: PgDb,
+    private readonly db: PgDb | PgTransaction = connection,
+  ) {}
+
+  withRollupTransaction<T>(work: (repo: MeteringRepository) => Promise<T>): Promise<T> {
+    if (this.db !== this.connection) return work(this);
+    return this.connection.transaction(
+      (tx) => work(new DrizzleMeteringRepository(this.connection, tx)),
+      { isolationLevel: "repeatable read" },
+    );
+  }
 
   async insertRaw(record: JobUsageRecord, recordedAt: Date): Promise<UsageRawRow | null> {
     // Idempotent on jobId: if a row already exists, return null so the
@@ -101,10 +117,51 @@ export class DrizzleMeteringRepository implements MeteringRepository {
     return rawDbRowToDomain(row);
   }
 
+  async *streamGroups(scope: TenantScope, req: ExportRequest): AsyncGenerator<QueryResult> {
+    const client = this.connection.$client;
+    const raw = req.period === "raw";
+    const table = client(
+      getTableName(req.period === "raw" ? meteringUsageRaw : bucketTableFor(req.period)),
+    );
+    const time = client(raw ? "started_at" : "bucket_start");
+    const group =
+      req.grouping === "app"
+        ? raw
+          ? client`coalesce(app_template_key,'<no-app>')`
+          : client`'app:unavailable-on-app'::text`
+        : client({ user: "user_id", org: "org_id", cluster: "cluster_name" }[req.grouping]);
+    const filter =
+      scope.kind === "all"
+        ? client`true`
+        : client`org_id = any(${client.array(scope.orgIds)}::uuid[])`;
+    // One statement gives the count and all pages the same MVCC snapshot.
+    const cursor = client<(QueryResultRow & { total: number })[]>`
+      with grouped as (
+        select ${group}::text as "groupKey",
+          sum(cpu_core_seconds)::float8 as "cpuCoreSeconds",sum(gpu_seconds)::float8 as "gpuSeconds",
+          sum(memory_mb_seconds)::float8 as "memoryMbSeconds",sum(storage_mb_seconds)::float8 as "storageMbSeconds",
+          sum(network_egress_mb)::float8 as "networkEgressMb",
+          ${raw ? client`count(*)` : client`sum(job_count)`}::float8 as "jobCount"
+        from ${table} where ${time} between ${req.from}::timestamptz and ${req.to}::timestamptz and ${filter}
+        group by 1
+      )
+      select totals.total,page.* from (select count(*)::int as total from grouped) totals
+      left join (select * from grouped order by "groupKey" collate "C" limit ${req.limit ?? null} offset ${req.offset}) page on true
+      order by page."groupKey" collate "C"
+    `.cursor(512);
+    for await (const batch of cursor) {
+      yield {
+        total: batch[0]?.total ?? 0,
+        rows: batch.flatMap(({ total: _, ...row }) => (row.groupKey === null ? [] : [row])),
+      };
+    }
+  }
+
   async selectRaw(filter: RawQueryFilter): Promise<UsageRawRow[]> {
     const conditions = [];
-    if (filter.from) conditions.push(gte(meteringUsageRaw.startedAt, filter.from));
-    if (filter.to) conditions.push(lte(meteringUsageRaw.startedAt, filter.to));
+    const time = meteringUsageRaw[filter.timeColumn ?? "startedAt"];
+    if (filter.from) conditions.push(gte(time, filter.from));
+    if (filter.to) conditions.push(lte(time, filter.to));
     const scopeCond = scopeToCondition(meteringUsageRaw.orgId, filter.scope);
     if (scopeCond) conditions.push(scopeCond);
     if (filter.finishedBefore) {
@@ -134,7 +191,11 @@ export class DrizzleMeteringRepository implements MeteringRepository {
     return rows.map(bucketDbRowToDomain);
   }
 
-  async upsertBuckets(period: Exclude<Period, "raw">, rows: UsageBucketRow[]): Promise<void> {
+  async upsertBuckets(
+    period: Exclude<Period, "raw">,
+    rows: UsageBucketRow[],
+    add = false,
+  ): Promise<void> {
     if (rows.length === 0) return;
     const table = bucketTableFor(period);
     const values: MeteringUsageBucketInsert[] = rows.map((r) => ({
@@ -150,6 +211,10 @@ export class DrizzleMeteringRepository implements MeteringRepository {
       jobCount: r.jobCount,
     }));
 
+    const value = (column: AnyPgColumn) => {
+      const incoming = sql`excluded.${sql.identifier(column.name)}`;
+      return add ? sql`${column} + ${incoming}` : incoming;
+    };
     // Composite PK: (bucket_start, org_id, user_id, cluster_name) — same
     // for hourly/daily/monthly. The aggregator already collapsed any
     // intra-batch duplicates, so we can ship the values straight in.
@@ -159,12 +224,12 @@ export class DrizzleMeteringRepository implements MeteringRepository {
       .onConflictDoUpdate({
         target: [table.bucketStart, table.orgId, table.userId, table.clusterName],
         set: {
-          cpuCoreSeconds: sqlExcluded("cpu_core_seconds"),
-          gpuSeconds: sqlExcluded("gpu_seconds"),
-          memoryMbSeconds: sqlExcluded("memory_mb_seconds"),
-          storageMbSeconds: sqlExcluded("storage_mb_seconds"),
-          networkEgressMb: sqlExcluded("network_egress_mb"),
-          jobCount: sqlExcluded("job_count"),
+          cpuCoreSeconds: value(table.cpuCoreSeconds),
+          gpuSeconds: value(table.gpuSeconds),
+          memoryMbSeconds: value(table.memoryMbSeconds),
+          storageMbSeconds: value(table.storageMbSeconds),
+          networkEgressMb: value(table.networkEgressMb),
+          jobCount: value(table.jobCount),
         },
       });
   }
@@ -197,11 +262,6 @@ export class DrizzleMeteringRepository implements MeteringRepository {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** Reference the EXCLUDED row in the ON CONFLICT DO UPDATE clause. */
-function sqlExcluded(column: string) {
-  return sql.raw(`excluded."${column}"`);
-}
 
 function bucketTableFor(period: Exclude<Period, "raw">): BucketTable {
   if (period === "hourly") return meteringUsageHourly;

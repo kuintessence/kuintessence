@@ -42,12 +42,13 @@ import { PathPickerSheet } from "../files/PathPickerSheet";
 import { fmtBytes } from "../files/path-picker-utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import { SearchInput } from "../ui/search-input";
+import { WorkflowPanel } from "./WorkflowCreationLayout";
 
 interface NetDriveListResp {
   success: true;
@@ -524,7 +525,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
     return (
       <div className="space-y-4" data-testid="workflow-inputs-step">
         {model.values.length === 0 && model.datasets.length === 0 && model.files.length === 0 && (
-          <p className=" p-5 text-sm text-muted-foreground">
+          <p className="rounded-xl border bg-card p-5 text-sm text-muted-foreground">
             {t(
               model.unresolvedSubworkflowRefs.length
                 ? "workflows.creation.inputs.unresolvedInputs"
@@ -533,7 +534,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
           </p>
         )}
         {model.values.length > 0 && (
-          <Card className=" ">
+          <WorkflowPanel className="rounded-md shadow-none">
             <CardHeader>
               <div>
                 <CardTitle>{t("workflows.creation.inputs.parametersTitle")}</CardTitle>
@@ -608,11 +609,11 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                 </div>
               )}
             </CardContent>
-          </Card>
+          </WorkflowPanel>
         )}
 
         {model.datasets.length > 0 && (
-          <Card className=" ">
+          <WorkflowPanel className="rounded-md shadow-none">
             <CardHeader>
               <CardTitle>{t("workflows.creation.inputs.datasetsTitle")}</CardTitle>
             </CardHeader>
@@ -623,10 +624,10 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                 datasetGroups.map((group) => (
                   <article
                     key={group.nodeId}
-                    className="overflow-hidden border-border "
+                    className="overflow-hidden rounded-lg border border-border bg-background"
                     data-testid={`workflow-dataset-node-${group.nodeId}`}
                   >
-                    <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+                    <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2.5">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold">{group.nodeName}</p>
                         <p className="truncate font-mono text-[11px] text-muted-foreground">
@@ -656,11 +657,11 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                 ))
               )}
             </CardContent>
-          </Card>
+          </WorkflowPanel>
         )}
 
         {model.files.length > 0 && (
-          <Card className=" ">
+          <WorkflowPanel className="rounded-md shadow-none">
             <CardHeader className="flex flex-col items-start gap-3 space-y-0 sm:flex-row sm:justify-between">
               <div>
                 <CardTitle>{t("workflows.creation.inputs.filesTitle")}</CardTitle>
@@ -697,7 +698,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
             <CardContent className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
               <section
                 aria-label={t("workflows.creation.inputs.candidateFiles")}
-                className="min-w-0 border-border p-3 transition-colors "
+                className="min-w-0 rounded-lg border border-border bg-muted/20 p-3 transition-colors hover:border-brand/50"
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => {
                   event.preventDefault();
@@ -750,8 +751,11 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                     <EmptyMessage text={t("workflows.creation.inputs.noCandidates")} />
                   ) : (
                     candidateTrees.map((tree) => (
-                      <div key={tree.key} className="overflow-hidden border-border ">
-                        <div className="flex items-center gap-2 border-b border-border px-2.5 py-2 text-xs font-medium">
+                      <div
+                        key={tree.key}
+                        className="overflow-hidden rounded-md border border-border bg-card"
+                      >
+                        <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-2.5 py-2 text-xs font-medium">
                           {tree.source === "local" ? (
                             <FolderOpen
                               className="h-3.5 w-3.5 text-brand"
@@ -788,10 +792,10 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                   requirementGroups.map((group) => (
                     <article
                       key={group.nodeId}
-                      className="overflow-hidden border-border "
+                      className="overflow-hidden rounded-md border border-border bg-card"
                       data-testid={`workflow-file-node-${group.nodeId}`}
                     >
-                      <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+                      <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2.5">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold">{group.nodeName}</p>
                           <p className="truncate font-mono text-[11px] text-muted-foreground">
@@ -807,7 +811,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                             <fieldset
                               key={requirement.key}
                               aria-label={`${requirement.nodeName} / ${requirement.descriptor}`}
-                              className=" border-border p-3 transition-colors "
+                              className="rounded-lg border border-dashed border-border bg-background p-3 transition-colors focus-within:border-brand"
                               onDragOver={(event) => event.preventDefault()}
                               onDrop={(event) => {
                                 event.preventDefault();
@@ -851,7 +855,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                                     assigned.map((candidate) => (
                                       <span
                                         key={candidate.id}
-                                        className="flex min-w-0 w-full items-center gap-1 px-2 py-1 text-xs text-brand"
+                                        className="flex min-w-0 w-full items-center gap-1 rounded-md bg-brand-soft px-2 py-1 text-xs text-brand"
                                       >
                                         <span
                                           className="min-w-0 flex-1 truncate"
@@ -949,7 +953,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                 )}
               </section>
             </CardContent>
-          </Card>
+          </WorkflowPanel>
         )}
 
         <PathPickerSheet
@@ -1119,7 +1123,7 @@ function DatasetInputPicker({
   if (!requirement.usecaseVersionId) {
     return (
       <section
-        className="space-y-2 p-3"
+        className="space-y-2 rounded-lg border border-status-failed/40 bg-status-failed/10 p-3"
         data-testid={`workflow-dataset-unresolved-${requirement.key}`}
       >
         <p className="text-sm font-semibold">{requirement.descriptor}</p>
@@ -1132,7 +1136,7 @@ function DatasetInputPicker({
 
   return (
     <section
-      className="space-y-2 border-border p-3"
+      className="space-y-2 rounded-lg border border-border bg-muted/10 p-3"
       data-testid={`workflow-dataset-requirement-${requirement.key}`}
     >
       <div className="flex items-center justify-between gap-2">
@@ -1284,7 +1288,7 @@ function CandidateTreeBranches({
     return (
       <details key={node.path} className="group/tree" open={depth <= 3}>
         <summary
-          className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-xs font-medium"
+          className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-xs font-medium hover:bg-muted/40"
           style={{ paddingLeft: `${Math.min(depth, 5) * 10}px` }}
         >
           <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform duration-150 group-open/tree:rotate-90" />
@@ -1332,7 +1336,7 @@ function CandidateFileRow({
   const { t } = useTranslation();
   return (
     <div
-      className="flex w-full items-center pr-2.5 transition-colors "
+      className="flex w-full items-center pr-2.5 transition-colors hover:bg-brand-soft/40"
       style={{ paddingLeft: `${Math.min(depth, 6) * 10 + 20}px` }}
     >
       <button
@@ -1397,19 +1401,12 @@ function UploadOverlay({ progress }: { progress: UploadProgress }) {
               {progress.completed}/{progress.total} · {percent}%
             </span>
           </div>
-          <div
-            role="progressbar"
+          <progress
             aria-label={t("workflows.creation.inputs.uploadingTitle")}
-            aria-valuemin={0}
-            aria-valuemax={progress.total}
-            aria-valuenow={progress.completed}
-            className="h-2 overflow-hidden rounded-full bg-muted"
-          >
-            <div
-              className="h-full bg-brand motion-safe:transition-[width]"
-              style={{ width: `${percent}%` }}
-            />
-          </div>
+            max={progress.total || 1}
+            value={progress.completed}
+            className="kq-transfer-progress h-2 w-full text-brand"
+          />
         </div>
       </DialogContent>
     </Dialog>
@@ -1417,5 +1414,9 @@ function UploadOverlay({ progress }: { progress: UploadProgress }) {
 }
 
 function EmptyMessage({ text }: { text: string }) {
-  return <div className=" border-border p-5 text-center text-sm text-muted-foreground">{text}</div>;
+  return (
+    <div className="rounded-md border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+      {text}
+    </div>
+  );
 }

@@ -443,6 +443,28 @@ describe("HPC Sandbox adapters", () => {
         trustedWrapperSha256: "d".repeat(64),
       },
     };
+    const licensed = {
+      ...sandbox,
+      licensedInputs: [
+        {
+          hostPath: "/site/chem/material",
+          containerPath: "/kq/inputs/POTCAR",
+          sha256: "f".repeat(64),
+        },
+      ],
+    };
+    expect(buildApptainerSandboxArgv(licensed)).toContain(
+      "/site/chem/material:/kq/inputs/POTCAR:ro",
+    );
+    expect(buildApptainerSandboxCommand(licensed, "slurm")).toContain(">/dev/null 2>&1");
+    for (const bad of ["/kq/inputs/input", "/kq/inputs/..", "/kq/inputs/x:rw", "/kq/outputs/x"]) {
+      expect(() =>
+        buildApptainerSandboxArgv({
+          ...licensed,
+          licensedInputs: licensed.licensedInputs.map((m) => ({ ...m, containerPath: bad })),
+        }),
+      ).toThrow("licensed Sandbox input");
+    }
     const restricted = { ...job(sandbox), restrictedNoEgress: true };
     const argv = buildTrustedSandboxArgv(sandbox, buildApptainerSandboxArgv(sandbox));
     expect(argv.slice(argv.indexOf("--cpus"), argv.indexOf("--cpus") + 4)).toEqual([
@@ -807,4 +829,51 @@ describe("Kubernetes Sandbox adapter", () => {
     expect(manifest.spec.template.spec.nodeName).toBeUndefined();
     expect(manifest.spec.template.spec.securityContext).toBeUndefined();
   });
+});
+
+test("PVC staging and collection stop before touching a replacement claim", async () => {
+  const jobId = crypto.randomUUID();
+  const preparationId = crypto.randomUUID();
+  const uid = crypto.randomUUID();
+  let observed = uid;
+  const calls: string[][] = [];
+  const adapter = new K8sAdapter("1.30", {
+    tmpDir: "/tmp",
+    sandboxSeccompProfile: {
+      nodeName: "node-1",
+      localhostProfile: "kq/no-network",
+      assertCurrent: async () => {},
+    },
+    spawner: {
+      run: async (command) => {
+        calls.push(command);
+        return { exitCode: 0, stdout: command[2] === "pvc" ? observed : "", stderr: "" };
+      },
+    },
+  });
+  const sandbox = kubernetesSandbox();
+  for (const mount of sandbox.mounts)
+    mount.relativePath = [
+      "jobs",
+      jobId,
+      preparationId,
+      ...mount.relativePath.split("/").slice(3),
+    ].join("/");
+  const entry = await adapter.identifySandboxPvc(sandbox, jobId);
+  if (!entry) throw new Error("Expected PVC preparation");
+  sandbox.kubernetesArtifactPvcUid = uid;
+  observed = crypto.randomUUID();
+  await expect(adapter.stageSandboxInputs(sandbox, jobId)).rejects.toThrow("identity changed");
+  await expect(adapter.stageSandboxOutputs(sandbox, "kq-job")).rejects.toThrow("identity changed");
+  await expect(adapter.releaseSandboxPvc(entry)).rejects.toThrow("identity changed");
+  expect(calls.some((c) => ["exec", "cp"].includes(c[1] ?? ""))).toBe(false);
+  observed = uid;
+  await adapter.releaseSandboxPvc(entry);
+  expect(calls.find((c) => c.includes("cleanup"))?.slice(-2)).toEqual([jobId, preparationId]);
+  const first = sandbox.mounts[0];
+  if (!first) throw new Error("Expected PVC input");
+  first.relativePath = first.relativePath.replace(preparationId, crypto.randomUUID());
+  await expect(adapter.identifySandboxPvc(sandbox, jobId)).rejects.toThrow(
+    "Invalid Sandbox preparation path",
+  );
 });

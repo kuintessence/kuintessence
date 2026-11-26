@@ -197,3 +197,20 @@ CREATE TABLE IF NOT EXISTS software_executions (
   started INTEGER NOT NULL DEFAULT 0,
   result TEXT
 );
+
+CREATE TABLE IF NOT EXISTS sandbox_pvc_preparations (
+  preparation_id TEXT PRIMARY KEY NOT NULL,
+  job_id TEXT NOT NULL,
+  binding TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sandbox_pvc_preparations_job_idx ON sandbox_pvc_preparations(job_id);
+
+CREATE TABLE IF NOT EXISTS sandbox_pvc_jobs (job_id TEXT PRIMARY KEY NOT NULL);
+
+CREATE TABLE IF NOT EXISTS transfer_download_partials (
+  path TEXT PRIMARY KEY NOT NULL,
+  identity TEXT NOT NULL,
+  version TEXT,
+  touched_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS transfer_download_partials_age ON transfer_download_partials (touched_at);

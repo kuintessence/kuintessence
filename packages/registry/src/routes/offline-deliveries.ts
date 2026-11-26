@@ -53,7 +53,7 @@ export function createOfflineDeliveryRoutes(
         : [],
     );
   });
-  for (const action of ["preflight", "import", "history"] as const) {
+  for (const action of ["verify", "preflight", "import", "history"] as const) {
     app.post(`/offline-deliveries/${action}`, principal, async (c) => {
       if (!service) throw new DeliveryError("DELIVERY_UNAVAILABLE", 503);
       if (
@@ -65,6 +65,10 @@ export function createOfflineDeliveryRoutes(
       const input = await readMaterialJson(c.req.raw.body);
       const subject = c.get("principal").sub;
       c.header("Cache-Control", "private, no-store");
+      if (action === "verify") {
+        await service.verify(input, subject);
+        return c.json({ verified: true });
+      }
       return c.json(
         action === "preflight"
           ? await service.preflight(input, subject)

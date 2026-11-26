@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DataAssetEntryPathSchema } from "../data-market/data-assets";
+import { JobSchedulerLimitsSchema } from "../schemas/job";
 import { QueueIdSchema } from "../schemas/queue";
 
 /** Template-internal reference key — a CEL-safe identifier (F1). */
@@ -33,10 +34,10 @@ export type TransferStrategy = z.infer<typeof TransferStrategySchema>;
 /** Physical resource request / override. All fields optional. */
 export const RequirementsSchema = z.strictObject({
   cpuCores: z.number().int().nonnegative().nullish(),
-  nodeCount: z.number().int().nonnegative().nullish(),
+  nodeCount: JobSchedulerLimitsSchema.shape.nodeCount.nullish(),
   maxWallTime: z.number().int().nonnegative().nullish(),
-  maxCpuTime: z.number().int().nonnegative().nullish(),
-  stopTime: z.number().int().nonnegative().nullish(),
+  maxCpuTime: JobSchedulerLimitsSchema.shape.maxCpuTime.nullish(),
+  stopTime: JobSchedulerLimitsSchema.shape.stopTime.nullish(),
 });
 export type Requirements = z.infer<typeof RequirementsSchema>;
 

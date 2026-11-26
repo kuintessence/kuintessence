@@ -81,3 +81,33 @@ describe("ssh-credential-vault", () => {
     expect(await resolve("agent-unknown")).toBeNull();
   });
 });
+
+test("jump credentials are authorized by name, pinned and resolved afresh on each open", async () => {
+  const encrypted = await encryptSshSecrets(
+    { password: "fixture-only" },
+    "unit-test-wrapping-key-over-32-characters",
+  );
+  const base = { port: 22, username: "user", hostKeySha256: "pinned", secretEncrypted: encrypted };
+  const names: string[] = [];
+  const load = async (name: string) =>
+    name === "dest"
+      ? { ...base, host: "compute.invalid", jumpAgentIds: ["jump"] }
+      : name === "jump"
+        ? { ...base, host: "jump.invalid" }
+        : null;
+  const resolve = makeVaultResolver(load, "unit-test-wrapping-key-over-32-characters");
+  await expect(resolve("dest")).rejects.toThrow("Invalid SSH credential route");
+  await expect(
+    resolve("dest", async () => {
+      throw new Error("revoked");
+    }),
+  ).rejects.toThrow("revoked");
+  expect(
+    (
+      await resolve("dest", async (hop) => {
+        names.push(hop);
+      })
+    )?.jumps?.[0]?.host,
+  ).toBe("jump.invalid");
+  expect(names).toEqual(["jump"]);
+});

@@ -1,3 +1,4 @@
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import type { Command } from "commander";
 import type { CliConfig } from "../lib/config";
 import { loadCliConfig } from "../lib/config";
@@ -22,17 +23,14 @@ import {
 //   - Server may close with code 4404 + reason on auth/session failure
 //   - HTTP 403 during upgrade ⇒ RBAC denial (org_admin or above required)
 //
-// Window resize is forwarded (TTY mode) as a JSON control frame the gateway
-// parses. Out of scope for now:
-//   - SFTP / scp
-//   - ProxyJump / multi-hop
-//   - identity selection on the client side
-//   - local session recording
+// Terminal sessions send resize frames. SFTP relays only subsystem bytes.
 // -----------------------------------------------------------------------------
 
 export interface RunSshCommandOptions {
   agentId: string;
   noTty: boolean;
+  recordPath?: string;
+  sftp?: boolean;
   config: CliConfig;
   stdin: SshStdinLike;
   stdout: SshWriterLike;
@@ -57,39 +55,70 @@ export async function runSshCommand(opts: RunSshCommandOptions): Promise<SshSess
     return { exitCode: 1, reason: "not logged in" };
   }
 
-  const url = buildSshWsUrl(opts.config.serverUrl, opts.agentId);
+  if (opts.sftp && opts.recordPath !== undefined) {
+    const reason = "SFTP transfers cannot be recorded as terminal sessions";
+    opts.stderr.write(`ssh: ${reason}\n`);
+    return { exitCode: 1, reason };
+  }
+  const url =
+    buildSshWsUrl(opts.config.serverUrl, opts.agentId) + (opts.sftp ? "?subsystem=sftp" : "");
   const headers: Record<string, string> = {
     Authorization: `Bearer ${opts.config.token}`,
   };
 
-  let ws: SshWsLike;
+  let fd: number | undefined;
   try {
-    ws = opts.wsFactory(url, headers);
+    if (opts.recordPath !== undefined) {
+      fd = openSync(opts.recordPath, "wx", 0o600);
+      const size = opts.resize?.getSize();
+      writeFileSync(
+        fd,
+        JSON.stringify({
+          version: 2,
+          width: size?.cols ?? 80,
+          height: size?.rows ?? 24,
+          timestamp: Math.floor(Date.now() / 1000),
+        }) + "\n",
+      );
+    }
+    const started = performance.now();
+    const decode = new TextDecoder();
+    const writeEvent = (text: string) => {
+      if (fd !== undefined && text)
+        writeFileSync(fd, JSON.stringify([(performance.now() - started) / 1000, "o", text]) + "\n");
+    };
+    let ws: SshWsLike;
+    try {
+      ws = opts.wsFactory(url, headers);
+    } catch (err) {
+      opts.stderr.write(
+        `ssh: failed to open websocket: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      return { exitCode: 1, reason: "ws open failed" };
+    }
+    const result = await runSshSession({
+      ws: wrapWsForRbac(ws, opts.stderr),
+      stdin: opts.stdin,
+      stdout: opts.stdout,
+      stderr: opts.stderr,
+      isTty: opts.isTty,
+      noTty: opts.noTty,
+      agentId: opts.agentId,
+      resize: opts.resize,
+      recordOutput:
+        fd === undefined
+          ? undefined
+          : (bytes) => writeEvent(decode.decode(bytes, { stream: true })),
+    });
+    writeEvent(decode.decode());
+    return result;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    opts.stderr.write(`ssh: failed to open websocket: ${msg}\n`);
-    return { exitCode: 1, reason: "ws open failed" };
+    const reason = err instanceof Error ? err.message : String(err);
+    opts.stderr.write(`ssh: ${reason}\n`);
+    return { exitCode: 1, reason };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-
-  // We intercept 403 close reasons emitted by the WS runtime when the HTTP
-  // upgrade is rejected. Bun surfaces this as the standard 1006 close code
-  // with a reason like "Unexpected server response: 403". We translate it
-  // into a friendlier message before delegating to runSshSession's banner /
-  // exit-code logic. To do this we wrap the close listener.
-  const wrapped = wrapWsForRbac(ws, opts.stderr);
-
-  const result = await runSshSession({
-    ws: wrapped,
-    stdin: opts.stdin,
-    stdout: opts.stdout,
-    stderr: opts.stderr,
-    isTty: opts.isTty,
-    noTty: opts.noTty,
-    agentId: opts.agentId,
-    resize: opts.resize,
-  });
-
-  return result;
 }
 
 /**
@@ -160,22 +189,13 @@ function looksLike403(evt: CloseEvent): boolean {
 // -----------------------------------------------------------------------------
 
 function defaultWsFactory(url: string, headers: Record<string, string>): SshWsLike {
-  // Bun's native WebSocket constructor accepts `{ headers }` — verified on
-  // Bun >= 1.1. If the runtime ever drops this, the catch falls back to a
-  // ?token= query string with a one-line warning. (Browsers can't set
-  // Authorization on `new WebSocket()` either — same workaround.)
-  try {
-    // biome-ignore lint/suspicious/noExplicitAny: Bun-specific options bag
-    return new WebSocket(url, { headers } as any) as unknown as SshWsLike;
-  } catch {
-    const token = (headers.Authorization ?? "").replace(/^Bearer\s+/, "");
-    const sep = url.includes("?") ? "&" : "?";
-    const fallbackUrl = `${url}${sep}token=${encodeURIComponent(token)}`;
-    process.stderr.write(
-      "ssh: header auth unavailable, falling back to query token (less secure for shared shell history)\n",
-    );
-    return new WebSocket(fallbackUrl) as unknown as SshWsLike;
-  }
+  // The DOM constructor omits the options overload provided by the Bun runtime.
+  const BunSocket = WebSocket as typeof WebSocket & {
+    new (url: string, options: Bun.WebSocketOptions): Bun.WebSocket;
+  };
+  const ws = new BunSocket(url, { headers });
+  ws.binaryType = "arraybuffer";
+  return ws;
 }
 
 /**
@@ -218,52 +238,58 @@ export function registerSshCommand(program: Command): void {
     .command("ssh <agentId>")
     .description("Open an interactive shell on the cluster login node behind <agentId>")
     .option("--no-tty", "Don't put stdin in raw mode (useful for piping)")
-    .action(async (agentId: string, opts: { tty?: boolean }) => {
-      const config = loadCliConfig();
-      // commander negates `--no-tty` into `opts.tty === false`. Default is on.
-      const noTty = opts.tty === false;
+    .option("--sftp-stdio", "Relay the SFTP subsystem on binary stdin/stdout")
+    .option("--record <file>", "Save terminal output as a new private asciinema cast file")
+    .action(
+      async (agentId: string, opts: { tty?: boolean; record?: string; sftpStdio?: boolean }) => {
+        const config = loadCliConfig();
+        // commander negates `--no-tty` into `opts.tty === false`. Default is on.
+        const noTty = opts.tty === false || opts.sftpStdio === true;
 
-      // Restore TTY raw mode on unexpected exit — leaking raw mode wedges
-      // the user's terminal. Idempotent: runSshSession also restores in its
-      // own cleanup path.
-      const restoreTty = (): void => {
+        // Restore TTY raw mode on unexpected exit — leaking raw mode wedges
+        // the user's terminal. Idempotent: runSshSession also restores in its
+        // own cleanup path.
+        const restoreTty = (): void => {
+          try {
+            if (process.stdin.isTTY) process.stdin.setRawMode?.(false);
+          } catch {
+            /* ignore */
+          }
+        };
+        const onUncaught = (err: Error): void => {
+          restoreTty();
+          process.stderr.write(`ssh: ${err.message}\n`);
+          process.exit(1);
+        };
+        const onSignal = (): void => {
+          restoreTty();
+          process.exit(130);
+        };
+        process.on("uncaughtException", onUncaught);
+        process.on("SIGTERM", onSignal);
+        process.on("SIGHUP", onSignal);
+
         try {
-          if (process.stdin.isTTY) process.stdin.setRawMode?.(false);
-        } catch {
-          /* ignore */
+          const result = await runSshCommand({
+            agentId,
+            noTty,
+            recordPath: opts.record,
+            sftp: opts.sftpStdio,
+            config,
+            stdin: process.stdin as unknown as SshStdinLike,
+            stdout: process.stdout as unknown as SshWriterLike,
+            stderr: process.stderr as unknown as SshWriterLike,
+            isTty: Boolean(process.stdin.isTTY),
+            wsFactory: defaultWsFactory,
+            resize: processResizeSource(),
+          });
+          restoreTty();
+          process.exit(result.exitCode);
+        } finally {
+          process.off("uncaughtException", onUncaught);
+          process.off("SIGTERM", onSignal);
+          process.off("SIGHUP", onSignal);
         }
-      };
-      const onUncaught = (err: Error): void => {
-        restoreTty();
-        process.stderr.write(`ssh: ${err.message}\n`);
-        process.exit(1);
-      };
-      const onSignal = (): void => {
-        restoreTty();
-        process.exit(130);
-      };
-      process.on("uncaughtException", onUncaught);
-      process.on("SIGTERM", onSignal);
-      process.on("SIGHUP", onSignal);
-
-      try {
-        const result = await runSshCommand({
-          agentId,
-          noTty,
-          config,
-          stdin: process.stdin as unknown as SshStdinLike,
-          stdout: process.stdout as unknown as SshWriterLike,
-          stderr: process.stderr as unknown as SshWriterLike,
-          isTty: Boolean(process.stdin.isTTY),
-          wsFactory: defaultWsFactory,
-          resize: processResizeSource(),
-        });
-        restoreTty();
-        process.exit(result.exitCode);
-      } finally {
-        process.off("uncaughtException", onUncaught);
-        process.off("SIGTERM", onSignal);
-        process.off("SIGHUP", onSignal);
-      }
-    });
+      },
+    );
 }

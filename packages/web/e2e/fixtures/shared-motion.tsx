@@ -56,12 +56,16 @@ function MotionFixture() {
         onClick={() =>
           setFile({
             id: "6bf395e6-7a4b-4f0c-a5b6-d2f5d39b8372",
-            userId: "fixture-user",
-            key: "results/output.txt",
+            ownerId: "fixture-user",
+            sha256: "a".repeat(64),
+            storageKey: "objects/example",
+            canUse: true,
+            canDelete: true,
+            path: "results/output.txt",
             size: 12,
             contentType: "text/plain",
             createdAt: "2026-09-07T00:00:00Z",
-            modifiedAt: "2026-09-07T00:00:00Z",
+            mtime: "2026-09-07T00:00:00Z",
             etag: "fixture",
           })
         }

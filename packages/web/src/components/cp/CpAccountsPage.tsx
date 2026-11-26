@@ -1,18 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, ServerCog, UsersRound } from "lucide-react";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useActiveOrganizationId } from "../../lib/active-organization";
 import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
-import { listSandboxExecutionAccounts } from "../../lib/sandbox-client";
+import {
+  listSandboxExecutionAccounts,
+  type SandboxExecutionAccount,
+} from "../../lib/sandbox-client";
 import { useMediaQuery } from "../../lib/use-media-query";
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { DataTable } from "../ui/data-table";
 import {
   Dialog,
   DialogBody,
@@ -22,6 +25,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { PageHeader } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { EditAccountQueues } from "./EditAccountQueues";
 import { RegisterExecutionAccount } from "./RegisterExecutionAccount";
 import { SandboxMappingReviewPanel } from "./SandboxMappingReviewPanel";
@@ -31,6 +39,10 @@ export function CpAccountsPage() {
   const activeOrganizationId = useActiveOrganizationId();
   const queryClient = useQueryClient();
   const organizationName = useOrganizationName();
+  const [view, setView] = useState("accounts");
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("");
+  const [backend, setBackend] = useState("");
   const [statusTarget, setStatusTarget] = useState<(typeof accounts)[number] | null>(null);
   const [registering, setRegistering] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -77,150 +89,186 @@ export function CpAccountsPage() {
     if (!canRegister) setRegistering(false);
   }, [canRegister]);
 
+  const columns: ColumnDef<SandboxExecutionAccount>[] = [
+    {
+      accessorKey: "displayName",
+      header: t("cp.accounts.summary.accounts"),
+      size: 205,
+      cell: ({ row: { original } }) => (
+        <div title={original.id}>
+          <div className="font-medium">{original.displayName}</div>
+          <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+            <span className="font-mono">{original.agentId}</span>
+            {original.sharedService && <span>{t("cp.accounts.summary.shared")}</span>}
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "provider",
+      accessorFn: (account) => organizationName(account.providerOrgId),
+      header: t("operations.resources.provider"),
+      size: 155,
+    },
+    { accessorKey: "backendType", header: t("cp.accounts.backend"), size: 135 },
+    {
+      id: "identity",
+      accessorFn: (account) =>
+        account.backendType === "unix"
+          ? `${account.username ?? "—"} (${account.uid ?? "—"}:${account.gid ?? "—"})`
+          : `${account.namespace ?? "—"}/${account.serviceAccount ?? "—"}`,
+      header: t("cp.accounts.identity"),
+      size: 170,
+      cell: ({ getValue }) => <span className="font-mono">{String(getValue())}</span>,
+    },
+    {
+      id: "queues",
+      accessorFn: (account) =>
+        account.backendType === "kubernetes"
+          ? t("cp.accounts.queuesNotApplicable")
+          : account.allowedQueues.join(", ") || t("cp.accounts.noQueues"),
+      header: t("cp.accounts.queues"),
+      size: 160,
+    },
+    {
+      id: "status",
+      accessorFn: (account) => Number(account.enabled),
+      header: t("operations.users.status"),
+      size: 105,
+      cell: ({ row: { original } }) => (
+        <Badge variant={original.enabled ? "running" : "cancelled"}>
+          {t(original.enabled ? "cp.common.enabled" : "cp.common.disabled")}
+        </Badge>
+      ),
+    },
+    {
+      id: "actions",
+      header: t("cp.queues.col.actions"),
+      size: 205,
+      enableResizing: false,
+      cell: ({ row: { original: account } }) =>
+        canManageAccount(account.providerOrgId) ? (
+          <div className="flex flex-wrap gap-2">
+            {account.backendType === "unix" && (
+              <Button variant="outline" size="sm" onClick={() => setEditingId(account.id)}>
+                {t("cp.accounts.editQueues")}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                statusMutation.reset();
+                setStatusTarget(account);
+              }}
+            >
+              {t(account.enabled ? "operations.users.disable" : "operations.users.enable")}
+            </Button>
+          </div>
+        ) : (
+          "—"
+        ),
+    },
+  ];
+  const filteredAccounts = accounts.filter(
+    (account) =>
+      (!status || (status === "enabled") === account.enabled) &&
+      (!backend || account.backendType === backend),
+  );
+
   return (
-    <div className="space-y-4" data-testid="cp-accounts-page">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="break-words text-2xl font-semibold tracking-tight">
-            {t("cp.accounts.title")}
-          </h1>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => void accountsQuery.refetch()}>
-            {t("cp.common.refresh")}
-          </Button>
-          {canRegister && (
-            <Button onClick={() => setRegistering(true)}>{t("cp.accounts.register")}</Button>
+    <div className="min-w-0 space-y-4" data-testid="cp-accounts-page">
+      <PageHeader
+        title={t("cp.accounts.title")}
+        actions={
+          view === "accounts" && (
+            <>
+              <RefreshButton
+                variant="outline"
+                onClick={() => void accountsQuery.refetch()}
+                label={t("cp.common.refresh")}
+                disabled={accountsQuery.isFetching}
+              />
+              {canRegister && (
+                <Button className="sm:flex-none" onClick={() => setRegistering(true)}>
+                  {t("cp.accounts.register")}
+                </Button>
+              )}
+            </>
+          )
+        }
+      />
+      <Tabs value={view} onValueChange={setView}>
+        <TabsList className="h-auto flex-wrap">
+          <TabsTrigger value="accounts">{t("cp.accounts.poolTitle")}</TabsTrigger>
+          <TabsTrigger value="requests">{t("sandbox.accounts.reviewTitle")}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="accounts" className="min-w-0 space-y-3">
+          {!activeOrganizationId && (
+            <p className="text-sm text-muted-foreground">{t("cp.accounts.selectOrganization")}</p>
           )}
-        </div>
-      </div>
-      {!activeOrganizationId && (
-        <p className="text-sm text-muted-foreground">{t("cp.accounts.selectOrganization")}</p>
-      )}
-      {mobileReadOnly && (
-        <p className="text-sm text-muted-foreground">{t("cp.accounts.desktopRegister")}</p>
-      )}
-
-      <div className="grid grid-cols-3 gap-2">
-        <Summary
-          icon={ServerCog}
-          label={t("cp.accounts.summary.accounts")}
-          value={accountsQuery.error || !accountsQuery.data ? "—" : accounts.length}
-        />
-        <Summary
-          icon={UsersRound}
-          label={t("cp.accounts.summary.shared")}
-          value={
-            accountsQuery.error || !accountsQuery.data
-              ? "—"
-              : accounts.filter((account) => account.sharedService).length
-          }
-        />
-        <Summary
-          icon={KeyRound}
-          label={t("cp.accounts.summary.enabled")}
-          value={
-            accountsQuery.error || !accountsQuery.data
-              ? "—"
-              : accounts.filter((account) => account.enabled).length
-          }
-        />
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("cp.accounts.poolTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {accountsQuery.error instanceof Error ? (
-            <div role="alert" className="text-sm text-[var(--status-failed)]">
+          {mobileReadOnly && (
+            <p className="text-sm text-muted-foreground">{t("cp.accounts.desktopRegister")}</p>
+          )}
+          {accountsQuery.error ? (
+            <p role="alert" className="text-sm text-status-failed">
               {toUserFacingError(accountsQuery.error, t("cp.accounts.loadFailed"))}
-            </div>
+            </p>
           ) : accountsQuery.isLoading ? (
-            <div className="text-sm text-muted-foreground">{t("cp.common.loading")}</div>
-          ) : accounts.length === 0 ? (
-            <div className=" p-4 text-sm text-muted-foreground">{t("cp.accounts.empty")}</div>
+            <p role="status" className="text-sm text-muted-foreground">
+              {t("cp.common.loading")}
+            </p>
           ) : (
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {accounts.map((account) => (
-                <div
-                  key={account.id}
-                  data-testid={`cp-execution-account-${account.id}`}
-                  className=" border-border p-3"
+            <>
+              <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3">
+                <Input
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.currentTarget.value)}
+                  className="min-w-36 flex-[1_1_14rem]"
+                  aria-label={t("cp.accounts.search")}
+                  placeholder={t("cp.accounts.search")}
+                />
+                <NativeSelect
+                  aria-label={t("cp.accounts.backend")}
+                  value={backend}
+                  onChange={(event) => setBackend(event.currentTarget.value)}
+                  className="h-9"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div
-                        className="break-words text-sm font-semibold"
-                        title={account.displayName}
-                      >
-                        {account.displayName}
-                      </div>
-                      <div
-                        className="break-all font-mono text-[11px] text-muted-foreground"
-                        title={`${account.agentId} · ${account.id}`}
-                      >
-                        {account.agentId}
-                      </div>
-                    </div>
-                    <Badge
-                      variant={account.enabled ? "running" : "cancelled"}
-                      className="shrink-0 whitespace-nowrap"
-                    >
-                      {account.enabled ? t("cp.common.enabled") : t("cp.common.disabled")}
-                    </Badge>
-                  </div>
-                  <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                    <dt className="text-muted-foreground">{t("operations.resources.provider")}</dt>
-                    <dd className="min-w-0 break-words">
-                      {organizationName(account.providerOrgId)}
-                    </dd>
-                    <dt className="text-muted-foreground">{t("cp.accounts.backend")}</dt>
-                    <dd>{account.backendType}</dd>
-                    <dt className="text-muted-foreground">{t("cp.accounts.identity")}</dt>
-                    <dd className="min-w-0 break-words font-mono">
-                      {account.backendType === "unix"
-                        ? `${account.username ?? "—"} (${account.uid ?? "—"}:${account.gid ?? "—"})`
-                        : `${account.namespace ?? "—"}/${account.serviceAccount ?? "—"}`}
-                    </dd>
-                    <dt className="text-muted-foreground">{t("cp.accounts.queues")}</dt>
-                    <dd className="min-w-0 break-words">
-                      {account.backendType === "kubernetes"
-                        ? t("cp.accounts.queuesNotApplicable")
-                        : account.allowedQueues.join(", ") || t("cp.accounts.noQueues")}
-                    </dd>
-                  </dl>
-                  {canManageAccount(account.providerOrgId) && account.backendType === "unix" && (
-                    <Button
-                      className="mt-3"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setEditingId(account.id)}
-                    >
-                      {t("cp.accounts.editQueues")}
-                    </Button>
-                  )}
-                  {canManageAccount(account.providerOrgId) && (
-                    <Button
-                      className="mt-3 ml-2"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        statusMutation.reset();
-                        setStatusTarget(account);
-                      }}
-                    >
-                      {t(account.enabled ? "operations.users.disable" : "operations.users.enable")}
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
+                  <option value="">{t("cp.accounts.allBackends")}</option>
+                  <option value="unix">Unix</option>
+                  <option value="kubernetes">Kubernetes</option>
+                </NativeSelect>
+                <NativeSelect
+                  aria-label={t("operations.users.status")}
+                  value={status}
+                  onChange={(event) => setStatus(event.currentTarget.value)}
+                  className="h-9"
+                >
+                  <option value="">{t("cp.accounts.allStatuses")}</option>
+                  <option value="enabled">{t("cp.common.enabled")}</option>
+                  <option value="disabled">{t("cp.common.disabled")}</option>
+                </NativeSelect>
+              </div>
+              <DataTable
+                columns={columns}
+                data={filteredAccounts}
+                globalFilter={search.trim()}
+                pageSize={25}
+                getRowId={(account) => account.id}
+                rowDataTestId={(account) => `cp-execution-account-${account.id}`}
+                pinnedEndColumn="actions"
+                resizable
+                caption={t("cp.accounts.poolTitle")}
+                emptyState={accounts.length === 0 ? t("cp.accounts.empty") : t("common.empty")}
+              />
+            </>
           )}
-        </CardContent>
-      </Card>
-
-      <SandboxMappingReviewPanel />
+        </TabsContent>
+        <TabsContent value="requests">
+          <SandboxMappingReviewPanel />
+        </TabsContent>
+      </Tabs>
       <Dialog
         open={statusTarget !== null}
         onOpenChange={(open) => {
@@ -287,25 +335,5 @@ export function CpAccountsPage() {
         />
       )}
     </div>
-  );
-}
-
-function Summary({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof ServerCog;
-  label: string;
-  value: number | string;
-}) {
-  return (
-    <dl className="flex min-w-0 flex-col gap-1 px-1 py-3 sm:px-3">
-      <dt className="flex flex-1 items-start justify-between gap-2 text-xs text-muted-foreground">
-        {label}
-        <Icon className="hidden size-4 shrink-0 sm:block" aria-hidden="true" />
-      </dt>
-      <dd className="text-xl font-semibold tabular-nums">{value}</dd>
-    </dl>
   );
 }

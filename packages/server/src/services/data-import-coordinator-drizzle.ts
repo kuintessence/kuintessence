@@ -1,14 +1,22 @@
 import {
   agents,
+  clusterFileRoots,
   dataAssetFiles,
   dataAssetImports,
   dataAssetManifestEntries,
+  dataAssets,
   dataAssetVersions,
   dataLocations,
   dataScanRequests,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
-import { AppError, DataAssetEntryPathSchema, ErrorCode } from "@kuintessence/shared";
+import {
+  AppError,
+  DataAssetEntryPathSchema,
+  ErrorCode,
+  ManagedDatasetRootIdsSchema,
+} from "@kuintessence/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type {
   DataImportCoordinator,
@@ -18,6 +26,17 @@ import type {
 } from "./data-import-coordinator";
 
 type DataScanRequestRow = typeof dataScanRequests.$inferSelect;
+
+// Serialize cancellation, dispatch bookkeeping and receipt acceptance on the import
+// first, including the interval before its scan request has been created.
+async function lockScanImport(tx: PgTransaction, requestId: string) {
+  await tx
+    .select({ id: dataAssetImports.id })
+    .from(dataAssetImports)
+    .innerJoin(dataScanRequests, eq(dataScanRequests.importId, dataAssetImports.id))
+    .where(eq(dataScanRequests.requestId, requestId))
+    .for("update", { of: dataAssetImports });
+}
 
 export class PgDataImportCoordinator implements DataImportCoordinator {
   constructor(private readonly db: PgDb) {}
@@ -50,6 +69,8 @@ export class PgDataImportCoordinator implements DataImportCoordinator {
       ) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, "CP-local import binding is invalid", 400);
       }
+      if (dataImport.status === "canceled")
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "Data import has been canceled", 409);
       const [existingForImport] = await tx
         .select()
         .from(dataScanRequests)
@@ -121,6 +142,7 @@ export class PgDataImportCoordinator implements DataImportCoordinator {
 
   async markCpLocalScanAttempt(requestId: string, dispatched: boolean): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await lockScanImport(tx, requestId);
       const [scan] = await tx
         .update(dataScanRequests)
         .set({
@@ -152,6 +174,7 @@ export class PgDataImportCoordinator implements DataImportCoordinator {
       }
     }
     await this.db.transaction(async (tx) => {
+      await lockScanImport(tx, input.requestId);
       const [scan] = await tx
         .select()
         .from(dataScanRequests)
@@ -196,14 +219,51 @@ export class PgDataImportCoordinator implements DataImportCoordinator {
       ) {
         throw new AppError(ErrorCode.NOT_FOUND, "CP-local data import session not found", 404);
       }
-      const [agent] = await tx
-        .select()
+      const [source] = await tx
+        .select({
+          agent: agents,
+          rootEnabled: clusterFileRoots.enabled,
+          lifecycle: dataAssets.lifecycle,
+        })
         .from(agents)
-        .where(eq(agents.agentId, input.agentId))
-        .limit(1);
-      if (!agent || agent.providerOrgId !== input.providerOrgId) {
-        throw new AppError(ErrorCode.VALIDATION_ERROR, "Attesting Agent binding is invalid", 400);
+        .innerJoin(
+          clusterFileRoots,
+          and(
+            eq(clusterFileRoots.id, scan.managedRootId),
+            eq(clusterFileRoots.agentId, agents.agentId),
+            eq(clusterFileRoots.providerOrgId, scan.providerOrgId),
+          ),
+        )
+        .innerJoin(
+          dataAssets,
+          and(eq(dataAssets.id, scan.assetId), eq(dataAssets.providerOrgId, scan.providerOrgId)),
+        )
+        .where(and(eq(agents.agentId, scan.agentId), eq(agents.providerOrgId, scan.providerOrgId)))
+        .for("share");
+      if (
+        !source?.rootEnabled ||
+        source.lifecycle === "revoked" ||
+        !ManagedDatasetRootIdsSchema.parse(source.agent.topology.managedDatasetRootIds).includes(
+          scan.managedRootId,
+        )
+      ) {
+        const errorMessage = "Managed data source authorization was withdrawn";
+        const completedAt = new Date();
+        await tx
+          .update(dataScanRequests)
+          .set({ status: "failed", errorMessage, completedAt, updatedAt: completedAt })
+          .where(eq(dataScanRequests.requestId, scan.requestId));
+        await tx
+          .update(dataAssetImports)
+          .set({ status: "failed", errorMessage, completedAt })
+          .where(eq(dataAssetImports.id, scan.importId));
+        await tx
+          .update(dataAssetVersions)
+          .set({ status: "failed" })
+          .where(eq(dataAssetVersions.id, scan.versionId));
+        return;
       }
+      const agent = source.agent;
       const [version] = await tx
         .select()
         .from(dataAssetVersions)
@@ -307,6 +367,7 @@ export class PgDataImportCoordinator implements DataImportCoordinator {
     completedAt: Date;
   }): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await lockScanImport(tx, input.requestId);
       const [scan] = await tx
         .update(dataScanRequests)
         .set({

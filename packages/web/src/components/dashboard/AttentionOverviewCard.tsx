@@ -54,23 +54,24 @@ export function AttentionOverviewCard({
   }
   return (
     <Card data-testid={testId}>
-      <CardHeader className="p-4 pb-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center ">
-              <Icon className="h-4 w-4 text-muted-foreground" />
-            </div>
+      <CardHeader className={compact ? "p-0 pb-3" : "p-4 pb-2"}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <Icon className="h-5 w-5 shrink-0 text-brand" />
             <div className="min-w-0">
-              <CardTitle>{title}</CardTitle>
+              <CardTitle className="text-base font-semibold text-foreground">{title}</CardTitle>
               {!compact && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
             </div>
           </div>
-          <Badge variant={badgeVariant} className="shrink-0 tabular-nums">
+          <Badge
+            variant={badgeVariant}
+            className={`shrink-0 text-2xl font-semibold tabular-nums ${total > 0 ? (tone === "failed" ? "text-status-failed" : "text-brand") : ""}`}
+          >
             {hasUnknown ? "—" : total}
           </Badge>
         </div>
       </CardHeader>
-      <CardContent className="space-y-2 p-4 pt-2">
+      <CardContent className={compact ? "space-y-2 p-0" : "space-y-2 p-4 pt-2"}>
         {total === 0 && !hasUnknown ? (
           <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
             <CheckCircle2 className="h-4 w-4 text-[var(--status-succeeded)]" />
@@ -91,9 +92,7 @@ export function AttentionOverviewCard({
                 {item.label}
               </span>
               <span className="flex shrink-0 items-center gap-2">
-                <span className="font-mono text-sm font-semibold tabular-nums">
-                  {item.count ?? "—"}
-                </span>
+                <span className="text-sm font-semibold tabular-nums">{item.count ?? "—"}</span>
                 <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground" />
               </span>
             </a>

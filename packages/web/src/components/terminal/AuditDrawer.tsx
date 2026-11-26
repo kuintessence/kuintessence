@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { relativeFromNow } from "../../lib/format";
+import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { fmtBytes } from "../files/path-picker-utils";
 import { Button } from "../ui/button";
@@ -42,7 +43,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
     refetchInterval: open && session.state === "open" ? 5_000 : false,
   });
 
-  const frames = auditQ.data?.frames ?? [];
+  const frames = auditQ.isSuccess ? auditQ.data.frames : [];
   const counts = useMemo(() => {
     const out: Record<string, number> = { ALL: frames.length };
     for (const f of frames) out[f.kind] = (out[f.kind] ?? 0) + 1;
@@ -163,7 +164,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
               ) : auditQ.isError ? (
                 <div className="space-y-2 py-2">
                   <p role="alert" className="text-sm text-status-failed">
-                    {t("terminal.auditLoadFailed")}
+                    {toUserFacingError(auditQ.error, t("terminal.auditLoadFailed"))}
                   </p>
                   <Button
                     size="sm"

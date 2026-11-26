@@ -18,8 +18,8 @@ import type { SandboxSignedManifest, SandboxUnsignedManifest } from "@kuintessen
 import { buildApptainerSandboxArgv } from "../adapters/base";
 import { importFederationMedia } from "../data-market/media-import";
 import { mediaImportFixture } from "../data-market/media-import-test-fixture";
-import { SandboxJobSpecSchema } from "../queue/sandbox-job-spec";
 import { downloadSandboxInput } from "./input-downloader";
+import { SandboxJobSpecSchema } from "./job-spec";
 import type { VerifiedSandboxManifest } from "./manifest-verifier";
 import { removeSandboxRun, SandboxStager, validateSandboxOutputs } from "./stager";
 

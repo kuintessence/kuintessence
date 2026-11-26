@@ -111,10 +111,18 @@ helm install kq deploy/helm/kq-platform \
 
 运行限制：
 
-- Chart 部署 Redis，但 Server 请求使用进程内事件总线，不连接 Redis。多 Server 的 pub/sub/cache 尚未实现。
-- Server 的事件总线、Agent session/dispatcher 和 Metering cron 使用单进程状态，因此 `values.production.yaml` 强制单副本并关闭 HPA。共享总线、session ownership 路由和 cron leader election 完成前，不得扩容。
+- Server 通过 PostgreSQL LISTEN/NOTIFY 转发作业和工作流状态事件。
+- 计量定时任务在 PostgreSQL 中按 UTC 周期领取。生产示例默认一个 Server 副本。多个固定副本使用逐实例 WSS 入口。
 - 默认 values 不启用 NetDrive。部署 RustFS 后，还需设置 `NETDRIVE_ENABLED=true` 并补齐必要的 `NETDRIVE_*` 环境变量，Server 才会挂载 S3-backed NetDrive 路由。
 - Agent-Server 生产 mTLS 默认由受信任代理处理。上线前还需验证 Registry publisher RBAC、浏览器 CSP 和 SSH/file 多租户 scoping，见 [`../../../docs/status/current-state.md`](../../../docs/status/current-state.md)。
+
+## 多个 Server 副本
+
+设置 `server.replicas`、`server.relay.domain` 和 `server.relay.existingSecret`。后者包含共享的 `AGENT_RELAY_SECRET`。在 `server.grpcTls.existingSecret` 或 `secrets.existingSecret` 中提供持久的 `SERVER_CA_CERT` 和 `SERVER_CA_KEY`。各实例使用相同的数据库和 JWT Secret。启用 HPA 时，图表根据最大副本数预建各序号对应的 Service 和 WSS 白名单。为所有可能启用的序号配置入口。
+
+例如 release 名为 `kq`，域名为 `peer.example.org`，两个副本的入口分别为 `wss://kq-server-0.peer.example.org` 和 `wss://kq-server-1.peer.example.org`。图表生成 StatefulSet 及服务 `kq-server-0`、`kq-server-1`。在站点入口为每个主机配置 DNS、受信任 TLS 证书和 WebSocket 转发，后端选同名 Service 的 HTTP 端口。普通浏览器和 Agent 使用聚合 Service。部署前检查每个入口在另一副本内可解析且可验证 TLS。
+
+Registry 多副本共享同一 POSIX 目录，需支持跨节点 flock 和原子 rename。设置 `registry.persistence.accessModes` 为 `[ReadWriteMany]`，关闭 `registry.recipes.enabled` 和 `registry.upstream.enabled`。启用 Git 写入时使用下节配置。
 
 ## Spack Recipe Git 存储
 

@@ -24,6 +24,7 @@ import { persistFederationTerminalEvidence } from "../federation/terminal-eviden
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { MinioBackend } from "../storage/minio-client";
 import { isReplicaEligible } from "./data-prerequisite-repository-drizzle";
+import { eligibleReplicaIds } from "./data-replica";
 import { persistJobCancellations } from "./job-cancellation";
 import { factsRequireRestrictedNoEgress } from "./restricted-no-egress";
 import type { SandboxManifestSigner } from "./sandbox-manifest-signer";
@@ -316,6 +317,7 @@ export class DataDeliveryResolver {
         relativePath: dataLocations.relativePath,
         uri: dataLocations.uri,
         versionManifestDigest: dataAssetVersions.manifestDigest,
+        replicaId: dataReplicas.id,
         replicaStatus: dataReplicas.status,
         replicaManifestDigest: dataReplicas.manifestDigest,
         replicaVerifiedAt: dataReplicas.verifiedAt,
@@ -326,8 +328,14 @@ export class DataDeliveryResolver {
       .where(
         and(eq(dataLocations.dataAssetVersionId, versionId), eq(dataLocations.status, "available")),
       );
+    const live = await eligibleReplicaIds(
+      this.db,
+      rows.map((r) => r.replicaId),
+      this.now(),
+    );
     const source = await datasetSourceAuthority(this.db, { assetId, versionId }, this.now());
     return rows.flatMap((row) => {
+      if (row.replicaId && !live.has(row.replicaId)) return [];
       if (source && !source.locationIds.includes(row.id)) return [];
       if (row.versionManifestDigest !== manifestDigest) return [];
       const replica = row.replicaStatus !== null;

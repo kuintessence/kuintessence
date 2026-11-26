@@ -108,7 +108,8 @@ describe("ClusterFileRootsPanel", () => {
 
     mount();
 
-    expect(await screen.findByTestId(`cluster-file-root-row-${rootA.id}`)).toBeTruthy();
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByRole("button", { name: "Scratch" }));
     expect(calls[0]).toMatchObject({
       method: "GET",
       url: "/platform/api/admin/cluster-file-roots",
@@ -135,7 +136,8 @@ describe("ClusterFileRootsPanel", () => {
 
     mount();
 
-    await waitFor(() => screen.getByTestId("cluster-file-root-create-form"));
+    expect(screen.queryByTestId("cluster-file-root-create-form")).toBeNull();
+    fireEvent.click(screen.getByTestId("cluster-file-root-create-toggle"));
     fireEvent.change(nativeControl(screen.getByTestId("cluster-file-root-new-label")), {
       target: { value: "Project" },
     });
@@ -166,17 +168,38 @@ describe("ClusterFileRootsPanel", () => {
     expect(await screen.findByTestId(`cluster-file-root-row-${created.id}`)).toBeTruthy();
   });
 
+  test("removes a root only after confirmation", async () => {
+    const calls = installFetch([() => json({ roots: [rootA] }), () => json({ id: rootA.id })]);
+    mount();
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByRole("button", { name: "operations.users.deleteAction" }));
+    expect(calls).toHaveLength(1);
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "operations.users.deleteAction",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId(`cluster-file-root-row-${rootA.id}`)).toBeNull(),
+    );
+    expect(calls[1]).toMatchObject({
+      method: "DELETE",
+      url: `/platform/api/admin/cluster-file-roots/${rootA.id}`,
+    });
+  });
+
   test("saves root edits with enabled state", async () => {
     const updated = { ...rootA, path: "/work/me", visibleOrgIds: [], enabled: false };
     const calls = installFetch([() => json({ roots: [rootA] }), () => json(updated)]);
 
     mount();
 
-    await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByText("Scratch"));
     fireEvent.change(nativeControl(screen.getByTestId(`cluster-file-root-path-${rootA.id}`)), {
       target: { value: "/work/me" },
     });
-    await screen.findByRole("option", { hidden: true, name: "Provider A" });
+    await screen.findByRole("checkbox", { name: "Consumer One", hidden: true });
     fireEvent.click(
       within(screen.getByTestId(`cluster-file-root-visible-orgs-${rootA.id}`)).getByRole(
         "checkbox",
@@ -213,7 +236,8 @@ describe("ClusterFileRootsPanel", () => {
 
     mount();
 
-    await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByRole("button", { name: "Scratch" }));
     fireEvent.click(screen.getByTestId(`cluster-file-root-check-${rootA.id}`));
 
     expect(await screen.findByTestId(`cluster-file-root-check-status-${rootA.id}`)).toHaveProperty(
@@ -253,7 +277,7 @@ describe("ClusterFileRootsPanel", () => {
     mount();
 
     expect(await screen.findByTestId(`cluster-file-root-row-${rootA.id}`)).toBeTruthy();
-    fireEvent.click(screen.getByText("common.refresh"));
+    fireEvent.click(screen.getByRole("button", { name: "common.refresh" }));
 
     const error = await screen.findByTestId("cluster-file-roots-error");
     expect(error.textContent).toMatch(/没有执行此操作的权限|does not have permission/);
@@ -269,6 +293,7 @@ describe("ClusterFileRootsPanel", () => {
 test("provider selection scopes agents and changing provider clears the selected agent", async () => {
   installFetch([() => json({ roots: [] })]);
   mount();
+  fireEvent.click(screen.getByTestId("cluster-file-root-create-toggle"));
   await screen.findByRole("option", { hidden: true, name: "Provider A" });
   fireEvent.change(nativeControl(screen.getByTestId("cluster-file-root-new-provider")), {
     target: { value: rootA.providerOrgId },
@@ -289,7 +314,8 @@ test("unknown sharing identifiers survive an unrelated edit and invalid capacity
   const root = { ...rootA, visibleOrgIds: ["00000000-0000-0000-0000-00000000ffff"] };
   const calls = installFetch([() => json({ roots: [root] }), () => json(root)]);
   mount();
-  await screen.findByTestId(`cluster-file-root-row-${root.id}`);
+  const row = await screen.findByTestId(`cluster-file-root-row-${root.id}`);
+  fireEvent.click(within(row).getByRole("button", { name: "Scratch" }));
   const capacity = screen.getByTestId(`cluster-file-root-capacity-${root.id}`);
   fireEvent.change(nativeControl(capacity), { target: { value: "-1" } });
   fireEvent.click(screen.getByTestId(`cluster-file-root-save-${root.id}`));
@@ -308,6 +334,7 @@ test("directory failures prevent new root creation and can be retried", async ()
   const calls = installFetch([() => json({ roots: [] })]);
   mount();
   await screen.findByRole("alert");
+  fireEvent.click(screen.getByTestId("cluster-file-root-create-toggle"));
   expect(screen.getByRole("button", { name: "settings.clusterFileRoots.create" })).toHaveProperty(
     "disabled",
     true,
@@ -328,7 +355,8 @@ test("mobile allows root inspection while hiding create and disabling configurat
   try {
     installFetch([() => json({ roots: [rootA] })]);
     mount();
-    await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+    fireEvent.click(within(row).getByText("Scratch"));
     expect(screen.queryByTestId("cluster-file-root-create-form")).toBeNull();
     expect(screen.getByTestId(`cluster-file-root-save-${rootA.id}`)).toHaveProperty(
       "disabled",
@@ -338,7 +366,9 @@ test("mobile allows root inspection while hiding create and disabling configurat
       "disabled",
       true,
     );
-    expect(screen.getByRole("button", { name: "配额策略" })).toHaveProperty("disabled", false);
+    expect(
+      screen.getByRole("button", { name: "settings.clusterFileRoots.quotaPolicy" }),
+    ).toHaveProperty("disabled", false);
   } finally {
     sessionStorage.clear();
   }
@@ -348,8 +378,9 @@ test("sharing can add a known organization outside the readable directory withou
   const outside = "00000000-0000-0000-0000-00000000ffff";
   const calls = installFetch([() => json({ roots: [rootA] }), () => json(rootA)]);
   mount();
-  await screen.findByRole("option", { hidden: true, name: "Provider A" });
-  await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+  const row = await screen.findByTestId(`cluster-file-root-row-${rootA.id}`);
+  fireEvent.click(within(row).getByText("Scratch"));
+  await screen.findByRole("checkbox", { name: "Consumer One", hidden: true });
   const sharing = within(screen.getByTestId(`cluster-file-root-visible-orgs-${rootA.id}`));
   fireEvent.change(
     nativeControl(sharing.getByLabelText("settings.clusterFileRoots.searchOrganizations")),

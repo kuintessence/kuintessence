@@ -103,10 +103,9 @@ Registry 使用 `REGISTRY_JWT_SECRET` 派生独立用途的游标密钥，
 发生在候选分页之后；不返回隐藏项总数。每页重新读取状态，不保证跨页快照一致性，
 新发布和下架/恢复期间需要刷新第一页以查看完整的当前结果。
 
-每次最多枚举 10,000 个目录项（含临时文件），读取 32 MiB manifest metadata，
-保留 32 个独立 recipe snapshot（每项最多 2 MiB）；最多并发两次扫描，
-使用 10 秒协作式 deadline。扫描超限时返回 `MATERIAL_CATALOG_LIMIT`，
-可减少页大小；原始目录项超限则需拆分材料仓库，而非无限翻页规避预算。
+管理目录按页从[材料目录索引](spack-material-delivery.md#材料目录)取得候选。每次最多读取 32 MiB manifest 元数据，
+保留 32 个独立 recipe snapshot（每项最多 2 MiB），最多并发两次查询，
+使用 10 秒协作式 deadline。读取元数据超出预算时可减少页大小；索引构建和材料卷锁的限制与普通目录相同。
 等待中的 I/O 未结束前不释放名额；recipe 和文件读取不占用数据库授权事务锁。
 
 下架在与 Server 安装准入相同的事务锁内执行，且锁住任务状态写入，
@@ -142,7 +141,11 @@ Registry 的目录、直接 manifest/blob 下载和重新发布同一内容均�
 直接下载下架材料返回普通 404，不向无权限调用者公开管理历史或占用细节。
 Server 继续使用原有通用引用错误，对 Agent 不暴露数据库异常或查询参数。
 
-自定义读取范围见[材料可见策略](spack-material-visibility.md)。此入口不提供物理回收或受限安装包授权；每个工作流仍需独立准备完整材料、安装环境和输入。
+超级管理员可用 `DELETE /api/spack/material-repositories/:id/releases/:digest?revision=<当前下架版本>` 清除 manifest。
+Registry 在锁内复查下架 revision、有效绑定、活动任务和生态发布引用。清除后无法从生命周期面板恢复该 manifest。
+同仓库上传回执和其他 manifest 仍保护各自引用的文件。释放回执后，可显式执行回收，详见[材料维护 API](spack-material-delivery.md#运维-api)。
+
+自定义读取范围见[材料可见策略](spack-material-visibility.md)。受限安装包需要单独取得授权。
 
 ## 平台与算力中心门户
 

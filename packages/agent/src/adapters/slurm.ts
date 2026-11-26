@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   createLogger,
   type SchedulerQueueFact,
@@ -12,6 +12,7 @@ import {
   COMPUTE_HEALTH_CLI_TIMEOUT_MS,
   type ComputeHealthObservation,
   formatWallTime as formatWallTimeShared,
+  heredocDelimiter,
   isRetainedSchedulerLogJobId,
   JobLogUnavailableError,
   type JobResult,
@@ -29,7 +30,9 @@ import {
   SchedulerSubmissionUnknownError,
   type Spawner,
   schedulerCommand,
+  shellQuote,
   unknownComputeHealth,
+  validateSchedulerLimits,
 } from "./base";
 import {
   availableQueueInventory,
@@ -222,6 +225,7 @@ function parseSlurmQueueInventory(
 function slurmJsonNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "object" || value === null) return undefined;
+  if ("set" in value && value.set === false) return undefined;
   const number = (value as { number?: unknown }).number;
   return typeof number === "number" && Number.isFinite(number) ? number : undefined;
 }
@@ -305,6 +309,51 @@ type JobLogReadResult =
   | { kind: "missing" }
   | { kind: "failed"; error: Error };
 
+// Six UUIDs fit in the 256-character Slurm accounting comment used for reconciliation.
+const MAX_ARRAY_MEMBERS = 6;
+class SlurmArrayRejected extends SchedulerSubmissionError {}
+const arrayElementId = /^([1-9]\d*)_(0|[1-9]\d*)$/;
+
+interface ReadyArrayMember {
+  spec: JobSpec;
+  body: string;
+  resolve(result: JobResult): void;
+  reject(error: unknown): void;
+}
+
+function slurmCommentMatches(
+  jobId: string,
+  id: string,
+  comment: string,
+  grouped: boolean,
+): boolean {
+  if (!grouped || !comment.startsWith("KQ_ARRAY="))
+    return comment === `KQ_JOB_ID=${jobId}` && (!grouped || /^\d+$/.test(id));
+  return arrayMemberUuid(id, comment) === jobId;
+}
+
+function arrayMemberUuid(id: string, comment: string): string | undefined {
+  if (!comment.startsWith("KQ_ARRAY=")) return undefined;
+  const members = comment.slice("KQ_ARRAY=".length).split(",");
+  const element = arrayElementId.exec(id);
+  if (
+    !element ||
+    members.length < 2 ||
+    members.length > MAX_ARRAY_MEMBERS ||
+    !members.every(isRetainedSchedulerLogJobId) ||
+    new Set(members).size !== members.length
+  )
+    return undefined;
+  return members[Number(element[2])];
+}
+
+function controllerElementId(record: string): string | undefined {
+  const parents = [...record.matchAll(/(?:^|\s)ArrayJobId=([^\s]+)/g)];
+  const tasks = [...record.matchAll(/(?:^|\s)ArrayTaskId=([^\s]+)/g)];
+  const id = `${parents[0]?.[1]}_${tasks[0]?.[1]}`;
+  return parents.length === 1 && tasks.length === 1 && arrayElementId.test(id) ? id : undefined;
+}
+
 export interface SlurmAdapterDeps {
   spawner?: Spawner;
   /** Retained stdout/stderr directory for non-sandbox jobs; also the default cwd. */
@@ -323,6 +372,7 @@ export interface SlurmAdapterDeps {
 
 export class SlurmAdapter implements SchedulerAdapter {
   readonly type = "slurm";
+  private readonly readyArrays = new Map<string, ReadyArrayMember[]>();
   private spawner: Spawner;
   private logDir: string;
   private schedulerUser: string | undefined;
@@ -346,18 +396,34 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   buildSubmitScript(spec: JobSpec): string {
+    return appendEnvAndCommand(this.submitDirectives(spec, false), spec, "slurm");
+  }
+
+  private submitDirectives(spec: JobSpec, array: boolean): string[] {
+    validateSchedulerLimits(spec, "slurm");
+    const nodes = spec.schedulerLimits?.nodeCount ?? 1;
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
     // Mapped sandbox accounts may not be able to access the Agent's private log directory.
-    const logPath = join(
-      spec.sandbox ? join(executionRoot, ".scheduler-logs") : this.logDir,
-      `kq-${spec.jobId}.out`,
-    );
+    const logPath = array
+      ? "/dev/null"
+      : join(
+          spec.sandbox ? join(executionRoot, ".scheduler-logs") : this.logDir,
+          `kq-${spec.jobId}.out`,
+        );
     lines.push(`#SBATCH --job-name=${spec.schedulerName ?? spec.name}`);
-    lines.push(`#SBATCH --comment=KQ_JOB_ID=${spec.jobId}`);
-    lines.push(`#SBATCH --cpus-per-task=${spec.cpus}`);
-    lines.push(`#SBATCH --mem=${spec.memoryMb}M`);
+    if (!array) lines.push(`#SBATCH --comment=KQ_JOB_ID=${spec.jobId}`);
+    if (nodes > 1)
+      lines.push(
+        `#SBATCH --nodes=${nodes}`,
+        `#SBATCH --ntasks=${nodes}`,
+        "#SBATCH --ntasks-per-node=1",
+      );
+    if (spec.schedulerLimits?.stopTime)
+      lines.push(`#SBATCH --deadline=UTS${spec.schedulerLimits.stopTime}`);
+    lines.push(`#SBATCH --cpus-per-task=${spec.cpus / nodes}`);
+    lines.push(`#SBATCH --mem=${spec.memoryMb / nodes}M`);
     lines.push(`#SBATCH --output=${logPath}`);
     lines.push(`#SBATCH --error=${logPath}`);
     if (spec.queueName) {
@@ -378,12 +444,100 @@ export class SlurmAdapter implements SchedulerAdapter {
     if (spec.gpus > 0) {
       lines.push(`#SBATCH --gpus=${spec.gpus}`);
     }
-    lines.push(`#SBATCH --chdir=${executionRoot}`);
-    return appendEnvAndCommand(lines, spec, "slurm");
+    lines.push(`#SBATCH --chdir=${array ? this.logDir : executionRoot}`);
+    return lines;
   }
 
   async submit(spec: JobSpec): Promise<JobResult> {
-    const script = this.buildSubmitScript(spec);
+    if (
+      spec.forEachGroup &&
+      isAbsolute(this.logDir) &&
+      (!spec.workingDir || isAbsolute(spec.workingDir)) &&
+      /^[a-f0-9]{64}$/.test(spec.forEachGroup) &&
+      spec.schedulerName === `kqa-${spec.forEachGroup}` &&
+      isRetainedSchedulerLogJobId(spec.jobId) &&
+      !spec.sandbox &&
+      !spec.restrictedNoEgress &&
+      spec.federationDispatchEpoch === undefined &&
+      !spec.licensedMaterialCleanup?.length &&
+      !spec.dataDeliveryCleanup?.length &&
+      !/^\s*#SBATCH\b/m.test(spec.command)
+    ) {
+      const header = this.submitDirectives(spec, true);
+      const body = appendEnvAndCommand(
+        [
+          `exec > ${shellQuote(join(this.logDir, `kq-${spec.jobId}.out`))} 2>&1 || exit 1`,
+          `cd -- ${shellQuote(spec.workingDir || this.logDir)} || exit 1`,
+        ],
+        spec,
+        "slurm",
+      );
+      // Keep the combined batch script bounded even when a member has large inline inputs.
+      if (Buffer.byteLength(body) <= 16_384 && header.every((line) => !/[\r\n]/.test(line))) {
+        const key = header.join("\n");
+        return new Promise<JobResult>((resolve, reject) => {
+          let batch = this.readyArrays.get(key);
+          if (!batch) {
+            batch = [];
+            this.readyArrays.set(key, batch);
+            const members = batch;
+            setTimeout(() => {
+              if (this.readyArrays.get(key) === members) {
+                this.readyArrays.delete(key);
+                void this.submitReadyMembers(key, members);
+              }
+            }, 25);
+          }
+          batch.push({ spec, body, resolve, reject });
+          if (batch.length === MAX_ARRAY_MEMBERS) {
+            this.readyArrays.delete(key);
+            void this.submitReadyMembers(key, batch);
+          }
+        });
+      }
+    }
+    return this.submitScript(spec, this.buildSubmitScript(spec));
+  }
+
+  private async submitReadyMembers(header: string, members: ReadyArrayMember[]): Promise<void> {
+    const first = members[0];
+    if (!first) return;
+    try {
+      if (members.length === 1) {
+        first.resolve(await this.submitScript(first.spec, this.buildSubmitScript(first.spec)));
+        return;
+      }
+      const script = [
+        header,
+        `#SBATCH --comment=KQ_ARRAY=${members.map((member) => member.spec.jobId).join(",")}`,
+        `#SBATCH --array=0-${members.length - 1}`,
+        'case "$SLURM_ARRAY_TASK_ID" in',
+        ...members.map((member, index) => {
+          const end = heredocDelimiter(member.body, member.spec.jobId, "SCRIPT");
+          // Keep commands and inline inputs out of process arguments and preserve the job's stdin.
+          return `${index}) exec /bin/bash /dev/fd/3 3<<'${end}'\n${member.body}\n${end}\n;;`;
+        }),
+        "*) exit 1 ;;",
+        "esac",
+      ].join("\n");
+      const result = await this.submitScript(first.spec, script);
+      for (const [index, member] of members.entries())
+        member.resolve({ schedulerJobId: `${result.schedulerJobId}_${index}` });
+    } catch (error) {
+      for (const member of members) {
+        if (error instanceof SlurmArrayRejected) {
+          this.submitScript(member.spec, this.buildSubmitScript(member.spec)).then(
+            member.resolve,
+            member.reject,
+          );
+        } else {
+          member.reject(error);
+        }
+      }
+    }
+  }
+
+  private async submitScript(spec: JobSpec, script: string): Promise<JobResult> {
     const command = schedulerCommand(spec, ["sbatch", "--parsable"]);
     try {
       const { exitCode, stdout, stderr } = await this.spawner.run(command, {
@@ -402,6 +556,12 @@ export class SlurmAdapter implements SchedulerAdapter {
           "Slurm submission returned a nonzero result",
         );
         // sbatch can exit nonzero after acceptance when the controller's reply is lost.
+        if (
+          !stdout.trim() &&
+          stderr.trim() ===
+            "sbatch: error: Batch job submission failed: Invalid job array specification"
+        )
+          throw new SlurmArrayRejected("Slurm rejected the array specification");
         const rejection =
           /^sbatch: error: Batch job submission failed: (Invalid partition name specified|Invalid account or account\/partition combination specified|Invalid qos specification|Requested node configuration is not available|Job violates accounting\/QOS policy \(job submit limit, user's size and\/or time limits\))$/i;
         const invalidPartition =
@@ -465,7 +625,15 @@ export class SlurmAdapter implements SchedulerAdapter {
   async listJobs(): Promise<ListedJob[]> {
     // --user and the old-style output template also work on Slurm versions without --me.
     const { exitCode, stdout, stderr } = await this.spawner.run(
-      ["squeue", "--user", await this.currentSchedulerUser(), "--noheader", "-o", "%i|%j|%T|%P|%V"],
+      [
+        "squeue",
+        "--array",
+        "--user",
+        await this.currentSchedulerUser(),
+        "--noheader",
+        "-o",
+        "%i|%j|%T|%P|%V",
+      ],
       { timeoutMs: 10_000 },
     );
     if (exitCode !== 0) {
@@ -505,8 +673,10 @@ export class SlurmAdapter implements SchedulerAdapter {
         (lookup.submittedAfterUnixMs !== undefined && Number.isFinite(lookup.submittedAfterUnixMs)
           ? new Date(lookup.submittedAfterUnixMs - 86_400_000).toISOString().slice(0, 10)
           : undefined);
+      const grouped = /^kqa-[a-f0-9]{64}$/.test(lookup.schedulerName ?? "");
       const command = [
         "squeue",
+        ...(grouped ? ["--array"] : []),
         "--noheader",
         ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
         ...(lookup.schedulerAccount ? ["--account", lookup.schedulerAccount] : []),
@@ -517,22 +687,39 @@ export class SlurmAdapter implements SchedulerAdapter {
       if (exitCode !== 0) {
         return { status: "indeterminate", reason: `squeue failed: ${stderr.trim()}` };
       }
-      const expectedComment = `KQ_JOB_ID=${lookup.jobId}`;
-      const matches = stdout
-        .split("\n")
-        .map((line) =>
-          line
-            .trim()
-            .split("|")
-            .map((field) => field.trim()),
+      const matches: string[][] = [];
+      const observedMembers = new Map<string, string>();
+      const observe = (fields: string[]) => {
+        const [id, name, comment, account] = fields;
+        if (
+          !id ||
+          (lookup.schedulerName && name !== lookup.schedulerName) ||
+          (lookup.schedulerAccount && account !== lookup.schedulerAccount)
         )
-        .filter(
-          ([schedulerJobId, name, comment, account]) =>
-            !!schedulerJobId &&
-            comment === expectedComment &&
-            (!lookup.schedulerName || name === lookup.schedulerName) &&
-            (!lookup.schedulerAccount || account === lookup.schedulerAccount),
-        );
+          return;
+        const member = grouped ? arrayMemberUuid(id, comment ?? "") : undefined;
+        if (member) {
+          const previous = observedMembers.get(id);
+          if (
+            previous &&
+            previous !== member &&
+            (member === lookup.jobId || previous === lookup.jobId)
+          )
+            throw new Error("Slurm sources disagree about array member identity");
+          observedMembers.set(id, member);
+        }
+        if (slurmCommentMatches(lookup.jobId, id, comment ?? "", grouped)) matches.push(fields);
+      };
+      const observeRows = (rows: string) => {
+        for (const line of rows.split("\n"))
+          observe(
+            line
+              .trim()
+              .split("|")
+              .map((field) => field.trim()),
+          );
+      };
+      observeRows(stdout);
       if (lookup.includeCompleted || (includeCompleted && matches.length === 0)) {
         if (!submittedAfter || !/^\d{4}-\d{2}-\d{2}$/.test(submittedAfter))
           return { status: "indeterminate", reason: "submission time is unavailable" };
@@ -557,11 +744,12 @@ export class SlurmAdapter implements SchedulerAdapter {
                 return { status: "indeterminate", reason: "ambiguous Slurm controller identity" };
               fields[key] = value;
             }
-            const id = fields.JobId ?? "";
+            const rawId = fields.JobId ?? "";
+            const id = grouped ? (controllerElementId(line) ?? rawId) : rawId;
             const user = /^([^()\s]+)\((\d+)\)$/.exec(fields.UserId ?? "");
             if (
-              !/^[1-9]\d*$/.test(id) ||
-              !Number.isSafeInteger(Number(id)) ||
+              !/^[1-9]\d*$/.test(rawId) ||
+              !Number.isSafeInteger(Number(rawId)) ||
               !user ||
               !Number.isSafeInteger(Number(user[2])) ||
               controllerIds.has(id)
@@ -569,7 +757,7 @@ export class SlurmAdapter implements SchedulerAdapter {
               return { status: "indeterminate", reason: "invalid Slurm controller identity" };
             controllerIds.add(id);
             const matchesIdentity =
-              fields.Comment === expectedComment &&
+              slurmCommentMatches(lookup.jobId, id, fields.Comment ?? "", grouped) &&
               fields.JobName === lookup.schedulerName &&
               (!lookup.schedulerAccount || fields.Account === lookup.schedulerAccount) &&
               (uid === undefined || user[2] === uid);
@@ -577,7 +765,7 @@ export class SlurmAdapter implements SchedulerAdapter {
               return { status: "indeterminate", reason: "Slurm controller identity mismatch" };
             if (matchesIdentity) {
               controllerMatches++;
-              matches.push([id, fields.JobName ?? "", fields.Comment ?? "", fields.Account ?? ""]);
+              observe([id, fields.JobName ?? "", fields.Comment ?? "", fields.Account ?? ""]);
             }
           }
           if (controllerMatches === 0)
@@ -596,38 +784,37 @@ export class SlurmAdapter implements SchedulerAdapter {
               "--noheader",
               "--parsable2",
               "--allocations",
+              ...(grouped ? ["--array"] : []),
               "--starttime",
               submittedAfter,
               ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
               ...(lookup.schedulerAccount ? ["--account", lookup.schedulerAccount] : []),
               ...(uid !== undefined ? ["--user", uid] : []),
-              "--format=JobIDRaw,JobName%128,Comment%256,Account%128",
+              grouped
+                ? "--format=JobID%64,JobName%128,Comment%256,Account%128"
+                : "--format=JobIDRaw,JobName%128,Comment%256,Account%128",
             ],
             { timeoutMs: 10_000 },
           );
-          if (history.exitCode !== 0) {
+          if (history.exitCode === 0) observeRows(history.stdout);
+          // Some sites do not retain comments in accounting. The controller may still have the record.
+          if (history.exitCode !== 0 || (grouped && matches.length === 0)) {
             const result = await reconcileController();
             if (result) return result;
-          } else
-            for (const line of history.stdout.split("\n")) {
-              const fields = line
-                .trim()
-                .split("|")
-                .map((field) => field.trim());
-              if (
-                fields[0] &&
-                fields[2] === expectedComment &&
-                (!lookup.schedulerName || fields[1] === lookup.schedulerName) &&
-                (!lookup.schedulerAccount || fields[3] === lookup.schedulerAccount)
-              )
-                matches.push(fields);
-            }
+          }
         }
       }
-      if (matches.some((fields) => !/^\d+$/.test(fields[0] ?? "")))
+      if (
+        matches.some(
+          ([id]) => !/^\d+$/.test(id ?? "") && !(grouped && arrayElementId.test(id ?? "")),
+        )
+      )
         return { status: "indeterminate", reason: "Slurm lookup returned an invalid job id" };
       const identifiers = [...new Set(matches.map((fields) => fields[0]))];
-      if (identifiers.length === 0) return { status: "not_found" };
+      if (identifiers.length === 0)
+        return grouped
+          ? { status: "indeterminate", reason: "Slurm cannot confirm array member identity" }
+          : { status: "not_found" };
       if (identifiers.length !== 1) {
         return { status: "indeterminate", reason: "multiple Slurm jobs share Kuintessence UUID" };
       }
@@ -645,6 +832,33 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   async cancel(schedulerJobId: string): Promise<void> {
+    const element = arrayElementId.exec(schedulerJobId);
+    if (element) {
+      // scancel may cancel the entire array when the pending member is still folded into its parent.
+      const parent = element[1] as string;
+      const records = async () => {
+        const result = await this.spawner.run(["scontrol", "show", "job", parent, "-o"], {
+          timeoutMs: 10_000,
+        });
+        if (result.exitCode !== 0) throw new Error("Slurm array member identity is unavailable");
+        return result.stdout.split("\n");
+      };
+      const split = (rows: string[]) =>
+        rows.filter((row) => controllerElementId(row) === schedulerJobId).length === 1;
+      const before = await records();
+      if (!split(before)) {
+        if (
+          !before.some(
+            (row) =>
+              slurmField(row, "ArrayJobId") === parent && slurmField(row, "JobState") === "PENDING",
+          )
+        )
+          throw new Error("Slurm array member is unavailable for cancellation");
+        // A hold on the precise element materializes its own pending record.
+        await this.spawner.run(["scontrol", "hold", schedulerJobId], { timeoutMs: 10_000 });
+        if (!split(await records())) throw new Error("Slurm array member stop is unconfirmed");
+      }
+    }
     const { exitCode, stderr } = await this.spawner.run(["scancel", schedulerJobId], {
       timeoutMs: 10_000,
     });
@@ -674,10 +888,21 @@ export class SlurmAdapter implements SchedulerAdapter {
     jobId?: string,
     includeStderr = false,
   ): Promise<string> {
+    const member = arrayElementId.test(schedulerJobId);
+    if (member && isRetainedSchedulerLogJobId(jobId)) {
+      return this.unwrapLogRead(await this.tailLog(join(this.logDir, `kq-${jobId}.out`), lines));
+    }
     // `scontrol show job -o` prints one line of key=value pairs incl. StdOut.
     const scontrol = await this.spawner.run(["scontrol", "show", "job", schedulerJobId, "-o"], {
       timeoutMs: 10_000,
     });
+    if (member && scontrol.exitCode === 0) {
+      if (controllerElementId(scontrol.stdout) !== schedulerJobId)
+        throw new JobLogUnavailableError();
+      const uuid = arrayMemberUuid(schedulerJobId, slurmField(scontrol.stdout, "Comment") ?? "");
+      if (uuid)
+        return this.unwrapLogRead(await this.tailLog(join(this.logDir, `kq-${uuid}.out`), lines));
+    }
     const retainedPath = isRetainedSchedulerLogJobId(jobId)
       ? join(this.logDir, `kq-${jobId}.out`)
       : undefined;
@@ -762,8 +987,9 @@ export class SlurmAdapter implements SchedulerAdapter {
   }
 
   async status(schedulerJobId: string): Promise<JobStatusResult> {
+    const element = arrayElementId.exec(schedulerJobId);
     const { exitCode, stdout } = await this.spawner.run(
-      ["squeue", "--json", "-j", schedulerJobId],
+      ["squeue", ...(element ? ["--array"] : []), "--json", "-j", schedulerJobId],
       { timeoutMs: 10_000 },
     );
 
@@ -781,6 +1007,8 @@ export class SlurmAdapter implements SchedulerAdapter {
     const data = parsed as {
       jobs?: Array<{
         job_id?: number | string;
+        array_job_id?: unknown;
+        array_task_id?: unknown;
         job_state?: unknown;
         exit_code?: { return_code?: unknown; signal?: unknown };
         nodes?: string;
@@ -794,10 +1022,44 @@ export class SlurmAdapter implements SchedulerAdapter {
     // jobs[0]. Compared as strings so the match is schema-agnostic (some builds
     // emit job_id as a string). Fall back to the sole entry when job_id is absent
     // (older format / a correctly-filtered single result).
+    const matches = element
+      ? jobsArr.filter(
+          (j) =>
+            slurmJsonNumber(j.array_job_id) === Number(element[1]) &&
+            slurmJsonNumber(j.array_task_id) === Number(element[2]),
+        )
+      : jobsArr.filter((j) => j.job_id != null && String(j.job_id) === schedulerJobId);
     const job =
-      jobsArr.find((j) => j.job_id != null && String(j.job_id) === schedulerJobId) ??
-      (jobsArr.length === 1 && jobsArr[0]?.job_id == null ? jobsArr[0] : undefined);
-    if (!job) return this.checkCompleted(schedulerJobId);
+      matches.length === 1
+        ? matches[0]
+        : !element && jobsArr.length === 1 && jobsArr[0]?.job_id == null
+          ? jobsArr[0]
+          : undefined;
+    if (!job) {
+      if (
+        element &&
+        !matches.length &&
+        jobsArr.some(
+          (j) =>
+            slurmJsonNumber(j.array_job_id) === Number(element[1]) &&
+            slurmStateName(j.job_state) === "PENDING",
+        )
+      ) {
+        // Some JSON plugins return the folded pending record even with --array.
+        const expanded = await this.spawner.run(
+          ["squeue", "--array", "--noheader", "-j", schedulerJobId, "--format=%i|%T"],
+          { timeoutMs: 10_000 },
+        );
+        const rows = expanded.stdout
+          .trim()
+          .split("\n")
+          .map((row) => row.trim())
+          .filter((row) => row.startsWith(`${schedulerJobId}|`));
+        if (expanded.exitCode === 0 && rows.length === 1 && rows[0] === `${schedulerJobId}|PENDING`)
+          return { status: "queued" };
+      }
+      return this.checkCompleted(schedulerJobId);
+    }
 
     const state = slurmStateName(job.job_state);
     const returnCode = slurmJsonNumber(job.exit_code?.return_code);
@@ -841,9 +1103,12 @@ export class SlurmAdapter implements SchedulerAdapter {
     const { exitCode: sacctExitCode, stdout } = await this.spawner.run(
       [
         "sacct",
+        ...(arrayElementId.test(schedulerJobId) ? ["--array"] : []),
         "-j",
         schedulerJobId,
-        "--format=State%64,ExitCode,JobIDRaw,ElapsedRaw,AllocCPUS,TotalCPU",
+        arrayElementId.test(schedulerJobId)
+          ? "--format=State%64,ExitCode,JobID%64,ElapsedRaw,AllocCPUS,TotalCPU"
+          : "--format=State%64,ExitCode,JobIDRaw,ElapsedRaw,AllocCPUS,TotalCPU",
         "--duplicates",
         "--noheader",
         "--parsable2",
@@ -905,7 +1170,10 @@ export class SlurmAdapter implements SchedulerAdapter {
     );
     if (spawnExit !== 0) throw new Error("Slurm job status is unavailable; retry reconciliation");
     const identifiers = [...stdout.matchAll(/\bJobId=([^\s]+)/g)];
-    if (identifiers.length !== 1 || identifiers[0]?.[1] !== schedulerJobId)
+    const id = arrayElementId.test(schedulerJobId)
+      ? controllerElementId(stdout)
+      : identifiers[0]?.[1];
+    if (identifiers.length !== 1 || id !== schedulerJobId)
       throw new Error("Slurm job status identity is unavailable; retry reconciliation");
     const stateMatch = /\bJobState=(\w+)/.exec(stdout);
     if (!stateMatch) throw new Error("Slurm output did not contain JobState; retry reconciliation");

@@ -1,5 +1,6 @@
 import type { JobSubmit } from "@kuintessence/shared/browser";
-import { Loader2, RefreshCw } from "lucide-react";
+import { Loader2, SearchCheck } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { usePlacementPreview } from "../../lib/use-placement-preview";
 import { toUserFacingError } from "../../lib/user-facing-error";
@@ -16,7 +17,7 @@ import { PlacementPipelineView } from "./PlacementPipelineView";
  *
  * The panel intentionally does NOT auto-refresh on every keystroke —
  * placement runs server-side filters that may be expensive, so the user
- * explicitly clicks "Refresh preview" when they want a new trace.
+ * explicitly clicks "Check available resources" when they want a new trace.
  */
 export interface PlacementPreviewPanelProps {
   /** Returns the current draft job spec, or null when the form is invalid. */
@@ -34,19 +35,30 @@ export function PlacementPreviewPanel({
   const { t } = useTranslation();
   const { trace, isLoading, error, refresh } = usePlacementPreview();
 
+  const [checkedDraft, setCheckedDraft] = useState<{
+    getJobSpec: PlacementPreviewPanelProps["getJobSpec"];
+  } | null>(null);
+  const visibleTrace = checkedDraft?.getJobSpec === getJobSpec ? trace : null;
+  const [preparing, setPreparing] = useState(false);
+  const [preparationError, setPreparationError] = useState<unknown>(null);
   async function handleRefresh() {
-    const job = await getJobSpec();
-    if (!job) return;
+    setPreparationError(null);
+    setCheckedDraft({ getJobSpec });
+    setPreparing(true);
     try {
-      await refresh(job);
-    } catch {
-      // Error surfaces below via `error`.
+      const job = await getJobSpec();
+      if (job) await refresh(job);
+    } catch (failure) {
+      setPreparationError(failure);
+    } finally {
+      setPreparing(false);
     }
   }
 
-  const errorMessage = error
+  const failure = preparationError ?? error;
+  const errorMessage = failure
     ? toUserFacingError(
-        error,
+        failure,
         t("scheduler.placement.preview.loadFailed", {
           defaultValue: "暂时无法生成调度预览，请稍后重试。",
         }),
@@ -55,35 +67,24 @@ export function PlacementPreviewPanel({
 
   return (
     <div className="space-y-2" data-testid="placement-preview-panel">
-      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-        <div className="min-w-0">
-          <div className="text-xs text-muted-foreground">
-            {trace?.federation
-              ? t("federation.clusters.placementNotice")
-              : t("scheduler.placement.preview.subtitle", {
-                  defaultValue: "Run the queue-aware placement pipeline against this draft.",
-                })}
-          </div>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="w-full sm:w-auto"
-          onClick={handleRefresh}
-          disabled={isLoading || !canPreview}
-          data-testid="placement-preview-refresh"
-        >
-          {isLoading ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="h-3.5 w-3.5" />
-          )}
-          <span className="ml-1.5">
-            {t("scheduler.placement.preview.button", { defaultValue: "Refresh preview" })}
-          </span>
-        </Button>
-      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="w-full sm:w-auto"
+        onClick={handleRefresh}
+        disabled={preparing || isLoading || !canPreview}
+        data-testid="placement-preview-refresh"
+      >
+        {preparing || isLoading ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <SearchCheck className="h-3.5 w-3.5" />
+        )}
+        <span className="ml-1.5">
+          {t("scheduler.placement.preview.button", { defaultValue: "Check available resources" })}
+        </span>
+      </Button>
 
       {errorMessage ? (
         <div
@@ -95,20 +96,20 @@ export function PlacementPreviewPanel({
         </div>
       ) : null}
 
-      {trace?.federation ? (
+      {!preparing && visibleTrace?.federation ? (
         <dl className="grid gap-3 py-2 text-sm sm:grid-cols-2">
           <div>
             <dt className="text-muted-foreground">{t("federation.clusters.clusterName")}</dt>
-            <dd className="mt-1 break-words font-medium">{trace.federation.clusterName}</dd>
+            <dd className="mt-1 break-words font-medium">{visibleTrace.federation.clusterName}</dd>
           </div>
           <div>
             <dt className="text-muted-foreground">{t("federation.clusters.profileName")}</dt>
-            <dd className="mt-1 break-words">{trace.federation.profileName}</dd>
+            <dd className="mt-1 break-words">{visibleTrace.federation.profileName}</dd>
           </div>
         </dl>
-      ) : (
-        <PlacementPipelineView trace={trace} onAgentPick={onAgentPick} />
-      )}
+      ) : !preparing && visibleTrace ? (
+        <PlacementPipelineView trace={visibleTrace} onAgentPick={onAgentPick} />
+      ) : null}
     </div>
   );
 }

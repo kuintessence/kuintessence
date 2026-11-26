@@ -70,7 +70,7 @@ export const workflowExecutionJournal = pgTable(
     check("workflow_execution_journal_hash", sql`${t.keyHash} ~ '^[0-9a-f]{64}$'`),
     check(
       "workflow_execution_journal_kind",
-      sql`${t.entry}->>'kind' IN ('definition', 'version', 'node')`,
+      sql`${t.entry}->>'kind' IN ('definition', 'version', 'node', 'generated-files')`,
     ),
   ],
 );

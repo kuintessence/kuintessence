@@ -14,6 +14,7 @@ import { listAllNetDriveFiles } from "../../lib/netdrive-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 import type { JobDetail } from "./types";
 
 interface JobFilesTabProps {
@@ -168,20 +169,20 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
     <div className="@container grid min-w-0 grid-cols-1 gap-4" data-testid="job-files-tab">
       {needsCloudFiles ? (
         <div className="flex justify-end">
-          <Button
+          <RefreshButton
             type="button"
-            size="sm"
             variant="outline"
             disabled={cloudQ.isFetching}
             onClick={() => void cloudQ.refetch()}
             data-testid="job-files-refresh"
-          >
-            {cloudQ.isFetching
-              ? t("common.loading")
-              : cloudError
-                ? t("common.retry")
-                : t("common.refresh")}
-          </Button>
+            label={
+              cloudQ.isFetching
+                ? t("common.loading")
+                : cloudError
+                  ? t("common.retry")
+                  : t("common.refresh")
+            }
+          ></RefreshButton>
         </div>
       ) : null}
       {cloudError ? (

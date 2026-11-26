@@ -147,7 +147,12 @@ export function InterconnectMap({
         coordinateSystem: "geo",
         z: 2,
         data: snapshot.links
-          .filter((l) => visibleSingles.has(l.fromCenterId) && visibleSingles.has(l.toCenterId))
+          .filter(
+            (l) =>
+              l.fromCenterId !== l.toCenterId &&
+              visibleSingles.has(l.fromCenterId) &&
+              visibleSingles.has(l.toCenterId),
+          )
           .flatMap((l) => {
             const from = centerById.get(l.fromCenterId);
             const to = centerById.get(l.toCenterId);

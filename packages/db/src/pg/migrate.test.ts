@@ -59,6 +59,10 @@ class MemoryMigrationTransaction implements PgMigrationTransaction {
     );
   }
 
+  async bindSpackRepositories() {
+    this.events.push("bind-spack-repositories");
+  }
+
   async acquireMigrationLock(): Promise<void> {
     this.events.push("lock-migrations");
   }

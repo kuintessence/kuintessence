@@ -24,8 +24,8 @@ export function WorkflowCreationStepper({
     <nav
       aria-label={t("workflows.creation.stepsLabel")}
       className={cn(
-        "mt-3 grid grid-cols-2 overflow-hidden sm:grid-cols-4",
-        !embedded && "border-b border-border",
+        "grid grid-cols-2 overflow-hidden bg-card sm:grid-cols-4",
+        embedded ? "border-t border-border" : "rounded-xl border border-border shadow-sm",
       )}
       data-testid="workflow-creation-steps"
     >
@@ -41,7 +41,7 @@ export function WorkflowCreationStepper({
             onClick={() => onChange(step)}
             className={cn(
               "flex min-w-0 items-center gap-2 border-b-2 border-transparent px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 ",
-              active && "border-brand text-brand font-semibold",
+              active && "border-brand bg-brand-soft text-brand font-semibold",
               blocked && "cursor-not-allowed",
               blocked && !active && "text-muted-foreground",
             )}
@@ -49,8 +49,10 @@ export function WorkflowCreationStepper({
           >
             <span
               className={cn(
-                "flex h-7 w-7 shrink-0 items-center justify-center text-xs font-semibold",
-                active || complete ? "text-brand" : "text-muted-foreground",
+                "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                active || complete
+                  ? "border-brand bg-brand text-white"
+                  : "border-border bg-background text-muted-foreground",
               )}
             >
               {complete ? <Check className="h-4 w-4" /> : index + 1}

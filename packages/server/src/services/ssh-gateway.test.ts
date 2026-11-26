@@ -41,6 +41,35 @@ function mockWs(): {
 }
 
 describe("SshGateway", () => {
+  test("SFTP opens a subsystem without capturing file bytes as terminal output", () => {
+    const dispatcher = new AgentDispatcher();
+    const ch = mockChannel();
+    dispatcher.register("agent-1", ch);
+    const recordings: unknown[] = [];
+    const gw = new SshGateway({
+      dispatcher,
+      logger: silent,
+      recordSink: async (entry) => {
+        recordings.push(entry);
+      },
+    });
+    const sessionId = gw.openSession({
+      sftp: true,
+      agentId: "agent-1",
+      ws: mockWs().ws,
+      credentials: { host: "example.test", port: 22, username: "u" },
+      user: "u",
+    });
+    expect(ch.messages[0]?.payload.case).toBe("sftpOpen");
+    gw.handleAgentMessage(
+      "agent-1",
+      create(AgentMessageSchema, {
+        payload: { case: "sshOutput", value: { sessionId, data: Uint8Array.of(0, 128, 255) } },
+      }),
+    );
+    gw.closeSession(sessionId);
+    expect(recordings).toEqual([]);
+  });
   test("openSession pushes SshOpen on the agent channel and returns minted sessionId", () => {
     const dispatcher = new AgentDispatcher();
     const ch = mockChannel();
@@ -539,7 +568,7 @@ describe("SshGateway", () => {
         }),
       },
     }) as AgentMessage;
-    const consumed = gw.handleAgentMessage(out);
+    const consumed = gw.handleAgentMessage("agent-1", out);
 
     expect(consumed).toBe(true);
     expect(sent).toHaveLength(1);
@@ -562,6 +591,7 @@ describe("SshGateway", () => {
     });
     const output = (text: string) =>
       gw.handleAgentMessage(
+        "agent-1",
         create(AgentMessageSchema, {
           payload: {
             case: "sshOutput",
@@ -621,6 +651,7 @@ describe("SshGateway", () => {
     });
     gw.forwardResize("s1", 160, 50);
     gw.handleAgentMessage(
+      "agent-1",
       create(AgentMessageSchema, {
         payload: {
           case: "sshOutput",
@@ -652,6 +683,7 @@ describe("SshGateway", () => {
     });
     const output = (text: string) =>
       gw.handleAgentMessage(
+        "agent-1",
         create(AgentMessageSchema, {
           payload: {
             case: "sshOutput",
@@ -721,7 +753,9 @@ describe("SshGateway", () => {
       },
     }) as AgentMessage;
 
-    const consumed = gw.handleAgentMessage(closedMsg);
+    gw.handleAgentMessage("another-agent", closedMsg);
+    expect(gw.activeCount()).toBe(1);
+    const consumed = gw.handleAgentMessage("agent-1", closedMsg);
     expect(consumed).toBe(true);
     expect(closed[0]?.code).toBe(1000);
     expect(closed[0]?.reason).toBe("remote eof");
@@ -735,7 +769,7 @@ describe("SshGateway", () => {
     const heartbeat = create(AgentMessageSchema, {
       payload: { case: "heartbeat", value: { agentId: "x" } },
     }) as AgentMessage;
-    expect(gw.handleAgentMessage(heartbeat)).toBe(false);
+    expect(gw.handleAgentMessage("agent-1", heartbeat)).toBe(false);
   });
 
   test("closeSession sends SshClose to agent and closes the WS", () => {
@@ -839,7 +873,7 @@ describe("SshGateway", () => {
         }),
       },
     }) as AgentMessage;
-    gw.handleAgentMessage(out);
+    gw.handleAgentMessage("agent-1", out);
 
     expect(sent).toHaveLength(0);
     expect(closed[0]?.reason).toBe("ws send failed");

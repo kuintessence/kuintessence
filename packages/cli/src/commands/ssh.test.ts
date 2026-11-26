@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SshWsLike } from "../lib/ssh-session";
 import { runSshCommand } from "./ssh";
 
@@ -135,6 +138,52 @@ describe("runSshCommand", () => {
     expect(capturedUrl).toBe("wss://server.example.com/api/ssh/sessions/agent-1");
     expect(capturedHeaders.Authorization).toBe("Bearer tok-123");
     expect(result.exitCode).toBe(0);
+  });
+
+  test("records remote terminal output in a private cast with split UTF-8 frames and refuses overwrite", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kq-ssh-record-"));
+    const recordPath = join(dir, "session.cast");
+    let connects = 0;
+    try {
+      const run = () =>
+        runSshCommand({
+          recordPath,
+          agentId: "agent-1",
+          noTty: true,
+          config: { serverUrl: "https://gateway.example", token: "fixture" },
+          stdin: makeFakeStdin(),
+          stdout: makeFakeWriter(),
+          stderr: makeFakeWriter(),
+          isTty: false,
+          wsFactory: (url) => {
+            connects++;
+            const ws = makeFakeWs(url, {});
+            queueMicrotask(() => {
+              ws.fireOpen();
+              const bytes = new TextEncoder().encode("你好");
+              ws.fireMessage(bytes.slice(0, 2));
+              ws.fireMessage(bytes.slice(2));
+              ws.fireClose(1000, "ssh ended");
+            });
+            return ws;
+          },
+        });
+      expect((await run()).exitCode).toBe(0);
+      const cast = readFileSync(recordPath, "utf8");
+      const rows = cast
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(rows[0]).toMatchObject({ version: 2, width: 80, height: 24 });
+      expect(rows[1].slice(1)).toEqual(["o", "你好"]);
+      expect(cast).not.toContain("fixture");
+      expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+      expect((await run()).exitCode).toBe(1);
+      expect(connects).toBe(1);
+      expect(readFileSync(recordPath, "utf8")).toBe(cast);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("forwards an injected resize source through to the session", async () => {

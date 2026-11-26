@@ -11,6 +11,9 @@ import {
   dataGrants,
   dataLocations,
   dataReplicas,
+  dataScanRequests,
+  dataUploadSessions,
+  netdriveFiles,
   type PgDb,
 } from "@kuintessence/db";
 import { AppError, ErrorCode, ManagedDatasetRootIdsSchema } from "@kuintessence/shared";
@@ -26,6 +29,7 @@ import {
 } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
 import { isFederationDataset } from "../federation/dataset-authority";
+import type { MinioBackend } from "../storage/minio-client";
 import { hasActiveDataAccess } from "./data-access-decision";
 import type {
   DataAccessGrant,
@@ -39,15 +43,22 @@ import type {
   DataAssetReplica,
   DataAssetVersion,
   DataMarketRepository,
-  DataReplicaInput,
   DataVersionInput,
   PublicAssetReviewInput,
 } from "./data-market";
+import {
+  DataMarketObjectUploadService,
+  PgDataMarketObjectUploadRepository,
+} from "./data-market-upload";
+import { enqueueNotification } from "./notifications";
 
 export class PgDataMarketRepository implements DataMarketRepository {
   private readonly idempotent = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly db: PgDb,
+    private readonly objectStore?: { backend: MinioBackend; retentionDays: number },
+  ) {}
 
   async listCatalogCandidates(
     query: Pick<DataAssetListQuery, "query" | "tag">,
@@ -125,13 +136,59 @@ export class PgDataMarketRepository implements DataMarketRepository {
         providerOrgId: location?.providerOrgId ?? "",
         agentId: location?.agentId ?? "",
         siteId: location?.siteId ?? replica.targetSiteId,
-        clusterId: replica.targetSiteId,
+        clusterId: replica.targetClusterId ?? "",
         status: replica.status as DataAssetReplica["status"],
         locationKind: (location?.kind ?? "cp-local") as DataAssetReplica["locationKind"],
         verifiedAt: replica.verifiedAt,
       })),
       total: totalRows[0]?.total ?? 0,
     };
+  }
+
+  async cancelCpLocalImport(assetId: string, importId: string) {
+    await this.db.transaction(async (tx) => {
+      const binding = and(
+        eq(dataScanRequests.importId, importId),
+        eq(dataScanRequests.assetId, assetId),
+      );
+      const [record] = await tx
+        .select()
+        .from(dataAssetImports)
+        .where(and(eq(dataAssetImports.id, importId), eq(dataAssetImports.targetAssetId, assetId)))
+        .for("update");
+      if (!record) throw new AppError(ErrorCode.NOT_FOUND, "Data import not found", 404);
+      if (record.status === "canceled") return;
+      if (record.sourceKind !== "cp-local" || !["pending", "running"].includes(record.status))
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "Only an active managed-directory import can be canceled",
+          409,
+        );
+      const now = new Date();
+      await tx
+        .update(dataScanRequests)
+        .set({
+          status: "failed",
+          errorMessage: "Import canceled",
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(and(binding, eq(dataScanRequests.status, "pending")));
+      await tx
+        .update(dataAssetImports)
+        .set({ status: "canceled", completedAt: now })
+        .where(eq(dataAssetImports.id, importId));
+      await tx
+        .update(dataAssetVersions)
+        .set({ status: "failed" })
+        .where(
+          and(
+            eq(dataAssetVersions.dataAssetId, assetId),
+            eq(dataAssetVersions.version, record.targetVersion),
+            inArray(dataAssetVersions.status, ["draft", "validating"]),
+          ),
+        );
+    });
   }
 
   async listImports(providerOrgIds: string[], query: { limit: number; offset: number }) {
@@ -334,6 +391,13 @@ export class PgDataMarketRepository implements DataMarketRepository {
           409,
         );
       }
+      await enqueueNotification(tx, {
+        userId: request.requesterUserId,
+        orgId: request.requesterOrgId,
+        eventKey: `data-access:${request.id}:${targetStatus}`,
+        kind: `data-access.${targetStatus}`,
+        message: `${request.id} · ${targetStatus}`,
+      });
       const decidedAt = new Date();
       if (input.review.decision === "reject") {
         const [updated] = await tx
@@ -653,6 +717,198 @@ export class PgDataMarketRepository implements DataMarketRepository {
     return toVersion(row);
   }
 
+  async importNetDriveFile(input: Parameters<DataMarketRepository["importNetDriveFile"]>[0]) {
+    const store = this.objectStore;
+    if (!store)
+      throw new AppError(
+        ErrorCode.INTERNAL_ERROR,
+        "DATA_IMPORT_UNAVAILABLE: object storage is not configured",
+        503,
+      );
+    return this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`${input.requesterId}:${input.idempotencyKey}`}, 0))`,
+      );
+      const [receipt] = await tx
+        .select()
+        .from(dataAssetImports)
+        .where(
+          and(
+            eq(dataAssetImports.requesterUserId, input.requesterId),
+            eq(dataAssetImports.idempotencyKey, input.idempotencyKey),
+          ),
+        );
+      const [existing] = await tx
+        .select()
+        .from(dataAssetVersions)
+        .where(
+          and(
+            eq(dataAssetVersions.dataAssetId, input.assetId),
+            eq(dataAssetVersions.version, input.version),
+          ),
+        );
+      if (receipt) {
+        if (
+          !existing ||
+          receipt.status !== "completed" ||
+          receipt.sourceKind !== "netdrive" ||
+          receipt.sourceNetdriveFileId !== input.netdriveFileId ||
+          receipt.targetAssetId !== input.assetId ||
+          receipt.targetVersion !== input.version
+        )
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Idempotency-Key was already used for a different data import",
+            409,
+          );
+        return { version: toVersion(existing), dataImport: toImport(receipt), replayed: true };
+      }
+      if (existing)
+        throw new AppError(ErrorCode.VALIDATION_ERROR, "Data asset version already exists", 409);
+      const [file] = await tx
+        .select()
+        .from(netdriveFiles)
+        .where(
+          and(
+            eq(netdriveFiles.id, input.netdriveFileId),
+            eq(netdriveFiles.ownerId, input.requesterId),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        )
+        .for("share");
+      if (!file) throw new AppError(ErrorCode.NOT_FOUND, "NetDrive file not found", 404);
+      if (
+        !file.storageVersionId ||
+        file.storageVersionId === "null" ||
+        !file.storageKey.startsWith("netdrive/objects/")
+      )
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "A versioned NetDrive upload is required",
+          409,
+        );
+      const uploads = new DataMarketObjectUploadService(
+        new PgDataMarketObjectUploadRepository(tx, store.backend.dataMarketImmutableBucket),
+        store.backend,
+        { immutableRetentionDays: store.retentionDays },
+      );
+      const session = await uploads.createUploadSession({
+        assetId: input.assetId,
+        version: input.version,
+        ownerUserId: input.requesterId,
+        locationKind: "platform-object",
+        objectPath: file.path,
+        sizeBytes: file.size,
+        mediaType: file.contentType,
+      });
+      await store.backend.copyVersionToStaging(
+        file.storageKey,
+        file.storageVersionId,
+        session.objectKey,
+      );
+      const version = await uploads.commitUploadSession({
+        sessionId: session.id,
+        ownerUserId: input.requesterId,
+        sha256: file.sha256,
+      });
+      const [created] = await tx
+        .insert(dataAssetImports)
+        .values({
+          targetAssetId: input.assetId,
+          targetVersion: input.version,
+          sourceKind: "netdrive",
+          sourceNetdriveFileId: file.id,
+          requesterUserId: input.requesterId,
+          idempotencyKey: input.idempotencyKey,
+          status: "completed",
+          completedAt: new Date(),
+        })
+        .returning();
+      if (!created)
+        throw new AppError(ErrorCode.INTERNAL_ERROR, "Data import insert returned no row", 500);
+      return { version, dataImport: toImport(created), replayed: false };
+    });
+  }
+
+  async importCommittedUpload(input: Parameters<DataMarketRepository["importCommittedUpload"]>[0]) {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`${input.requesterId}:${input.idempotencyKey}`}, 0))`,
+      );
+      const [source] = await tx
+        .select({ version: dataAssetVersions })
+        .from(dataUploadSessions)
+        .innerJoin(
+          dataAssetVersions,
+          eq(dataAssetVersions.id, dataUploadSessions.committedVersionId),
+        )
+        .where(
+          and(
+            eq(dataUploadSessions.id, input.sessionId),
+            eq(dataUploadSessions.ownerUserId, input.requesterId),
+            eq(dataUploadSessions.locationKind, "platform-object"),
+            eq(dataUploadSessions.status, "completed"),
+            eq(dataAssetVersions.status, "ready"),
+            eq(dataAssetVersions.dataAssetId, input.assetId),
+            eq(dataAssetVersions.version, input.version),
+            eq(dataUploadSessions.dataAssetId, input.assetId),
+            eq(dataUploadSessions.targetVersion, input.version),
+          ),
+        );
+      if (!source?.version.manifestDigest) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "A committed upload for this asset and version is required",
+          409,
+        );
+      }
+      // The upload commit already verified bytes and published this immutable version.
+      const [created] = await tx
+        .insert(dataAssetImports)
+        .values({
+          targetAssetId: input.assetId,
+          targetVersion: input.version,
+          sourceKind: "data-market",
+          sourceDataAssetVersionId: source.version.id,
+          requesterUserId: input.requesterId,
+          idempotencyKey: input.idempotencyKey,
+          status: "completed",
+          completedAt: new Date(),
+        })
+        .onConflictDoNothing({
+          target: [dataAssetImports.requesterUserId, dataAssetImports.idempotencyKey],
+        })
+        .returning();
+      const row =
+        created ??
+        (
+          await tx
+            .select()
+            .from(dataAssetImports)
+            .where(
+              and(
+                eq(dataAssetImports.requesterUserId, input.requesterId),
+                eq(dataAssetImports.idempotencyKey, input.idempotencyKey),
+              ),
+            )
+        )[0];
+      if (
+        !row ||
+        row.sourceKind !== "data-market" ||
+        row.sourceDataAssetVersionId !== source.version.id ||
+        row.targetAssetId !== input.assetId ||
+        row.targetVersion !== input.version
+      ) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "Idempotency-Key was already used for a different data import",
+          409,
+        );
+      }
+      return { version: toVersion(source.version), dataImport: toImport(row), replayed: !created };
+    });
+  }
+
   async createCpLocalImport(input: {
     assetId: string;
     version: string;
@@ -787,60 +1043,6 @@ export class PgDataMarketRepository implements DataMarketRepository {
     });
   }
 
-  async createReplica(
-    input: DataReplicaInput & { providerOrgId: string; manifestDigest: string },
-  ): Promise<DataAssetReplica> {
-    if (input.locationKind === "cp-local" && (!input.managedRootId || !input.relativePath)) {
-      throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        "CP-local data replicas require managedRootId and relativePath",
-        400,
-      );
-    }
-    const [location] = await this.db
-      .insert(dataLocations)
-      .values({
-        dataAssetVersionId: input.versionId,
-        providerOrgId: input.providerOrgId,
-        siteId: input.siteId,
-        agentId: input.agentId,
-        managedRootId: input.locationKind === "cp-local" ? (input.managedRootId ?? null) : null,
-        relativePath: input.locationKind === "cp-local" ? (input.relativePath ?? null) : null,
-        kind: input.locationKind,
-        uri:
-          input.locationKind === "cp-local"
-            ? null
-            : `data-market://${input.versionId}/${input.siteId}`,
-        status: "available",
-      })
-      .returning();
-    if (!location)
-      throw new AppError(ErrorCode.INTERNAL_ERROR, "Data location insert returned no row", 500);
-    const [replica] = await this.db
-      .insert(dataReplicas)
-      .values({
-        dataAssetVersionId: input.versionId,
-        targetLocationId: location.id,
-        targetSiteId: input.siteId,
-        manifestDigest: input.manifestDigest,
-        status: "pending",
-      })
-      .returning();
-    if (!replica)
-      throw new AppError(ErrorCode.INTERNAL_ERROR, "Data replica insert returned no row", 500);
-    return {
-      id: replica.id,
-      versionId: input.versionId,
-      providerOrgId: input.providerOrgId,
-      agentId: input.agentId,
-      siteId: input.siteId,
-      clusterId: input.clusterId,
-      status: replica.status as DataAssetReplica["status"],
-      locationKind: input.locationKind,
-      verifiedAt: replica.verifiedAt,
-    };
-  }
-
   async createAccessRequest(input: {
     assetId: string;
     requesterUserId: string;
@@ -937,7 +1139,10 @@ function toImport(
     id: row.id,
     assetId: row.targetAssetId,
     version: row.targetVersion,
-    sourceKind: row.sourceKind as DataAssetImport["sourceKind"],
+    sourceKind:
+      row.sourceKind === "data-market"
+        ? "platform-object"
+        : (row.sourceKind as DataAssetImport["sourceKind"]),
     status: row.status as DataAssetImport["status"],
     agentId,
     managedRootId: row.sourceManagedRootId,

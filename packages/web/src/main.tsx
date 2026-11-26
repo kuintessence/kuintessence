@@ -5,9 +5,6 @@ import { createRoot } from "react-dom/client";
 import { GlobalErrorPage } from "./components/GlobalErrorPage";
 import { ThemeProvider } from "./components/ThemeProvider";
 import "./lib/i18n";
-// Side-effect: registers MonacoEnvironment.getWorker so monaco-editor runs its
-// language services in a Web Worker instead of falling back to the main thread.
-import "./lib/monaco-env";
 import { ensureLocalSession } from "./lib/local-mode";
 import { queryClient } from "./lib/query-client";
 import { routeTree } from "./routeTree.gen";

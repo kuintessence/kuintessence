@@ -1,5 +1,5 @@
 import type { PgDb } from "@kuintessence/db";
-import { SsoGroupMappingSchema } from "@kuintessence/shared";
+import { SsoGroupMappingSchema, type SsoProviderType } from "@kuintessence/shared";
 import type { Logger } from "pino";
 import { encryptSecret } from "./secret-cipher";
 import { loadSsoConfig, saveSsoConfig } from "./sso-config-store";
@@ -7,6 +7,7 @@ import { loadSsoConfig, saveSsoConfig } from "./sso-config-store";
 export interface SsoBootstrapOptions {
   enabled: boolean;
   force: boolean;
+  providerType?: SsoProviderType;
   issuerUrl: string;
   clientId: string;
   clientSecret: string;
@@ -46,7 +47,7 @@ export async function bootstrapSsoConfig(db: PgDb, options: SsoBootstrapOptions)
 
   await saveSsoConfig(db, {
     enabled: true,
-    providerType: "oidc",
+    providerType: options.providerType ?? "oidc",
     issuerUrl: options.issuerUrl,
     clientId: options.clientId,
     clientSecretEncrypted,

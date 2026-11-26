@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { FederationEmpty, FederationRefreshNotice } from "./FederationLayout";
 import { GovernanceForm } from "./GovernanceForm";
@@ -247,13 +248,12 @@ function PolicyPanel({
     <section className="space-y-5" aria-label={t(`federation.governance.kinds.${kind}`)}>
       <FederationRefreshNotice query={list} onRetry={() => void list.refetch()} />
       <div className="flex flex-wrap gap-2">
-        <Button
+        <RefreshButton
           variant="outline"
           disabled={busy || mutation.isPending || generate.isPending || list.isFetching}
           onClick={() => void list.refetch()}
-        >
-          {t("federation.refresh")}
-        </Button>
+          label={t("federation.refresh")}
+        ></RefreshButton>
         {allowed.current ? (
           <Button
             disabled={blocked || !!intent}

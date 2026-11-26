@@ -27,6 +27,25 @@ function directive(source: string, name: string): string | undefined {
   return new RegExp(`^\\s*${name}\\s+([^;]+);`, "m").exec(source)?.[1]?.trim();
 }
 
+test.each([
+  ["single-domain", "/software/api"],
+  ["multi-domain", "/software/api"],
+  ["multi-domain", "/api"],
+])("%s %s forwards streaming material uploads and waits for final verification", async (host, base) => {
+  const source = await readFile(
+    new URL(`../deploy/reverse-proxy/${host}.conf.template`, import.meta.url),
+    "utf8",
+  );
+  const location = block(source, `location ~ ^${base}/spack/material-repositories(?:/|$)`) ?? "";
+  expect(directive(location, "client_max_body_size")).toBe("16g");
+  expect(directive(location, "proxy_request_buffering")).toBe("off");
+  expect(directive(location, "proxy_read_timeout")).toBe("1800s");
+  expect(directive(location, "proxy_set_header Authorization")).toBe("$registry_authorization");
+  expect(directive(location, "proxy_pass")).toBe(`http://\${REGISTRY_UPSTREAM}`);
+  if (base === "/software/api")
+    expect(directive(location, "rewrite")).toBe("^/software(/.*)$ $1 break");
+});
+
 describe("offline delivery proxy chain", () => {
   const routes = [
     ...configurations,

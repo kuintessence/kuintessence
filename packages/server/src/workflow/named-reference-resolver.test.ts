@@ -70,7 +70,7 @@ function repository(): WorkflowNamedReferenceRepository {
         },
       ];
     },
-    findLatestRevision: async (assetId) => {
+    findLatestRevision: async ({ id: assetId }) => {
       if (assetId === USECASE_ASSET_ID) {
         return {
           id: USECASE_REVISION_ID,
@@ -171,9 +171,9 @@ describe("WorkflowNamedReferenceResolver", () => {
   test("rejects a named usecase whose pinned software selector differs from the workflow node", async () => {
     const repo = repository();
     const original = repo.findLatestRevision;
-    repo.findLatestRevision = async (assetId) => {
-      const revision = await original(assetId);
-      if (assetId !== USECASE_ASSET_ID || !revision) return revision;
+    repo.findLatestRevision = async (asset) => {
+      const revision = await original(asset);
+      if (asset.id !== USECASE_ASSET_ID || !revision) return revision;
       return {
         ...revision,
         payload: {

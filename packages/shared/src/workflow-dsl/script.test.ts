@@ -11,7 +11,7 @@ function inlineScriptNode() {
     type: "Script",
     id: "transform",
     name: "Transform",
-    source: { type: "Inline", language: "python", content: "pass" },
+    source: { type: "Inline", language: "python", content: "pass" } as const,
     runtimeProfileId: ASSET_ID,
   };
 }
@@ -133,11 +133,17 @@ describe("Script canonical contract", () => {
   });
 });
 
-describe("Reduce Command script origins", () => {
-  test.each([
-    { type: "Edit", content: "print('summary')" },
-    { type: "Git", url: "https://git.example/research/reducer.git" },
-  ])("preserves the current $type origin contract", (script) => {
+describe("Reduce Command execution references", () => {
+  const script = { source: inlineScriptNode().source, runtimeProfileId: ASSET_ID };
+  test("requires one executor and a bound Sandbox runtime", () => {
     expect(ReducerSchema.parse({ kind: "Command", script })).toEqual({ kind: "Command", script });
+    for (const input of [
+      {},
+      { script: { source: script.source } },
+      { script: { ...script, runtimeContractRef: { name: "python", version: "1" } } },
+      { script, usecaseRef: { usecaseVersionId: ASSET_ID, softwareVersionId: ASSET_ID } },
+    ]) {
+      expect(ReducerSchema.safeParse({ kind: "Command", ...input }).success).toBe(false);
+    }
   });
 });

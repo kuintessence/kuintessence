@@ -46,6 +46,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 const cpClient = vi.hoisted(() => ({
+  estimateInstallation: vi.fn(),
   getSoftwareOverview: vi.fn(),
   previewSoftwareAvailability: vi.fn(),
   saveProviderSoftwarePolicy: vi.fn(),
@@ -217,7 +218,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(screen.getByText("cp.software.agent.inspect"));
     expect(await screen.findByTestId("cp-software-agent-sheet")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("cp.software.refresh"));
+    fireEvent.click(screen.getByLabelText("cp.software.refresh"));
 
     expect(await screen.findByText("cp.software.loadFailed")).toBeTruthy();
     expect(screen.queryByText("Authorization principal is not bound")).toBeNull();
@@ -663,7 +664,7 @@ describe("SoftwarePolicyTable", () => {
       expect(screen.getAllByText("agent-b").length).toBeGreaterThan(1);
     });
 
-    fireEvent.click(screen.getByText("cp.software.refresh"));
+    fireEvent.click(screen.getByLabelText("cp.software.refresh"));
 
     await waitFor(() => {
       expect(screen.queryAllByText("agent-b")).toHaveLength(0);
@@ -675,6 +676,8 @@ describe("SoftwarePolicyTable", () => {
     cpClient.getSoftwareOverview.mockResolvedValue(overview);
     cpClient.previewSoftwareAvailability.mockResolvedValue(preview);
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    const tab = await screen.findByRole("tab", { name: "cp.software.preview.title" });
+    fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
 
     const input = await screen.findByTestId("cp-software-preview-input");
     fireEvent.change(nativeControl(input), { target: { value: "openmpi@4.1.6" } });
@@ -695,6 +698,8 @@ describe("SoftwarePolicyTable", () => {
     cpClient.getSoftwareOverview.mockResolvedValue(overview);
     cpClient.previewSoftwareAvailability.mockResolvedValue(preview);
     render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    const tab = await screen.findByRole("tab", { name: "cp.software.preview.title" });
+    fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
 
     fireEvent.change(nativeControl(await screen.findByTestId("cp-software-preview-input")), {
       target: { value: "openfoam@11" },
@@ -1638,7 +1643,9 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.click(await screen.findByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "cp.software.operations.historyRefresh" }),
+    );
 
     await waitFor(() => {
       expect(cpClient.listSoftwareOperations).toHaveBeenCalledTimes(2);
@@ -1672,7 +1679,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("cp.software.operations.failed")).toBeTruthy();
     expect(screen.queryByText("history unavailable")).toBeNull();
-    fireEvent.click(screen.getByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(screen.getByRole("button", { name: "cp.software.operations.historyRefresh" }));
 
     expect(await screen.findByText("zlib")).toBeTruthy();
     expect(cpClient.listSoftwareOperations).toHaveBeenCalledTimes(2);
@@ -1704,7 +1711,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.click(screen.getByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(screen.getByRole("button", { name: "cp.software.operations.historyRefresh" }));
 
     await waitFor(() => {
       expect(cpClient.listSoftwareOperations).toHaveBeenCalledTimes(2);
@@ -1740,7 +1747,7 @@ describe("SoftwarePolicyTable", () => {
 
     fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
     expect(await screen.findByText("zlib")).toBeTruthy();
-    fireEvent.click(screen.getByText("cp.software.operations.historyRefresh"));
+    fireEvent.click(screen.getByRole("button", { name: "cp.software.operations.historyRefresh" }));
 
     expect(
       await screen.findByTestId("cp-software-operation-error-summary-op-stale-retry-denied"),
@@ -2539,7 +2546,7 @@ describe("SoftwarePolicyTable", () => {
     fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
     const picker = await screen.findByTestId("cp-software-catalog-picker");
     expect(picker.className).toContain("h-[min(88vh,860px)]");
-    expect(picker.className).toContain("overflow-hidden");
+    expect(picker.className).toContain("overflow-visible");
     expect((await screen.findByTestId("cp-software-catalog-grid")).className).toContain(
       "overflow-auto",
     );
@@ -2832,6 +2839,35 @@ describe("SoftwarePolicyTable", () => {
         spec: "hdf5@1.14.3",
       });
     });
+  });
+
+  test("calculates an estimate for the selected Agent and spec without requesting installation", async () => {
+    cpClient.getSoftwareOverview.mockResolvedValue(overview);
+    cpClient.listSoftwareOperations.mockResolvedValue([]);
+    cpClient.estimateInstallation.mockResolvedValue({
+      samples: 0,
+      seconds: 1800,
+      cpuHours: 1,
+      rate: 3,
+      cost: 3,
+    });
+    render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
+    fireEvent.change(
+      nativeControl(screen.getByPlaceholderText("cp.software.operations.specPlaceholder")),
+      { target: { value: "zlib" } },
+    );
+    fireEvent.click(screen.getByText("cp.software.operations.estimate.title"));
+    fireEvent.change(screen.getByLabelText("cp.software.operations.estimate.cpus"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("cp.software.operations.estimate.minutes"), {
+      target: { value: "30" },
+    });
+    fireEvent.click(screen.getByText("cp.software.operations.estimate.calculate"));
+    await screen.findByText(/cp.software.operations.estimate.cost/);
+    expect(cpClient.estimateInstallation).toHaveBeenCalledWith("agent-a", "zlib", 2, 30);
+    expect(cpClient.requestSoftwareOperation).not.toHaveBeenCalled();
   });
 
   test("shows an error toast when an operation cannot be dispatched", async () => {

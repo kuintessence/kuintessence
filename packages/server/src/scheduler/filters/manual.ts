@@ -1,3 +1,4 @@
+import { schedulerLimitRejection } from "@kuintessence/shared";
 import type { AgentRow, FilterStage, PlacementContext, StageResult } from "../types";
 
 /**
@@ -7,6 +8,8 @@ import type { AgentRow, FilterStage, PlacementContext, StageResult } from "../ty
 export class ManualFilter implements FilterStage {
   readonly name = "manual";
   evaluate(agent: AgentRow, ctx: PlacementContext): StageResult {
+    const reason = schedulerLimitRejection(agent.schedulerType, ctx.job.resources);
+    if (reason) return { kind: "reject", reason };
     const policy = ctx.preferences.sitePolicy;
     if (policy?.deniedAgents?.includes(agent.agentId)) {
       return { kind: "reject", reason: "agent denied by preference" };

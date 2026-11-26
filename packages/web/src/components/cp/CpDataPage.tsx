@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useActiveOrganizationId } from "../../lib/active-organization";
 import {
+  type CpDataImportSource,
   type DataAccessRequest,
   type DataAssetSummary,
   type DataAssetVersion,
@@ -12,12 +13,15 @@ import {
 } from "../../lib/data-market-client";
 import { useCpAgentClusterFileRoots, useCpAgents } from "../../lib/use-cp-agents";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { PathPickerField, type PathPickerSelection } from "../files/PathPickerSheet";
 import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import { DataDisclosurePolicyPanel } from "./DataDisclosurePolicyPanel";
 
@@ -34,9 +38,17 @@ export function CpDataPage() {
   const [name, setName] = useState("");
   const [version, setVersion] = useState("v1");
   const [managedRootId, setManagedRootId] = useState("");
+  const [sourceKind, setSourceKind] = useState<"cp-local" | "platform-object" | "netdrive">(
+    "cp-local",
+  );
+  const [sourceFile, setSourceFile] = useState<PathPickerSelection | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadSessionId, setUploadSessionId] = useState("");
   const [relativePath, setRelativePath] = useState("");
   const [agentId, setAgentId] = useState("");
   const [isCreatingAsset, setIsCreatingAsset] = useState(false);
+  const importAttempt = useRef<{ binding: string; key: string } | null>(null);
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(null);
   const agents = useCpAgents();
@@ -60,6 +72,8 @@ export function CpDataPage() {
     enabled: Boolean(activeOrganizationId && selectedVersion),
     queryKey: ["cp-data", activeOrganizationId, "replicas", selectedVersion?.id],
     queryFn: () => dataMarketClient.cpReplicas(selectedVersion?.id ?? ""),
+    refetchInterval: (q) =>
+      q.state.data?.replicas.some((r) => ["pending", "syncing"].includes(r.status)) ? 5000 : false,
   });
   const imports = useQuery({
     enabled: Boolean(activeOrganizationId),
@@ -112,8 +126,32 @@ export function CpDataPage() {
     setAgentId("");
     setManagedRootId("");
     setRelativePath("");
+    setSourceFile(null);
+    setUploadFile(null);
+    setUploadSessionId("");
+    setSourceKind("cp-local");
     cache.removeQueries({ queryKey: ["cp-data", previous] });
   }, [activeOrganizationId, cache]);
+
+  async function cancelImport(assetId: string, importId: string) {
+    const organization = activeOrganizationId;
+    if (!organization || cancelingId) return;
+    setCancelingId(importId);
+    try {
+      await dataMarketClient.cancelCpImport(assetId, importId);
+    } catch (err) {
+      if (organization === activeOrganizationIdRef.current)
+        toast.error(toUserFacingError(err, t("cp.data.cancelFailed")));
+    } finally {
+      setCancelingId(null);
+      await refreshOrganization(organization);
+    }
+  }
+
+  function resetUpload() {
+    setUploadFile(null);
+    setUploadSessionId("");
+  }
 
   async function refreshOrganization(organizationId: string): Promise<void> {
     await Promise.all([
@@ -136,6 +174,7 @@ export function CpDataPage() {
       });
       await refreshOrganization(operationOrganizationId);
       if (activeOrganizationIdRef.current !== operationOrganizationId) return;
+      resetUpload();
       setAsset(created);
       setSelectedVersion(null);
       setName("");
@@ -152,19 +191,52 @@ export function CpDataPage() {
   async function importVersion(): Promise<void> {
     if (!asset || !activeOrganizationId || !version.trim() || versions.isError || isImporting)
       return;
-    if (!agentId.trim() || !managedRootId.trim() || !relativePath.trim()) {
+    if (
+      sourceKind === "cp-local" &&
+      (!agentId.trim() || !managedRootId.trim() || !relativePath.trim())
+    ) {
       toast.error(t("cp.data.managedRootRequired"));
       return;
     }
     const operationOrganizationId = activeOrganizationId;
     setIsImporting(true);
     try {
-      const result = await dataMarketClient.startCpImport(asset.id, version.trim(), {
-        agentId: agentId.trim(),
-        kind: "cp-local",
-        managedRootId: managedRootId.trim(),
-        relativePath: relativePath.trim(),
-      });
+      let sessionId = uploadSessionId.trim();
+      if (sourceKind === "platform-object" && !sessionId && uploadFile) {
+        const uploaded = await dataMarketClient.uploadAssetFileWithSession(
+          asset.id,
+          version.trim(),
+          uploadFile,
+        );
+        if (
+          activeOrganizationIdRef.current !== operationOrganizationId ||
+          selectedAssetIdRef.current !== asset.id
+        )
+          return;
+        sessionId = uploaded.session.id;
+        setUploadSessionId(sessionId);
+      }
+      const source: CpDataImportSource =
+        sourceKind === "platform-object"
+          ? { kind: "platform-object", uploadSessionId: sessionId }
+          : sourceKind === "netdrive"
+            ? { kind: "netdrive", netdriveFileId: sourceFile?.id ?? "" }
+            : {
+                agentId: agentId.trim(),
+                kind: "cp-local",
+                managedRootId: managedRootId.trim(),
+                relativePath: relativePath.trim(),
+              };
+      const binding = JSON.stringify([operationOrganizationId, asset.id, version.trim(), source]);
+      if (importAttempt.current?.binding !== binding)
+        importAttempt.current = { binding, key: crypto.randomUUID() };
+      const result = await dataMarketClient.startCpImport(
+        asset.id,
+        version.trim(),
+        source,
+        importAttempt.current.key,
+      );
+      importAttempt.current = null;
       await refreshOrganization(operationOrganizationId);
       if (activeOrganizationIdRef.current !== operationOrganizationId) return;
       if (selectedAssetIdRef.current !== result.version.assetId) return;
@@ -173,7 +245,7 @@ export function CpDataPage() {
         toast.error(toUserFacingError(result.dataImport.errorMessage, t("cp.data.importFailed")));
         return;
       }
-      if (result.replayed && result.dataImport.status === "completed") {
+      if (result.dataImport.status === "completed") {
         toast.success(t("cp.data.importAvailable"));
         return;
       }
@@ -252,6 +324,7 @@ export function CpDataPage() {
                 assets={assets.data?.assets ?? []}
                 selected={asset?.id ?? null}
                 onSelect={(next) => {
+                  if (next.id !== asset?.id) resetUpload();
                   setAsset(next);
                   setSelectedVersion(null);
                 }}
@@ -268,70 +341,137 @@ export function CpDataPage() {
           <CardContent className="space-y-3">
             <Input
               value={version}
-              onChange={(event) => setVersion(event.target.value)}
+              onChange={(event) => {
+                resetUpload();
+                setVersion(event.target.value);
+              }}
+              disabled={isImporting}
               placeholder="v1"
             />
-            <p className="text-xs text-muted-foreground">{t("cp.data.cpLocalOnly")}</p>
             <label className="space-y-1 text-sm">
-              <span className="font-medium">{t("cp.data.agent")}</span>
-              <ResourceSelectField
-                resourceType="organizations"
-                className="h-10 w-full"
-                value={agentId}
-                onChange={(event) => {
-                  setAgentId(event.target.value);
-                  setManagedRootId("");
-                }}
-                disabled={!activeOrganizationId || agents.isLoading || agents.isError}
-                data-testid="cp-data-agent-select"
+              {t("cp.data.importSource")}
+              <NativeSelect
+                value={sourceKind}
+                disabled={isImporting}
+                onChange={(event) =>
+                  setSourceKind(
+                    event.target.value === "netdrive"
+                      ? "netdrive"
+                      : event.target.value === "platform-object"
+                        ? "platform-object"
+                        : "cp-local",
+                  )
+                }
               >
-                <option value="">{t("cp.data.agentPlaceholder")}</option>
-                {(agents.data ?? []).map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.hostname} ({agent.siteId})
-                  </option>
-                ))}
-              </ResourceSelectField>
+                <option value="cp-local">{t("cp.data.localSource")}</option>
+                <option value="platform-object">{t("cp.data.uploadSource")}</option>
+                <option value="netdrive">NetDrive</option>
+              </NativeSelect>
             </label>
-            <QueryFeedback query={agents} onRetry={() => void agents.refetch()} />
-            {!agents.isLoading && !agents.isError && (agents.data?.length ?? 0) === 0 ? (
-              <p className="text-xs text-muted-foreground">{t("cp.data.agentEmpty")}</p>
-            ) : null}
-            <label className="space-y-1 text-sm">
-              <span className="font-medium">{t("cp.data.managedRoot")}</span>
-              <ResourceSelectField
-                resourceType="cluster-file-roots"
-                className="h-10 w-full"
-                value={managedRootId}
-                onChange={(event) => setManagedRootId(event.target.value)}
-                disabled={!agentId || roots.isLoading || roots.isError || enabledRoots.length === 0}
-                data-testid="cp-data-root-select"
-              >
-                <option value="">{t("cp.data.managedRootPlaceholder")}</option>
-                {enabledRoots.map((root) => (
-                  <option key={root.id} value={root.id}>
-                    {root.label} - {root.path}
-                  </option>
-                ))}
-              </ResourceSelectField>
-            </label>
-            {agentId ? <QueryFeedback query={roots} onRetry={() => void roots.refetch()} /> : null}
-            {agentId && !roots.isLoading && !roots.isError && enabledRoots.length === 0 ? (
-              <p className="text-xs text-muted-foreground">{t("cp.data.managedRootEmpty")}</p>
-            ) : null}
-            <Input
-              value={relativePath}
-              onChange={(event) => setRelativePath(event.target.value)}
-              placeholder={t("cp.data.relativePath")}
-            />
-            <p className="text-xs text-muted-foreground">{t("cp.data.cpLocalHint")}</p>
+            {sourceKind === "netdrive" ? (
+              <PathPickerField
+                mode="file"
+                locations={["cloud"]}
+                title={t("cp.data.netdriveFile")}
+                description={t("cp.data.netdriveHint")}
+                value={sourceFile?.path ?? ""}
+                testId="cp-data-netdrive-file"
+                onSelect={setSourceFile}
+              />
+            ) : sourceKind === "platform-object" ? (
+              <>
+                <label className="block text-sm">
+                  {t("cp.data.platformFile")}
+                  <Input
+                    type="file"
+                    key={`${asset?.id}-${version}`}
+                    disabled={isImporting}
+                    onChange={(e) => {
+                      setUploadFile(e.target.files?.[0] ?? null);
+                      setUploadSessionId("");
+                    }}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  {t("cp.data.committedSession")}
+                  <Input
+                    value={uploadSessionId}
+                    disabled={isImporting}
+                    onChange={(event) => setUploadSessionId(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">{t("cp.data.agent")}</span>
+                  <ResourceSelectField
+                    resourceType="organizations"
+                    className="h-10 w-full"
+                    value={agentId}
+                    onChange={(event) => {
+                      setAgentId(event.target.value);
+                      setManagedRootId("");
+                    }}
+                    disabled={!activeOrganizationId || agents.isLoading || agents.isError}
+                    data-testid="cp-data-agent-select"
+                  >
+                    <option value="">{t("cp.data.agentPlaceholder")}</option>
+                    {(agents.data ?? []).map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.hostname} ({agent.siteId})
+                      </option>
+                    ))}
+                  </ResourceSelectField>
+                </label>
+                <QueryFeedback query={agents} onRetry={() => void agents.refetch()} />
+                {!agents.isLoading && !agents.isError && (agents.data?.length ?? 0) === 0 ? (
+                  <p className="text-xs text-muted-foreground">{t("cp.data.agentEmpty")}</p>
+                ) : null}
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">{t("cp.data.managedRoot")}</span>
+                  <ResourceSelectField
+                    resourceType="cluster-file-roots"
+                    className="h-10 w-full"
+                    value={managedRootId}
+                    onChange={(event) => setManagedRootId(event.target.value)}
+                    disabled={
+                      !agentId || roots.isLoading || roots.isError || enabledRoots.length === 0
+                    }
+                    data-testid="cp-data-root-select"
+                  >
+                    <option value="">{t("cp.data.managedRootPlaceholder")}</option>
+                    {enabledRoots.map((root) => (
+                      <option key={root.id} value={root.id}>
+                        {root.label} - {root.path}
+                      </option>
+                    ))}
+                  </ResourceSelectField>
+                </label>
+                {agentId ? (
+                  <QueryFeedback query={roots} onRetry={() => void roots.refetch()} />
+                ) : null}
+                {agentId && !roots.isLoading && !roots.isError && enabledRoots.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">{t("cp.data.managedRootEmpty")}</p>
+                ) : null}
+                <Input
+                  value={relativePath}
+                  onChange={(event) => setRelativePath(event.target.value)}
+                  placeholder={t("cp.data.relativePath")}
+                />
+                <p className="text-xs text-muted-foreground">{t("cp.data.cpLocalHint")}</p>
+              </>
+            )}
             <Button
               disabled={
                 !activeOrganizationId ||
                 !asset ||
-                !agentId ||
-                !managedRootId ||
-                !relativePath.trim() ||
+                !version.trim() ||
+                (sourceKind === "cp-local"
+                  ? !agentId || !managedRootId || !relativePath.trim()
+                  : sourceKind === "netdrive"
+                    ? !sourceFile?.id
+                    : !uploadSessionId.trim() && !uploadFile) ||
                 isImporting ||
                 versions.isError
               }
@@ -365,8 +505,16 @@ export function CpDataPage() {
                 {t("cp.data.selectVersionForReplicas")}
               </p>
             ) : null}
-            {selectedVersion && !replicas.isError ? (
-              <ReplicaList replicas={replicas.data?.replicas ?? []} />
+            {selectedVersion && replicas.isSuccess ? (
+              <ReplicaList
+                key={`${activeOrganizationId}/${selectedVersion.id}`}
+                version={
+                  versions.data?.versions.find((v) => v.id === selectedVersion.id) ??
+                  selectedVersion
+                }
+                replicas={replicas.data?.replicas ?? []}
+                refresh={() => replicas.refetch()}
+              />
             ) : null}
             {activeOrganizationId && selectedVersion ? (
               <DataDisclosurePolicyPanel
@@ -410,7 +558,13 @@ export function CpDataPage() {
         </CardHeader>
         <CardContent>
           <QueryFeedback query={imports} onRetry={() => void imports.refetch()} />
-          {!imports.isError ? <ImportList imports={imports.data?.imports ?? []} /> : null}
+          {!imports.isError ? (
+            <ImportList
+              imports={imports.data?.imports ?? []}
+              onCancel={cancelImport}
+              canceling={Boolean(cancelingId)}
+            />
+          ) : null}
         </CardContent>
       </section>
     </PageShell>
@@ -434,9 +588,12 @@ function QueryFeedback({
       <span className="min-w-0 break-words">
         {toUserFacingError(query.error, t("cp.data.failed"))}
       </span>
-      <Button onClick={onRetry} size="sm" type="button" variant="outline">
-        {t("common.refresh")}
-      </Button>
+      <RefreshButton
+        onClick={onRetry}
+        type="button"
+        variant="outline"
+        label={t("common.refresh")}
+      ></RefreshButton>
     </div>
   );
 }
@@ -517,22 +674,106 @@ function VersionList({
 
 function ReplicaList({
   replicas,
+  version,
+  refresh,
 }: {
   replicas: Awaited<ReturnType<typeof dataMarketClient.cpReplicas>>["replicas"];
+  version: DataAssetVersion;
+  refresh: () => Promise<unknown>;
 }) {
   const { t } = useTranslation();
+  const [agentId, setAgent] = useState("");
+  const [rootId, setRoot] = useState("");
+  const [busy, setBusy] = useState(false);
+  const attempt = useRef<{ root: string; key: string } | null>(null);
+  const agents = useCpAgents();
+  const agent = agents.data?.find((a) => a.id === agentId);
+  const roots = useCpAgentClusterFileRoots(agentId || null);
+  const targets = (roots.data ?? []).filter(
+    (r) => r.enabled && r.agentId === agentId && agent?.managedDatasetRootIds?.includes(r.id),
+  );
+  async function submit(cancelId?: string) {
+    setBusy(true);
+    try {
+      if (cancelId) await dataMarketClient.cancelReplica(version.id, cancelId);
+      else {
+        if (attempt.current?.root !== rootId)
+          attempt.current = { root: rootId, key: crypto.randomUUID() };
+        await dataMarketClient.createReplica(
+          version.id,
+          { agentId, managedRootId: rootId, locationKind: "cp-local" },
+          attempt.current.key,
+        );
+        attempt.current = null;
+      }
+      await refresh();
+    } catch (err) {
+      toast.error(toUserFacingError(err, t("cp.data.failed")));
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
-    <div className="space-y-1">
-      {replicas.length === 0 ? (
+    <div className="space-y-2">
+      {version.status === "ready" && (
+        <>
+          <NativeSelect
+            aria-label={t("cp.data.replicaAgent")}
+            value={agentId}
+            disabled={busy}
+            onChange={(event) => {
+              setAgent(event.target.value);
+              setRoot("");
+            }}
+          >
+            <option value="">{t("cp.data.replicaAgent")}</option>
+            {(agents.data ?? []).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.hostname}
+              </option>
+            ))}
+          </NativeSelect>
+          <NativeSelect
+            aria-label={t("cp.data.replicaRoot")}
+            value={rootId}
+            disabled={!agentId || busy}
+            onChange={(event) => setRoot(event.target.value)}
+          >
+            <option value="">{t("cp.data.replicaRoot")}</option>
+            {targets.map((root) => (
+              <option key={root.id} value={root.id}>
+                {root.label}
+              </option>
+            ))}
+          </NativeSelect>
+          <Button
+            disabled={busy || !targets.some((root) => root.id === rootId)}
+            onClick={() => void submit()}
+          >
+            {t("cp.data.createReplica")}
+          </Button>
+        </>
+      )}
+      {replicas.length === 0 && (
         <p className="text-xs text-muted-foreground">{t("cp.data.replicaEmpty")}</p>
-      ) : null}
+      )}
       {replicas.map((replica) => (
-        <p className=" p-2 text-xs" key={replica.id}>
+        <div className="flex items-center gap-2 text-xs" key={replica.id}>
           {t("cp.data.runnableCenter", {
             center: `${replica.siteId}/${replica.clusterId}`,
             status: replica.status,
           })}
-        </p>
+          {["pending", "syncing"].includes(replica.status) && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void submit(replica.id)}
+            >
+              {t("cp.data.cancelReplica")}
+            </Button>
+          )}
+        </div>
       ))}
     </div>
   );
@@ -540,7 +781,11 @@ function ReplicaList({
 
 function ImportList({
   imports,
+  onCancel,
+  canceling,
 }: {
+  onCancel: (assetId: string, importId: string) => Promise<void>;
+  canceling: boolean;
   imports: Awaited<ReturnType<typeof dataMarketClient.cpImports>>["imports"];
 }) {
   const { t } = useTranslation();
@@ -569,6 +814,17 @@ function ImportList({
               <Badge variant={item.status === "failed" ? "failed" : "outline"}>
                 {t(statusKey)}
               </Badge>
+              {item.sourceKind === "cp-local" &&
+              (item.status === "pending" || item.status === "running") ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={canceling}
+                  onClick={() => void onCancel(item.assetId, item.id)}
+                >
+                  {t("cp.data.cancelImport")}
+                </Button>
+              ) : null}
             </div>
             {item.errorMessage ? (
               <p className="mt-1 break-words text-status-failed">

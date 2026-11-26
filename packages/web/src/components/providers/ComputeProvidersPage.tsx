@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
+import { RefreshButton } from "../ui/refresh-button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 const fields = ["description", "contactName", "email", "phone", "address", "website"] as const;
@@ -81,10 +82,39 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
       client.invalidateQueries({ queryKey: ["admin", "authz"] }),
     ]);
   }
+  function countLink(provider: ComputeProvider, kind: "centers" | "agents" | "members") {
+    const links = {
+      centers: {
+        href: `${mode === "operator" ? "/interconnect" : "/cp/interconnect"}?organizationId=${encodeURIComponent(provider.id)}#availability-zones`,
+        count: provider.centerCount,
+        label: "providers.viewCenters",
+      },
+      agents: {
+        href: `${mode === "operator" ? "/operations" : "/cp/agents"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#clusters" : ""}`,
+        count: provider.agentCount,
+        label: "providers.viewAgents",
+      },
+      members: {
+        href: `${mode === "operator" ? "/operations" : "/cp/users"}?organizationId=${encodeURIComponent(provider.id)}${mode === "operator" ? "#users" : ""}`,
+        count: provider.memberCount,
+        label: "providers.viewMembers",
+      },
+    } as const;
+    const { href, count, label } = links[kind];
+    return (
+      <a
+        className="text-brand underline underline-offset-4"
+        href={href}
+        aria-label={t(label, { name: provider.name, count })}
+      >
+        {count}
+      </a>
+    );
+  }
   const title = t(mode === "operator" ? "providers.title" : "providers.selfTitle");
   return (
     <PageShell data-testid="compute-providers-page">
-      <PageHeader title={title} />
+      <PageHeader title={title} subtitle={t("providers.centersHint")} />
       <div className="kq-fill-row">
         <form
           className="flex min-w-0 basis-full gap-2 sm:basis-80"
@@ -108,9 +138,11 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
             {t("providers.searchButton")}
           </Button>
         </form>
-        <Button variant="outline" onClick={() => query.refetch()}>
-          {t("providers.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          onClick={() => query.refetch()}
+          label={t("providers.refresh")}
+        ></RefreshButton>
         {mode === "operator" && canEdit && !query.error && (
           <Button
             onClick={() => {
@@ -143,27 +175,28 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                       <button
                         type="button"
                         className="min-w-0 text-left font-medium text-brand [overflow-wrap:anywhere] hover:underline"
+                        title={provider.name}
                         onClick={() => openProvider(provider.id)}
                       >
                         {provider.name}
                       </button>
-                      {canEdit && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openProvider(provider.id, true)}
-                        >
-                          {t("providers.edit")}
-                        </Button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openProvider(provider.id, canEdit)}
+                      >
+                        {t(canEdit ? "providers.edit" : "providers.view")}
+                      </Button>
                     </div>
                     <dl className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
-                      {[
-                        ["contactName", provider.profile.contactName || "—"],
-                        ["centers", provider.centerCount],
-                        ["agents", provider.agentCount],
-                        ["members", provider.memberCount],
-                      ].map(([key, value]) => (
+                      {(
+                        [
+                          ["contactName", provider.profile.contactName || "—"],
+                          ["centers", countLink(provider, "centers")],
+                          ["agents", countLink(provider, "agents")],
+                          ["members", countLink(provider, "members")],
+                        ] as const
+                      ).map(([key, value]) => (
                         <div key={key} className="min-w-0">
                           <dt className="text-xs text-muted-foreground">{t(`providers.${key}`)}</dt>
                           <dd className="tabular-nums [overflow-wrap:anywhere]">{value}</dd>
@@ -192,7 +225,8 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                       <TableCell className="min-w-44 px-4 py-3">
                         <button
                           type="button"
-                          className="break-words text-left text-brand hover:underline"
+                          className="min-w-0 text-left font-medium text-brand [overflow-wrap:anywhere] hover:underline"
+                          title={provider.name}
                           onClick={() => openProvider(provider.id)}
                         >
                           {provider.name}
@@ -202,24 +236,22 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                         {provider.profile.contactName || "—"}
                       </TableCell>
                       <TableCell className="px-4 py-3 tabular-nums">
-                        {provider.centerCount}
+                        {countLink(provider, "centers")}
                       </TableCell>
                       <TableCell className="px-4 py-3 tabular-nums">
-                        {provider.agentCount}
+                        {countLink(provider, "agents")}
                       </TableCell>
                       <TableCell className="px-4 py-3 tabular-nums">
-                        {provider.memberCount}
+                        {countLink(provider, "members")}
                       </TableCell>
                       <TableCell className="px-4 py-3">
-                        {canEdit && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openProvider(provider.id, true)}
-                          >
-                            {t("providers.edit")}
-                          </Button>
-                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openProvider(provider.id, canEdit)}
+                        >
+                          {t(canEdit ? "providers.edit" : "providers.view")}
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}

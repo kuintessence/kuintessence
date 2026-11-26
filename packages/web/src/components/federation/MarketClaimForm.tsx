@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 import { materialDigest } from "./asset-material";
 
 export async function loadMarketClaimRequests(
@@ -294,7 +295,7 @@ export function MarketClaimForm({
         >
           {t("federation.market.review")}
         </Button>
-        <Button
+        <RefreshButton
           variant="outline"
           disabled={disabled}
           onClick={() => {
@@ -302,9 +303,8 @@ export function MarketClaimForm({
             if (selected) void approval.refetch();
             if (selected) void requests.refetch();
           }}
-        >
-          {t("federation.refresh")}
-        </Button>
+          label={t("federation.refresh")}
+        ></RefreshButton>
         <Button variant="ghost" disabled={disabled} onClick={onCancel}>
           {t("federation.cancel")}
         </Button>

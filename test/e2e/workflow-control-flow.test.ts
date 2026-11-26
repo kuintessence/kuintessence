@@ -689,7 +689,7 @@ function loopReduceWorkflow(): string {
         name: "stats",
         from: { loop: "sweep", output: "values" },
         reducer: { kind: "Statistics", over: "values", metrics: ["mean", "max", "min"] },
-        output: { kind: "SingleFile", descriptor: "stats" },
+        output: { kind: "Value", descriptor: "stats" },
       },
     ],
     relations: [
@@ -831,7 +831,7 @@ function reduceGalleryWorkflow(): string {
         name: "wordCollect",
         from: { loop: "wordSweep", output: "parts" },
         reducer: { kind: "Collect" },
-        output: { kind: "SingleFile", descriptor: "words" },
+        output: { kind: "Value", descriptor: "words" },
       },
       {
         type: "Reduce",
@@ -839,7 +839,7 @@ function reduceGalleryWorkflow(): string {
         name: "wordConcat",
         from: { loop: "wordSweep", output: "parts" },
         reducer: { kind: "Concat" },
-        output: { kind: "SingleFile", descriptor: "joined" },
+        output: { kind: "Value", descriptor: "joined" },
       },
       {
         type: "Generate",
@@ -895,7 +895,7 @@ function reduceGalleryWorkflow(): string {
             },
           ],
         },
-        output: { kind: "SingleFile", descriptor: "rows" },
+        output: { kind: "Value", descriptor: "rows" },
       },
     ],
     relations: [

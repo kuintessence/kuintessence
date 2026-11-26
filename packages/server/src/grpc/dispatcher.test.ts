@@ -29,6 +29,17 @@ function mockChannel() {
 }
 
 describe("AgentDispatcher", () => {
+  test("update commands require the negotiated supervisor capability", () => {
+    const dispatcher = new AgentDispatcher();
+    const legacy = mockChannel();
+    dispatcher.register("a", legacy);
+    expect(dispatcher.pushAgentUpdate("a", "request", "a".repeat(64))).toBe(false);
+    expect(legacy.messages).toHaveLength(0);
+    const capable = { ...mockChannel(), agentUpdateV1: true };
+    dispatcher.register("a", capable);
+    expect(dispatcher.pushAgentUpdate("a", "request", "a".repeat(64))).toBe(true);
+    expect(capable.messages[0]?.payload.case).toBe("agentUpdateRequest");
+  });
   test("forwards structured Spack intent while leaving the legacy command fail-closed", () => {
     const dispatcher = new AgentDispatcher();
     const channel = mockChannel();
@@ -542,6 +553,30 @@ describe("AgentDispatcher", () => {
     expect(ch1.messages).toHaveLength(1);
     expect(ch2.messages).toHaveLength(1);
   });
+});
+
+test("keeps scheduler limits on the wire and rechecks the channel before dispatch", () => {
+  const dispatcher = new AgentDispatcher();
+  const request = dispatcher.buildDispatchJob("j", {
+    jobIdInternal: "j",
+    forEachGroup: "a".repeat(64),
+    name: "test",
+    command: "true",
+    resources: {
+      cpus: 4,
+      memoryMb: 256,
+      schedulerLimits: { nodeCount: 2, stopTime: 4_000_000_000 },
+    },
+  });
+  const message = fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, request));
+  expect(message.payload.value).toHaveProperty("forEachGroup", "a".repeat(64));
+  expect(
+    message.payload.case === "dispatchJob" && message.payload.value.schedulerLimits,
+  ).toMatchObject({ nodeCount: 2, stopTime: 4_000_000_000n });
+  dispatcher.register("a", { ...mockChannel(), jobSchedulerLimits: true });
+  expect(dispatcher.pushPreparedDispatch("a", message)).toBe(true);
+  dispatcher.register("a", mockChannel());
+  expect(dispatcher.pushPreparedDispatch("a", message)).toBe(false);
 });
 
 test("pinned dispatch survives encoding and refuses a legacy or unverified replacement channel", () => {

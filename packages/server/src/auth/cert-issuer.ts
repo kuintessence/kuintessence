@@ -71,6 +71,7 @@ export function issueAgentCert(input: IssueAgentCertInput): IssuedAgentCert {
   ]);
   cert.setIssuer(caCert.subject.attributes);
   cert.setExtensions([
+    ...(ca.distributionOrigin ? distributionExtensions(ca.distributionOrigin) : []),
     { name: "basicConstraints", cA: false, critical: true },
     {
       name: "keyUsage",
@@ -107,4 +108,24 @@ function computeFingerprint(cert: forge.pki.Certificate): string {
   const derBytes = forge.asn1.toDer(asn1).getBytes();
   const buf = Buffer.from(derBytes, "binary");
   return createHash("sha256").update(buf).digest("hex");
+}
+
+function distributionExtensions(origin: string) {
+  const base = new URL("/api/agent-pki/", origin).href;
+  const { asn1 } = forge;
+  const aia = asn1.create(asn1.Class.UNIVERSAL, asn1.Type.SEQUENCE, true, [
+    asn1.create(asn1.Class.UNIVERSAL, asn1.Type.SEQUENCE, true, [
+      asn1.create(
+        asn1.Class.UNIVERSAL,
+        asn1.Type.OID,
+        false,
+        asn1.oidToDer("1.3.6.1.5.5.7.48.1").getBytes(),
+      ),
+      asn1.create(asn1.Class.CONTEXT_SPECIFIC, 6, false, `${base}ocsp`),
+    ]),
+  ]);
+  return [
+    { name: "cRLDistributionPoints", altNames: [{ type: 6, value: `${base}crl` }] },
+    { id: "1.3.6.1.5.5.7.1.1", value: asn1.toDer(aia).getBytes() },
+  ];
 }

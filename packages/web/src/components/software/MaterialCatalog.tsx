@@ -39,22 +39,21 @@ export function MaterialCatalog({
   const [catalog, setCatalog] = useState<SpackMaterialCatalog | null>(null);
   const [error, setError] = useState<{ cause: unknown } | null>(null);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(0);
+  const [cursors, setCursors] = useState<string[]>([]);
   const active = useRef<AbortController | null>(null);
   const mounted = useRef(false);
   const latestCurrent = useRef(isCurrent);
   latestCurrent.current = isCurrent;
   const query = SpackMaterialCatalogQuerySchema.safeParse(repository === "" ? {} : { repository });
-  const pageCount = Math.max(1, Math.ceil((catalog?.releases.length ?? 0) / PAGE_SIZE));
 
-  const load = useCallback(async (input: SpackMaterialCatalogQuery) => {
+  const load = useCallback(async (input: SpackMaterialCatalogQuery, history: string[] = []) => {
     if (!mounted.current || !latestCurrent.current()) return;
     active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
     setCatalog(null);
     setError(null);
-    setPage(0);
+    setCursors(history);
     setLoading(true);
     const current = () =>
       mounted.current &&
@@ -62,7 +61,10 @@ export function MaterialCatalog({
       active.current === controller &&
       !controller.signal.aborted;
     try {
-      const result = await listSpackMaterials(input, controller.signal);
+      const result = await listSpackMaterials(
+        { ...input, limit: PAGE_SIZE, after: history.at(-1) },
+        controller.signal,
+      );
       if (current()) setCatalog(result);
     } catch (cause) {
       if (current()) setError({ cause });
@@ -90,7 +92,7 @@ export function MaterialCatalog({
     setCatalog(null);
     setError(null);
     setLoading(false);
-    setPage(0);
+    setCursors([]);
   }
 
   return (
@@ -177,102 +179,107 @@ export function MaterialCatalog({
         </p>
       ) : null}
       {catalog && catalog.releases.length > 0 ? (
-        <>
-          <div className="max-h-[28rem] overflow-auto">
-            <Table
-              className="w-full min-w-[40rem] table-fixed text-left text-xs"
-              aria-label={t("materials.catalogTitle")}
-            >
-              <TableHeader className="sticky top-0 z-10 border-b border-border text-muted-foreground">
-                <TableRow>
-                  <TableHead className="w-[25%] p-2 font-medium">
-                    {t("materials.repository")}
-                  </TableHead>
-                  <TableHead className="p-2 font-medium">Spec</TableHead>
-                  <TableHead className="w-[20%] p-2 font-medium">{t("materials.target")}</TableHead>
-                  <TableHead className="w-20 p-2 font-medium">
-                    {t("materials.catalogSourceCount")}
-                  </TableHead>
-                  <TableHead className="w-28 p-2 font-medium">
-                    {t("materials.catalogTotalBytes")}
-                  </TableHead>
-                  <TableHead className="w-16 p-2 font-medium">{t("materials.actions")}</TableHead>
+        <div className="max-h-[28rem] overflow-auto">
+          <Table
+            className="w-full min-w-[40rem] table-fixed text-left text-xs"
+            aria-label={t("materials.catalogTitle")}
+          >
+            <TableHeader className="sticky top-0 z-10 border-b border-border text-muted-foreground">
+              <TableRow>
+                <TableHead className="w-[25%] p-2 font-medium">
+                  {t("materials.repository")}
+                </TableHead>
+                <TableHead className="p-2 font-medium">Spec</TableHead>
+                <TableHead className="w-[20%] p-2 font-medium">{t("materials.target")}</TableHead>
+                <TableHead className="w-20 p-2 font-medium">
+                  {t("materials.catalogSourceCount")}
+                </TableHead>
+                <TableHead className="w-28 p-2 font-medium">
+                  {t("materials.catalogTotalBytes")}
+                </TableHead>
+                <TableHead className="w-16 p-2 font-medium">{t("materials.actions")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {catalog.releases.map((release) => (
+                <TableRow
+                  key={`${release.repositoryId}:${release.manifestDigest}`}
+                  className="border-b border-border"
+                >
+                  <TableCell className="break-all p-2 align-top font-mono">
+                    {release.repository}
+                  </TableCell>
+                  <TableCell className="break-all p-2 align-top font-mono">
+                    {release.spec}
+                  </TableCell>
+                  <TableCell className="break-all p-2 align-top font-mono">
+                    {release.target}
+                  </TableCell>
+                  <TableCell className="break-all p-2 align-top tabular-nums">
+                    {release.sourceCount}
+                  </TableCell>
+                  <TableCell className="break-all p-2 align-top tabular-nums">
+                    {release.totalBytes}
+                  </TableCell>
+                  <TableCell className="p-2 align-top">
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      title={t("materials.inspect")}
+                      aria-label={t("materials.inspect")}
+                      disabled={inspectionDisabled}
+                      onClick={() => {
+                        if (mounted.current && latestCurrent.current()) {
+                          onInspect({
+                            repositoryId: release.repositoryId,
+                            manifestDigest: release.manifestDigest,
+                          });
+                        }
+                      }}
+                    >
+                      <Eye />
+                    </Button>
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {catalog.releases.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((release) => (
-                  <TableRow
-                    key={`${release.repositoryId}:${release.manifestDigest}`}
-                    className="border-b border-border"
-                  >
-                    <TableCell className="break-all p-2 align-top font-mono">
-                      {release.repository}
-                    </TableCell>
-                    <TableCell className="break-all p-2 align-top font-mono">
-                      {release.spec}
-                    </TableCell>
-                    <TableCell className="break-all p-2 align-top font-mono">
-                      {release.target}
-                    </TableCell>
-                    <TableCell className="break-all p-2 align-top tabular-nums">
-                      {release.sourceCount}
-                    </TableCell>
-                    <TableCell className="break-all p-2 align-top tabular-nums">
-                      {release.totalBytes}
-                    </TableCell>
-                    <TableCell className="p-2 align-top">
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        title={t("materials.inspect")}
-                        aria-label={t("materials.inspect")}
-                        disabled={inspectionDisabled}
-                        onClick={() => {
-                          if (mounted.current && latestCurrent.current()) {
-                            onInspect({
-                              repositoryId: release.repositoryId,
-                              manifestDigest: release.manifestDigest,
-                            });
-                          }
-                        }}
-                      >
-                        <Eye />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-          <div className="flex items-center justify-end gap-2 text-xs">
-            <span className="tabular-nums">
-              {page + 1} / {pageCount}
-            </span>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              disabled={page === 0}
-              title={t("materials.catalogPrevious")}
-              aria-label={t("materials.catalogPrevious")}
-              onClick={() => setPage((value) => Math.max(0, value - 1))}
-            >
-              <ChevronLeft />
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              disabled={page + 1 >= pageCount}
-              title={t("materials.catalogNext")}
-              aria-label={t("materials.catalogNext")}
-              onClick={() => setPage((value) => Math.min(pageCount - 1, value + 1))}
-            >
-              <ChevronRight />
-            </Button>
-          </div>
-        </>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : null}
+      {catalog && (catalog.releases.length > 0 || cursors.length > 0) ? (
+        <div className="flex items-center justify-end gap-2 text-xs">
+          <span className="tabular-nums">
+            {t("materials.catalogPage", { page: cursors.length + 1 })}
+          </span>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            disabled={cursors.length === 0}
+            title={t("materials.catalogPrevious")}
+            aria-label={t("materials.catalogPrevious")}
+            onClick={() => {
+              if (query.success) void load(query.data, cursors.slice(0, -1));
+            }}
+          >
+            <ChevronLeft />
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            disabled={!catalog.nextCursor}
+            title={t("materials.catalogNext")}
+            aria-label={t("materials.catalogNext")}
+            onClick={() => {
+              if (query.success && catalog.nextCursor)
+                void load(query.data, [...cursors, catalog.nextCursor]);
+            }}
+          >
+            <ChevronRight />
+          </Button>
+        </div>
       ) : null}
     </div>
   );

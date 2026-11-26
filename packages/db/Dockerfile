@@ -19,7 +19,7 @@ COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/db/tsconfig.json ./packages/db/
 
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc bun install --frozen-lockfile --ignore-scripts
 
 COPY packages/shared ./packages/shared
 COPY packages/db ./packages/db

@@ -1,0 +1,4 @@
+ALTER TABLE "ecosystem_release_assets" DROP CONSTRAINT "ecosystem_release_assets_kind_check";--> statement-breakpoint
+ALTER TABLE "software_assets" DROP CONSTRAINT "software_assets_kind_check";--> statement-breakpoint
+ALTER TABLE "ecosystem_release_assets" ADD CONSTRAINT "ecosystem_release_assets_kind_check" CHECK ("ecosystem_release_assets"."kind" IN ('data-product', 'site-runtime', 'spack-package', 'usecase', 'workflow-template', 'sandbox-script'));--> statement-breakpoint
+ALTER TABLE "software_assets" ADD CONSTRAINT "software_assets_kind_check" CHECK ("software_assets"."kind" IN ('site-runtime', 'spack-package', 'usecase', 'workflow-template', 'sandbox-script'));

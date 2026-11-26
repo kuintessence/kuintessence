@@ -13,9 +13,10 @@ import { randomSerial } from "./cert-serial";
  *
  * This helper creates a development-grade self-signed authority.
  * Production CA provisioning requires separate operator configuration.
- * CRL/OCSP are not implemented; see `agent_certs.revoked_at` for revocation.
+ * The revocation ledger feeds both online validation and signed CRL/OCSP responses.
  */
 export interface CaMaterial {
+  readonly distributionOrigin?: string;
   /** PEM-encoded self-signed CA certificate. */
   readonly certPem: string;
   /** PEM-encoded RSA private key (PKCS#8). NEVER log this. */

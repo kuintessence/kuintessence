@@ -233,6 +233,93 @@ test("visits loop/inline scopes and pins ByVersion subworkflows without querying
   expect(workflowDsl.validateWorkflow(result.workflow)).toEqual([]);
 });
 
+const inlineCommandSource = { type: "Inline", language: "bash", content: "true" };
+test.each([
+  [
+    "fixed usecase",
+    { usecaseRef: { usecaseVersionId: sourceUsecase, softwareVersionId: sourceSoftware } },
+    "usecase",
+  ],
+  [
+    "named usecase",
+    { usecaseRef: { ...selector, name: "compress" }, softwareRef: selector },
+    "usecase",
+  ],
+  [
+    "inline script",
+    { script: { source: inlineCommandSource, runtimeProfileId: sourceProfile } },
+    "runtime",
+  ],
+  [
+    "named script",
+    { script: { scriptRef: { ...selector, name: "script" }, runtimeContractRef: contract } },
+    "source",
+  ],
+] as const)("binds a Command %s on the receiving site", async (_name, binding, missingField) => {
+  const f = fixture([
+    {
+      type: "Loop",
+      id: "loop",
+      name: "Loop",
+      mode: "ForEach",
+      maxIterations: 2,
+      over: { expr: "[1, 2]" },
+      body: {
+        nodeDrafts: [
+          {
+            type: "Generate",
+            id: "gen",
+            name: "Generate",
+            rule: { kind: "Enumeration", values: [1] },
+            output: { as: "List", descriptor: "out" },
+          },
+        ],
+      },
+      outputs: [
+        { descriptor: "items", from: { node: "gen", output: "out" }, aggregate: "Collect" },
+      ],
+    },
+    {
+      type: "Reduce",
+      id: "sum",
+      name: "Sum",
+      from: { loop: "loop", output: "items" },
+      reducer: { kind: "Command", ...binding },
+      output: { kind: "Value", descriptor: "sum" },
+    },
+  ]);
+  const result = await materializeFederationWorkflow(f.input);
+  if (
+    f.uc.local.kind !== "software" ||
+    f.sw.local.kind !== "software" ||
+    f.script.local.kind !== "software"
+  )
+    throw new Error("Missing software fixture");
+  const expected =
+    "usecaseRef" in binding
+      ? {
+          usecaseRef: {
+            usecaseVersionId: f.uc.local.revision.id,
+            softwareVersionId: f.sw.local.revision.id,
+          },
+        }
+      : {
+          script: {
+            source:
+              "source" in binding.script
+                ? inlineCommandSource
+                : { type: "AssetRevision", assetRevisionId: f.script.local.revision.id },
+            runtimeContractRef: contract,
+          },
+        };
+  expect(result.workflow.spec.nodeDrafts[1]).toMatchObject({ reducer: expected });
+  if (missingField === "runtime") f.input.environment.runtimeBindings = [];
+  else f.input.inputs.bindings = [];
+  await expect(materializeFederationWorkflow(f.input)).rejects.toMatchObject({
+    path: `spec.sum.sum.${missingField}`,
+  });
+});
+
 test("bounds recursive ByVersion graphs without expanding recursion into the document", async () => {
   const f = fixture([
     {

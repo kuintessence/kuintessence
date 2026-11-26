@@ -10,18 +10,27 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import type { KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { SessionPane } from "./SessionPane";
 
 interface SessionsResp {
   sessions: TerminalSession[];
+}
+
+interface ClosingFocus {
+  id: string;
+  origin: HTMLElement;
+  restoreOrigin: boolean;
+  stop: () => void;
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -34,12 +43,16 @@ const STATUS_DOT: Record<string, string> = {
 export function TerminalPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const tabsId = useId();
   const [newOpen, setNewOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const pendingCloseIds = useRef(new Set<string>());
+  const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const closingFocus = useRef<ClosingFocus | null>(null);
+  const openShellRef = useRef<HTMLButtonElement>(null);
+  const refreshRef = useRef<HTMLButtonElement>(null);
 
-  const [closeStates, setCloseStates] = useState<
-    Record<string, { pending: true } | { error: string }>
-  >({});
+  const [closeErrors, setCloseErrors] = useState<Record<string, string>>({});
 
   const sessionsQ = useQuery({
     queryKey: ["terminal-sessions"],
@@ -52,8 +65,57 @@ export function TerminalPage() {
   const open = sessions.filter((s) => s.state !== "closed");
   const active = open.find((s) => s.id === activeId) ?? open[0] ?? null;
 
+  useEffect(() => () => closingFocus.current?.stop(), []);
+
+  useLayoutEffect(() => {
+    const pendingFocus = closingFocus.current;
+    if (!pendingFocus) return;
+    const stillOpen = open.some((session) => session.id === pendingFocus.id);
+    if (stillOpen && !pendingFocus.restoreOrigin) return;
+
+    pendingFocus.stop();
+    if (document.activeElement !== document.body && document.activeElement !== pendingFocus.origin)
+      return;
+
+    if (stillOpen && !pendingFocus.origin.closest("[hidden]")) {
+      pendingFocus.origin.focus();
+    } else if (active) {
+      document.getElementById(`${tabsId}-tab-${active.id}`)?.focus();
+    } else {
+      (sessionsLoadError ? refreshRef.current : openShellRef.current)?.focus();
+    }
+  }, [active, open, sessionsLoadError, tabsId]);
+
+  function onTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+
+    let nextIndex: number;
+    switch (event.key) {
+      case "ArrowLeft":
+        nextIndex = (index + open.length - 1) % open.length;
+        break;
+      case "ArrowRight":
+        nextIndex = (index + 1) % open.length;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = open.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    const next = open[nextIndex];
+    if (!next) return;
+    event.preventDefault();
+    setActiveId(next.id);
+    document.getElementById(`${tabsId}-tab-${next.id}`)?.focus();
+  }
+
   function refresh() {
-    queryClient.invalidateQueries({ queryKey: ["terminal-sessions"] });
+    return queryClient.invalidateQueries({ queryKey: ["terminal-sessions"] });
   }
 
   function onCreated(session: TerminalSession) {
@@ -61,38 +123,67 @@ export function TerminalPage() {
     refresh();
   }
 
-  async function closeSession(session: TerminalSession) {
-    const current = closeStates[session.id];
-    if (sessionsLoadError || (current && "pending" in current)) return;
-    setCloseStates((previous) => ({ ...previous, [session.id]: { pending: true } }));
-    try {
-      await api.delete<TerminalSession>(`/terminal/sessions/${session.id}`);
-    } catch (error) {
-      if (!(error instanceof ApiError && error.status === 404)) {
-        const message = toUserFacingError(error, t("terminal.closeFailed"));
-        setCloseStates((previous) => ({ ...previous, [session.id]: { error: message } }));
-        return;
+  function rememberClosingFocus(id: string) {
+    const origin = document.activeElement;
+    const region = `[data-terminal-session="${tabsId}-${id}"]`;
+    if (!(origin instanceof HTMLElement) || !origin.closest(region)) return;
+
+    closingFocus.current?.stop();
+    const pendingFocus: ClosingFocus = {
+      id,
+      origin,
+      restoreOrigin: false,
+      stop() {
+        document.removeEventListener("focusin", onFocusIn, true);
+        closingFocus.current = null;
+      },
+    };
+    // Disabling the close button can drop focus to the body while the request runs.
+    function onFocusIn(event: FocusEvent) {
+      if (event.target === document.body) return;
+      if (event.target instanceof HTMLElement && event.target.closest(region)) {
+        pendingFocus.origin = event.target;
+      } else {
+        pendingFocus.stop();
       }
     }
-    queryClient.setQueryData<SessionsResp>(
-      ["terminal-sessions"],
-      (previous) =>
-        previous && { sessions: previous.sessions.filter((item) => item.id !== session.id) },
-    );
-    setCloseStates((previous) => {
+    closingFocus.current = pendingFocus;
+    document.addEventListener("focusin", onFocusIn, true);
+  }
+
+  async function onSessionClose(session: TerminalSession) {
+    const { id } = session;
+    const pending = pendingCloseIds.current;
+    if (sessionsLoadError || pending.has(id)) return;
+    setCloseErrors((previous) => {
       const next = { ...previous };
-      delete next[session.id];
+      delete next[id];
       return next;
     });
-    setActiveId((previous) => (previous === session.id ? null : previous));
-    refresh();
+    rememberClosingFocus(id);
+    pending.add(id);
+    setClosingIds(new Set(pending));
+
+    try {
+      await api.delete<TerminalSession>(`/terminal/sessions/${id}`).catch((err) => {
+        if (!(err instanceof ApiError) || err.status !== 404) throw err;
+      });
+      setActiveId((currentId) => (currentId === id ? null : currentId));
+      await refresh();
+    } catch (err) {
+      if (closingFocus.current?.id === id) closingFocus.current.restoreOrigin = true;
+      const message = toUserFacingError(err, t("terminal.closeFailed"));
+      setCloseErrors((previous) => ({ ...previous, [id]: message }));
+    } finally {
+      pending.delete(id);
+      setClosingIds(new Set(pending));
+    }
   }
 
   return (
     <PageShell className="min-w-0" data-testid="terminal-page">
       <PageHeader
         title={t("terminal.title")}
-        subtitle={t("terminal.subtitle")}
         meta={
           <div className="flex flex-wrap gap-2 text-xs">
             <span
@@ -127,16 +218,18 @@ export function TerminalPage() {
                 <ArrowRight />
               </a>
             </Button>
-            <Button
+            <RefreshButton
+              ref={refreshRef}
               variant="outline"
               data-testid="terminal-refresh"
               onClick={refresh}
               disabled={sessionsQ.isFetching}
+              label={t("terminal.refresh")}
             >
               <RefreshCw className={cn(sessionsQ.isFetching ? "animate-spin" : "")} />
-              {t("terminal.refresh")}
-            </Button>
+            </RefreshButton>
             <Button
+              ref={openShellRef}
               data-testid="terminal-open-shell"
               onClick={() => setNewOpen(true)}
               disabled={Boolean(sessionsLoadError)}
@@ -180,13 +273,13 @@ export function TerminalPage() {
             role="tablist"
             aria-label={t("terminal.openShellSessions")}
           >
-            {open.map((s) => {
+            {open.map((s, index) => {
               const selected = active?.id === s.id;
-              const state = closeStates[s.id];
-              const closing = Boolean(state && "pending" in state);
+              const closing = closingIds.has(s.id);
               return (
                 <div
                   key={s.id}
+                  data-terminal-session={`${tabsId}-${s.id}`}
                   className={cn(
                     "flex min-w-max items-center gap-2 border-b-2 px-2 py-1 text-xs transition-colors",
                     selected
@@ -197,9 +290,13 @@ export function TerminalPage() {
                   <button
                     type="button"
                     role="tab"
+                    id={`${tabsId}-tab-${s.id}`}
                     aria-selected={selected}
+                    aria-controls={`${tabsId}-panel-${s.id}`}
+                    tabIndex={selected ? 0 : -1}
                     data-testid={`terminal-tab-${s.id}`}
                     onClick={() => setActiveId(s.id)}
+                    onKeyDown={(event) => onTabKeyDown(event, index)}
                     className="flex min-w-0 items-center gap-2"
                   >
                     <span className={cn("h-1.5 w-1.5 ", STATUS_DOT[s.state])} />
@@ -214,7 +311,7 @@ export function TerminalPage() {
                     type="button"
                     aria-label={t("terminal.closeSession", { siteId: s.siteId })}
                     data-testid={`terminal-tab-close-${s.id}`}
-                    onClick={() => void closeSession(s)}
+                    onClick={() => void onSessionClose(s)}
                     disabled={closing}
                     className="inline-flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
@@ -230,8 +327,8 @@ export function TerminalPage() {
           </div>
 
           {open.map((session) => {
-            const state = closeStates[session.id];
-            if (!state || !("error" in state)) return null;
+            const message = closeErrors[session.id];
+            if (!message) return null;
             return (
               <p
                 key={session.id}
@@ -242,7 +339,7 @@ export function TerminalPage() {
                 {t("terminal.sessionCloseError", {
                   account: session.remoteUser,
                   site: session.siteId,
-                  message: state.error,
+                  message,
                 })}
               </p>
             );
@@ -251,13 +348,16 @@ export function TerminalPage() {
             <div
               key={session.id}
               role="tabpanel"
+              id={`${tabsId}-panel-${session.id}`}
+              aria-labelledby={`${tabsId}-tab-${session.id}`}
+              data-terminal-session={`${tabsId}-${session.id}`}
               data-testid={`terminal-panel-${session.id}`}
               hidden={active?.id !== session.id}
             >
               <SessionPane
                 session={session}
-                onClose={closeSession}
-                closing={"pending" in (closeStates[session.id] ?? {})}
+                closing={closingIds.has(session.id)}
+                onClose={onSessionClose}
               />
             </div>
           ))}

@@ -5,10 +5,12 @@ import type {
   SpackMaterialPublish,
   SpackMaterialSummary,
 } from "@kuintessence/shared/browser";
+import { SPACK_MATERIAL_CHUNK_BYTES as CHUNK } from "@kuintessence/shared/browser";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SoftwareError } from "./software-client";
 import {
   getSpackMaterial,
+  getSpackMaterialImportStatus,
   listSpackMaterials,
   publishSpackMaterial,
   uploadSpackMaterial,
@@ -73,6 +75,11 @@ const operations = [
       uploadSpackMaterial(release.repository, blob, sourceFile(), signal),
   },
   {
+    name: "status",
+    response: { state: "pending", missing: [blob.digest] },
+    run: (signal?: AbortSignal) => getSpackMaterialImportStatus(release, signal),
+  },
+  {
     name: "publish",
     response: binding,
     run: (signal?: AbortSignal) => publishSpackMaterial(release, signal),
@@ -95,6 +102,13 @@ afterEach(() => {
 });
 
 describe("Spack materials client", () => {
+  test("rejects missing digests outside the request and duplicate digests", async () => {
+    for (const missing of [[binding.manifestDigest], [blob.digest, blob.digest]]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(respond({ state: "pending", missing })));
+      await expect(getSpackMaterialImportStatus(release)).rejects.toMatchObject({ status: 502 });
+    }
+  });
+
   test("lists the complete catalog without server pagination or persistent caching", async () => {
     localStorage.setItem("kq_token", "materials-token");
     const catalog = { releases: [summary] };
@@ -114,6 +128,27 @@ describe("Spack materials client", () => {
       }),
     );
     expect(fetcher.mock.calls[0]?.[1].body).toBeUndefined();
+  });
+
+  test("forwards pagination and rejects a repeated row or a cursor unrelated to the page", async () => {
+    const after = `${summary.repositoryId}.${"0".repeat(64)}`;
+    const nextCursor = `${summary.repositoryId}.${summary.manifestDigest.slice(7)}`;
+    const releases = [summary];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(respond({ releases, nextCursor }))
+      .mockResolvedValueOnce(respond({ releases }))
+      .mockResolvedValueOnce(respond({ releases, nextCursor: after }));
+    vi.stubGlobal("fetch", fetcher);
+    const page = { repository: summary.repository, limit: 1, after };
+    await expect(listSpackMaterials(page)).resolves.toEqual({ releases, nextCursor });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `${BASE}?repository=${encodeURIComponent(summary.repository)}&limit=1&after=${after}`,
+    );
+    await expect(listSpackMaterials({ ...page, after: nextCursor })).rejects.toMatchObject({
+      status: 502,
+    });
+    await expect(listSpackMaterials(page)).rejects.toMatchObject({ status: 502 });
   });
 
   test.each([
@@ -228,6 +263,75 @@ describe("Spack materials client", () => {
     expect(fetcher.mock.calls[0]?.[1].body).toBe(file);
     expect(arrayBuffer).not.toHaveBeenCalled();
     expect(text).not.toHaveBeenCalled();
+  });
+
+  test("a changed session stops the next chunk before reading its bytes", async () => {
+    const file = new File([new Uint8Array(CHUNK + 1)], "archive");
+    const expected = { ...blob, size: file.size };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(respond({ offset: 0 }))
+      .mockResolvedValueOnce(respond({ offset: CHUNK }));
+    vi.stubGlobal("fetch", fetcher);
+    const check = vi
+      .fn()
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error("session changed");
+      });
+    await expect(
+      uploadSpackMaterial(release.repository, expected, file, undefined, check),
+    ).rejects.toThrow("session changed");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  test("reopens an interrupted upload at the confirmed offset and retrieves a lost final receipt", async () => {
+    const file = new File([new Uint8Array(CHUNK * 2 + 3)], "archive");
+    const expected = { ...blob, size: file.size };
+    const slice = vi.spyOn(file, "slice");
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(respond({ offset: 0 }))
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(respond({ offset: CHUNK }))
+      .mockResolvedValueOnce(respond({ offset: CHUNK * 2 }))
+      .mockRejectedValueOnce(new Error("final response lost"))
+      .mockResolvedValueOnce(respond(expected));
+    vi.stubGlobal("fetch", fetcher);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(uploadSpackMaterial(release.repository, expected, file)).rejects.toMatchObject({
+        status: 503,
+      });
+    }
+    await expect(uploadSpackMaterial(release.repository, expected, file)).resolves.toEqual(
+      expected,
+    );
+    expect(slice.mock.calls.map(([offset]) => offset)).toEqual([0, CHUNK, CHUNK * 2]);
+    expect(fetcher.mock.calls.map(([, init]) => init.headers["Upload-Offset"])).toEqual([
+      undefined,
+      "0",
+      undefined,
+      String(CHUNK),
+      String(CHUNK * 2),
+      undefined,
+    ]);
+    expect(
+      fetcher.mock.calls.filter(([, init]) => init.body).map(([, init]) => init.body.size),
+    ).toEqual([CHUNK, CHUNK, 3]);
+  });
+
+  test.each([
+    1,
+    -1,
+    CHUNK * 2,
+  ])("rejects an invalid Registry offset %i before slicing", async (offset) => {
+    const file = new File([new Uint8Array(CHUNK + 1)], "archive");
+    const slice = vi.spyOn(file, "slice");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(respond({ offset })));
+    await expect(
+      uploadSpackMaterial(release.repository, { ...blob, size: file.size }, file),
+    ).rejects.toMatchObject({ status: 502 });
+    expect(slice).not.toHaveBeenCalled();
   });
 
   test.each([

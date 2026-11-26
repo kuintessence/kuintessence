@@ -304,3 +304,36 @@ export const softwareExecutions = sqliteTable("software_executions", {
   started: integer("started", { mode: "boolean" }).notNull().default(false),
   result: text("result", { mode: "json" }).$type<Record<string, unknown>>(),
 });
+
+export const sandboxPvcPreparations = sqliteTable(
+  "sandbox_pvc_preparations",
+  {
+    preparationId: text("preparation_id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    binding: text("binding", { mode: "json" })
+      .$type<{
+        namespace: string;
+        serviceAccount: string;
+        claim: string;
+        claimUid: string;
+        image: string;
+      }>()
+      .notNull(),
+  },
+  (t) => [index("sandbox_pvc_preparations_job_idx").on(t.jobId)],
+);
+
+export const sandboxPvcJobs = sqliteTable("sandbox_pvc_jobs", {
+  jobId: text("job_id").primaryKey(),
+});
+
+export const transferDownloadPartials = sqliteTable(
+  "transfer_download_partials",
+  {
+    path: text("path").primaryKey(),
+    identity: text("identity").notNull(),
+    version: text("version"),
+    touchedAt: integer("touched_at").notNull(),
+  },
+  (t) => [index("transfer_download_partials_age").on(t.touchedAt)],
+);

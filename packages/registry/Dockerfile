@@ -17,7 +17,7 @@ COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/db/tsconfig.json ./packages/db/
 COPY packages/registry/tsconfig.json ./packages/registry/
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc bun install --frozen-lockfile --ignore-scripts
 
 FROM deps AS build
 COPY packages/shared ./packages/shared
@@ -25,7 +25,7 @@ COPY packages/db ./packages/db
 COPY packages/registry ./packages/registry
 
 FROM oven/bun:1.4.2-alpine
-RUN apk add --no-cache git curl ca-certificates
+RUN apk add --no-cache git curl ca-certificates cmd:flock
 WORKDIR /app
 COPY --from=build /app /app
 ENV NODE_ENV=production \

@@ -57,6 +57,7 @@ export async function runPlacementWithTrace(input: PlacementTraceInput): Promise
   for (const stage of stages) {
     const inputCount = surviving.length;
     const passed: AgentRow[] = [];
+    const summaries: PlacementAgentSummary[] = [];
     const rejected: { agent: AgentRow; reason: string }[] = [];
 
     for (const agent of surviving) {
@@ -65,16 +66,19 @@ export async function runPlacementWithTrace(input: PlacementTraceInput): Promise
         rejected.push({ agent, reason: result.reason });
       } else {
         passed.push(agent);
+        const summary = summarize(
+          agent,
+          stage.name === "auto" ? scoreSink.get(agent.agentId) : undefined,
+        );
+        if (result.scoreBreakdown) summary.scoreBreakdown = result.scoreBreakdown;
+        summaries.push(summary);
       }
     }
 
     stageResults.push({
       name: stage.name,
       inputCount,
-      passed: passed.map((a) =>
-        // Auto stage attaches the freshly-written score; earlier stages don't.
-        stage.name === "auto" ? summarize(a, scoreSink.get(a.agentId)) : summarize(a),
-      ),
+      passed: summaries,
       rejected: rejected.map(({ agent, reason }) => ({
         agent: summarize(agent),
         reason,

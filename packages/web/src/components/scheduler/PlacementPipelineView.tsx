@@ -38,7 +38,7 @@ function placementReason(reason: string, t: ReturnType<typeof useTranslation>["t
     return normalized;
   }
   return t("scheduler.placement.rejected.generic", {
-    defaultValue: "该计算节点未通过此阶段筛选，请调整资源或队列约束后重试。",
+    defaultValue: "该集群未通过此阶段筛选，请调整资源或队列约束后重试。",
   });
 }
 
@@ -280,6 +280,24 @@ function StageRow({
                         <span className="text-muted-foreground">·{a.score.toFixed(0)}</span>
                       ) : null}
                     </button>
+                    {a.scoreBreakdown && (
+                      <details className="mt-1 text-xs">
+                        <summary>{t("scheduler.placement.scoreDetails")}</summary>
+                        <p>
+                          {t(`scheduler.placement.ranking.${a.scoreBreakdown.ranking}`)} ·{" "}
+                          {a.scoreBreakdown.composite.toFixed(1)}
+                        </p>
+                        <ul>
+                          {a.scoreBreakdown.contributions.map((item) => (
+                            <li key={item.name}>
+                              {item.name} · {t("scheduler.placement.rawScore")}{" "}
+                              {item.raw.toFixed(1)} · {t("scheduler.placement.weightedScore")}{" "}
+                              {item.weighted.toFixed(1)}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
                   </li>
                 ))}
               </ul>

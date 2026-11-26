@@ -124,6 +124,12 @@ describe("platform-managed Spack gate", () => {
       () => f.manager.importBuildcache(["zlib@1.3.1"]),
       () => f.manager.importBuildcache([]),
       () => f.manager.exportBuildcache("zlib@1.3.1", "mirror"),
+    ]) {
+      await expect(operation()).rejects.toThrow(
+        "Direct buildcache transfers are disabled in managed Spack mode",
+      );
+    }
+    for (const operation of [
       () => f.manager.buildcache?.importBuildcache(["zlib@1.3.1"]),
       () => f.manager.buildcache?.importBuildcache([]),
       () => f.manager.buildcache?.exportBuildcache("zlib@1.3.1", "mirror"),
@@ -131,7 +137,7 @@ describe("platform-managed Spack gate", () => {
       () => f.manager.installer?.installAndRefresh("zlib@1.3.1", { lockEnabled: false }),
     ]) {
       await expect(operation()).rejects.toThrow(
-        "managed offline Spack execution is not enabled yet",
+        "Managed Spack operations require audited materials and a configured site installer",
       );
     }
     await expect(

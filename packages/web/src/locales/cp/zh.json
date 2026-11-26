@@ -56,27 +56,27 @@
     },
     "dashboard": {
       "title": "算力运营概览",
-      "subtitle": "集中查看作业、数据传输和节点健康状况，数据每 30 秒自动更新。",
+      "subtitle": "集中查看作业、数据传输和集群健康状况，数据每 30 秒自动更新。",
       "kpi": {
         "jobsCompleted": "已完成作业",
         "jobsFailed": "失败作业",
         "bytesTransferred": "传输字节",
         "queueDepthPeak": "队列深度峰值",
         "period24Hours": "（24 小时）",
-        "agentsHealthy": "健康节点",
-        "agentsSick": "异常节点",
-        "agentsOffline": "离线节点"
+        "agentsHealthy": "健康集群",
+        "agentsSick": "异常集群",
+        "agentsOffline": "离线集群"
       },
       "topUsers": "作业数最高的用户",
       "topApps": "作业数最高的应用",
-      "agentsHealth": "节点健康分布",
+      "agentsHealth": "集群健康分布",
       "summary": {
         "successRate": "作业成功率",
-        "agentAvailability": "节点可用率",
+        "agentAvailability": "集群可用率",
         "window": "统计窗口",
         "last24Hours": "最近 24 小时",
         "noJobs": "暂无完成作业",
-        "noAgents": "未接入节点"
+        "noAgents": "未接入集群"
       },
       "attention": {
         "label": "算力中心审批与告警",
@@ -90,16 +90,22 @@
         },
         "alerts": {
           "title": "运行告警",
-          "description": "集中查看最近失败作业和节点异常，便于快速进入处置页面。",
+          "description": "集中查看最近失败作业和集群异常，便于快速进入处置页面。",
           "empty": "当前没有需要处理的运行告警。",
           "failedJobs": "最近 24 小时失败作业",
-          "sickAgents": "异常节点",
-          "offlineAgents": "离线节点"
+          "sickAgents": "异常集群",
+          "offlineAgents": "离线集群"
         }
       },
       "noTopUsers": "时间窗口内暂无用户活动。",
       "noTopApps": "时间窗口内暂无应用活动。",
-      "loadFailed": "加载概览失败"
+      "loadFailed": "加载概览失败",
+      "groups": {
+        "jobs": "作业与调度",
+        "transfers": "数据传输",
+        "clusters": "集群健康",
+        "activity": "用户与应用"
+      }
     },
     "queues": {
       "title": "队列注册表",
@@ -224,16 +230,17 @@
         "enabled": "队列已启用",
         "disabled": "队列已禁用",
         "failed": "队列操作失败"
-      }
+      },
+      "allPublicationStates": "全部发布状态"
     },
     "software": {
       "title": "软件治理",
       "subtitle": "按算力中心、集群和接入代理管理安装模式、允许/禁止列表、镜像源和预装软件映射。",
       "refresh": "刷新",
       "summary": {
-        "clusters": "集群",
-        "agents": "节点",
-        "lockedAgents": "锁定节点",
+        "clusters": "集群组",
+        "agents": "接入集群",
+        "lockedAgents": "锁定集群",
         "installedSpecs": "已安装软件",
         "mirrors": "Mirror",
         "overrides": "接入代理覆盖"
@@ -247,13 +254,13 @@
         "noProvider": "暂无算力中心组织"
       },
       "cluster": {
-        "meta": "{{agents}} 节点 · {{installed}} 已安装 · {{mirrors}} 个镜像源",
+        "meta": "{{agents}} 集群 · {{installed}} 已安装 · {{mirrors}} 个镜像源",
         "lockedAgents": "{{count}} 锁定",
         "editOverride": "编辑集群覆盖"
       },
       "col": {
         "cluster": "集群",
-        "agent": "节点",
+        "agent": "集群",
         "status": "状态",
         "installMode": "安装模式",
         "installed": "已安装",
@@ -284,7 +291,7 @@
         "controlChannelOnline": "控制通道在线",
         "controlChannelOffline": "控制通道离线",
         "installed": "已安装软件",
-        "noInstalled": "该节点暂无已上报软件。",
+        "noInstalled": "该集群暂无已上报软件。",
         "installedCountHint": "已显示 {{visible}} / {{total}} 个 spec",
         "installedFilterPlaceholder": "过滤已安装 spec…",
         "installedFilterEmpty": "没有匹配的已安装 spec。",
@@ -301,7 +308,7 @@
       },
       "preview": {
         "title": "可用性预览",
-        "subtitle": "输入原始 Spack spec，并可附带软件用例上下文，查看当前算力中心范围内的已安装、可安装和阻断节点。",
+        "subtitle": "输入原始 Spack spec，并可附带软件用例上下文，查看当前算力中心范围内的已安装、可安装和阻断集群。",
         "spec": "Spack spec",
         "placeholder": "abacus@3.8.0 +mpi",
         "usecase": "Usecase",
@@ -353,13 +360,25 @@
         "queuedDeliveryUncertainShort": "投递状态不确定",
         "queuedDeliveryUncertain": "平台服务已创建该操作，但接入代理控制通道已断开且尚未回传运行状态。为避免重复执行安装、卸载等非幂等操作，系统不会自动重放；请恢复连接后刷新操作历史，再决定是否重新发起。",
         "confirmUninstall": "确认删除 {{spec}}？",
+        "estimate": {
+          "title": "安装成本估算",
+          "cpus": "预计占用 CPU 核数",
+          "minutes": "预计分钟数（留空使用历史中位数）",
+          "calculate": "计算估算",
+          "samples": "参考 {{count}} 次成功安装。",
+          "noDuration": "暂无同一 Agent 和 spec 的安装耗时，可填写预计分钟数。",
+          "hours": "预计 {{hours}} 核时。",
+          "noRate": "该 Agent 尚无费率。",
+          "rate": "每核时费率 {{rate}}。",
+          "cost": "预计费用 {{cost}}。"
+        },
         "specPlaceholder": "gromacs@2024.1 +mpi",
         "specRequired": "请输入 Spack spec。",
         "batchInstallTitle": "批量安装",
-        "batchInstallSubtitle": "从 Spack 软件仓库按行安装软件，适合管理员提前为节点准备运行环境。",
+        "batchInstallSubtitle": "从 Spack 软件仓库按行安装软件，适合管理员提前为集群准备运行环境。",
         "batchInstallPlaceholder": "gromacs@2024.1 +mpi\nopenmpi@4.1.6\nhdf5@1.14.3 +mpi",
         "batchImportTitle": "导入预装清单",
-        "batchImportSubtitle": "导入已经在节点上预装的软件清单；接入代理会逐条验证存在后刷新平台已安装记录。",
+        "batchImportSubtitle": "导入已经在集群上预装的软件清单；接入代理会逐条验证存在后刷新平台已安装记录。",
         "batchImportPlaceholder": "gromacs@2024.1 +mpi\nopenmpi@4.1.6\nhdf5@1.14.3 +mpi",
         "batchSubmit": "批量执行",
         "batchQueued": "{{count}} 个 {{action}} 操作已下发",
@@ -488,9 +507,13 @@
         "saved": "策略已更新",
         "saveFailed": "策略更新失败"
       },
-      "empty": "范围内暂无注册节点。",
+      "empty": "范围内暂无注册集群。",
       "loadFailed": "软件治理数据暂时无法加载，请刷新后重试。",
-      "desktopManage": "请在电脑端修改软件策略或安装软件。"
+      "desktopManage": "请在电脑端修改软件策略或安装软件。",
+      "views": {
+        "clusters": "集群策略",
+        "runtime": "运行契约与材料"
+      }
     },
     "infrastructure": {
       "title": "集群基础设施",
@@ -564,7 +587,10 @@
       "noQueues": "未授权具名队列",
       "queuesNotApplicable": "不适用",
       "editQueues": "修改队列授权",
-      "queuesSaveFailed": "队列授权保存失败，请重试。"
+      "queuesSaveFailed": "队列授权保存失败，请重试。",
+      "search": "搜索账号、算力中心或执行身份",
+      "allBackends": "全部后端",
+      "allStatuses": "全部状态"
     },
     "users": {
       "title": "组织成员",
@@ -604,17 +630,13 @@
       "statusSuspended": "已停用",
       "editQuota": "编辑配额",
       "manageAccounts": "账号与隔离运行权限",
-      "editQuotaTitle": "编辑用户配额",
-      "editQuotaDescription": "配额代表该用户允许的最大并发活跃作业数。",
-      "quotaLabel": "配额",
-      "quotaInvalid": "配额必须是非负整数。",
       "saveSuspendFailed": "停用状态更新失败",
       "saveQuotaFailed": "配额更新失败",
       "suspended": "已停用用户",
       "resumed": "已恢复用户",
       "quotaSaved": "配额已更新",
       "empty": "范围内暂无用户。",
-      "countHint": "{{visible}} 显示 · {{total}} 共计",
+      "countHint": "{{visible}}/{{total}} 可见",
       "showLegacy": "显示历史字段",
       "pagination": "组织成员分页",
       "previousPage": "上一页",
@@ -672,8 +694,8 @@
       "totalCount": "共 {{total}} 条事件"
     },
     "agents": {
-      "title": "节点",
-      "subtitle": "在你管理的组织中注册的节点。",
+      "title": "集群",
+      "subtitle": "在你管理的组织中注册的集群。",
       "col": {
         "id": "ID",
         "hostname": "主机名",
@@ -681,7 +703,7 @@
         "status": "状态",
         "actions": "操作"
       },
-      "empty": "范围内暂无注册节点。",
+      "empty": "范围内暂无注册集群。",
       "roots": {
         "button": "根目录",
         "title": "集群文件根目录",
@@ -729,7 +751,7 @@
       }
     },
     "agentRegistration": {
-      "title": "节点注册",
+      "title": "集群注册",
       "subtitle": "为算力中心组织签发单次使用的接入凭证。",
       "form": {
         "title": "创建 registration token",
@@ -765,7 +787,7 @@
         "revokeFailed": "撤销未成功，凭证仍保留在列表中，请重试。"
       },
       "contextLoadFailed": "注册上下文暂时无法加载，请刷新后重试。",
-      "endpointUnavailable": "当前入口未提供节点注册接口。请联系部署管理员检查注册 API 的开放与路由配置。"
+      "endpointUnavailable": "当前入口未提供集群注册接口。请联系部署管理员检查注册 API 的开放与路由配置。"
     },
     "data": {
       "title": "数据管理",
@@ -780,31 +802,35 @@
       "platformFile": "平台对象文件",
       "platformFileRequired": "请选择要上传到平台对象存储的文件。",
       "netdriveSource": "从平台文件空间导入",
-      "netdriveFile": "平台文件 ID（元数据引用）",
       "netdriveRequired": "请输入平台文件 ID。",
       "netdriveUnavailable": "不可用：当前平台服务尚未配置平台文件空间到数据市场的复制后端；提交会返回不可用状态。",
       "cpLocalSource": "CP-local 托管目录",
-      "cpLocalOnly": "当前仅支持从已登记的 CP-local 托管目录导入。平台对象存储和 NetDrive 导入将在复制协调服务就绪后开放。",
       "organizationRequired": "请先在顶部选择一个算力组织，再创建或导入数据。",
       "agent": "接入代理",
       "agentPlaceholder": "选择数据所在的接入代理",
       "agentEmpty": "当前组织暂无可用的接入代理。",
       "managedRoot": "托管根目录",
       "managedRootPlaceholder": "选择已启用的托管根目录",
-      "managedRootEmpty": "该节点尚未登记可导入的数据集根目录。请配置 Agent 的 AGENT_DATASET_ROOTS_JSON 并重新连接；文件传输目录不能直接用于数据集导入。",
+      "managedRootEmpty": "该集群尚未登记可导入的数据集根目录。请配置 Agent 的 AGENT_DATASET_ROOTS_JSON 并重新连接；文件传输目录不能直接用于数据集导入。",
       "relativePath": "根目录内相对路径",
       "managedRootRequired": "CP-local 导入必须使用已登记的托管根目录和相对路径。",
       "cpLocalHint": "不要填写任意绝对路径；算力中心本地数据的事实来源是受管根目录加相对路径。",
       "replica": "副本与中心投递",
-      "runnableCenter": "可运行中心：{{center}}（{{status}}）",
+      "replicaAgent": "目标 Agent",
+      "replicaRoot": "目标受管根",
+      "createReplica": "创建副本",
+      "cancelReplica": "取消复制",
+      "runnableCenter": "{{center}}（{{status}}）",
       "versionEmpty": "当前资产尚无数据版本。",
-      "replicaEmpty": "当前版本尚无可运行中心副本。",
+      "replicaEmpty": "当前版本尚无副本。",
       "imports": "导入任务",
       "importEmpty": "当前组织尚无导入任务。",
       "importWaiting": "等待接入代理",
       "importScanning": "正在扫描校验",
       "importAvailable": "已完成，可使用",
       "importFailed": "导入失败",
+      "cancelImport": "取消导入",
+      "cancelFailed": "取消导入失败",
       "importCanceled": "已取消",
       "selected": "已选择",
       "permissions": "访问权限审批",
@@ -846,7 +872,13 @@
           "platform": "平台策略"
         },
         "versionUnavailable": "此版本尚未发布或已撤回，不能新增或续期授权。"
-      }
+      },
+      "importSource": "导入来源",
+      "localSource": "托管目录",
+      "uploadSource": "平台对象",
+      "netdriveFile": "选择 NetDrive 上传文件",
+      "netdriveHint": "选择本人上传的版本化文件，校验后将副本发布到此数据集。",
+      "committedSession": "已提交的上传会话 ID"
     },
     "metering": {
       "title": "用量计量",
@@ -857,11 +889,12 @@
       "to": "结束",
       "invalidRange": "请输入有效的起始和结束时间。",
       "fromAfterTo": "「起始」必须早于或等于「结束」。",
-      "partialResult": "当前仅显示前 {{shown}} 条，共 {{total}} 条；导出使用相同范围。",
+      "partialResult": "当前显示 {{total}} 条中的前 {{shown}} 条。导出包含全部匹配记录。",
       "loading": "加载使用量…",
       "loadFailed": "加载用量数据失败",
       "empty": "该时间窗口内暂无使用量。",
-      "export": "导出 CSV",
+      "exportFormat": "导出格式",
+      "export": "导出",
       "exporting": "导出中…",
       "exportFailed": "导出失败",
       "col": {

@@ -43,6 +43,12 @@ export function AgentSiteOperations({ value, online }: { value: unknown; online:
         ))}
         <dt className="text-muted-foreground">{t("agents.operations.update")}</dt>
         <dd>{t(`agents.operations.updates.${report.update.phase}`)}</dd>
+        {report.update.request ? (
+          <>
+            <dt className="text-muted-foreground">{t("agents.updater.title")}</dt>
+            <dd>{t(`agents.updater.states.${report.update.request.state}`)}</dd>
+          </>
+        ) : null}
         {report.update.checkedAt ? (
           <>
             <dt className="text-muted-foreground">{t("agents.operations.updateChecked")}</dt>

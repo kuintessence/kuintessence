@@ -16,6 +16,7 @@ export class JobLogsUnavailableError extends Error {
 }
 
 interface PendingJobLogs {
+  agentId?: string;
   resolve: (result: JobLogsResult) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -43,7 +44,7 @@ export class JobLogsService {
           reject(new Error(`job logs ${requestId} timed out after ${this.timeoutMs}ms`));
         }
       }, this.timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timer });
+      this.pending.set(requestId, { resolve, reject, timer, agentId });
     });
 
     if (
@@ -83,9 +84,9 @@ export class JobLogsService {
     return result.text;
   }
 
-  resolve(requestId: string, result: JobLogsResult): boolean {
+  resolve(requestId: string, result: JobLogsResult, agentId?: string): boolean {
     const entry = this.pending.get(requestId);
-    if (!entry) return false;
+    if (!entry || (agentId && entry.agentId && agentId !== entry.agentId)) return false;
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
     entry.resolve(result);

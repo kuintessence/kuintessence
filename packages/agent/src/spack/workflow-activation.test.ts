@@ -243,7 +243,7 @@ describe("workflow Spack activation", () => {
       activateWorkflowSpack(
         input({
           timeoutMs: 1,
-          schedule: (prepare) => previous.then(prepare),
+          schedule: (prepare, signal) => previous.then(() => prepare(signal)),
           trackCleanup: (pending) => {
             cleanup = pending;
           },

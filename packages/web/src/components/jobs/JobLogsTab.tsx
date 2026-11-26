@@ -28,9 +28,7 @@ export function JobLogsTab({ jobId }: { jobId: string }) {
   const error = logsQ.error
     ? logsQ.error instanceof ApiError && logsQ.error.code === "JOB_LOG_UNAVAILABLE"
       ? t("jobs.logs.unavailable")
-      : logsQ.error instanceof ApiError && logsQ.error.status === 404
-        ? t("jobs.logs.notImplemented")
-        : toUserFacingError(logsQ.error, t("jobs.logs.loadFailed"))
+      : toUserFacingError(logsQ.error, t("jobs.logs.loadFailed"))
     : null;
   const text = logsQ.data?.text ?? "";
 

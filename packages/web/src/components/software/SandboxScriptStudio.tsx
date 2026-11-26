@@ -20,7 +20,15 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { cloneElement, type ReactElement, useEffect, useId, useMemo, useState } from "react";
+import {
+  type ComponentProps,
+  cloneElement,
+  type ReactElement,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError } from "../../lib/api-client";
@@ -41,6 +49,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader } from "../ui/card";
+import { ErrorState, LoadingState } from "../ui/content-state";
 import {
   Dialog,
   DialogBody,
@@ -55,7 +64,8 @@ import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
-import { SandboxCodeEditor } from "./SandboxCodeEditor";
+import { loadSandboxCodeEditor } from "./loadSandboxCodeEditor";
+import type { SandboxCodeEditor } from "./SandboxCodeEditor";
 
 const CODE_TEMPLATES: Record<SandboxLanguage, string> = {
   python: `import json
@@ -153,6 +163,56 @@ function entrypointFor(language: SandboxLanguage): string {
   if (language === "nodejs") return "main.mjs";
   if (language === "bash") return "main.sh";
   return "main.py";
+}
+
+function SandboxEditorPane({
+  entrypoint,
+  ...props
+}: ComponentProps<typeof SandboxCodeEditor> & { entrypoint: string }) {
+  const { t } = useTranslation();
+  const editorQuery = useQuery({
+    queryKey: ["web-module", "sandbox-code-editor"],
+    queryFn: loadSandboxCodeEditor,
+    staleTime: Infinity,
+    retry: false,
+    networkMode: "always",
+  });
+  const Editor = editorQuery.data;
+
+  if (Editor) return <Editor {...props} />;
+
+  return (
+    <div className="flex h-[56vh] min-h-[420px] flex-col gap-2">
+      {editorQuery.errorUpdatedAt > 0 ? (
+        <>
+          <ErrorState
+            actions={
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={editorQuery.isFetching}
+                onClick={() => void editorQuery.refetch()}
+              >
+                {t(editorQuery.isFetching ? "common.loading" : "common.retry")}
+              </Button>
+            }
+          >
+            {t("common.error")}
+          </ErrorState>
+          <Textarea
+            aria-label={entrypoint || t("sandbox.studio.entrypoint")}
+            className="flex-1 resize-none font-mono"
+            spellCheck={false}
+            value={props.value}
+            onChange={(event) => props.onChange(event.target.value)}
+          />
+        </>
+      ) : (
+        <LoadingState>{t("common.loading")}</LoadingState>
+      )}
+    </div>
+  );
 }
 
 export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
@@ -522,7 +582,8 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
               <span className="text-[11px] text-muted-foreground">UTF-8 · LF</span>
             </div>
           </div>
-          <SandboxCodeEditor
+          <SandboxEditorPane
+            entrypoint={draft.entrypoint}
             language={draft.language}
             value={draft.content}
             onChange={(content) => setDraft((current) => ({ ...current, content }))}

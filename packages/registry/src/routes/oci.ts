@@ -78,16 +78,26 @@ function ociError(c: OciContext, err: unknown) {
     return ociErrorJson(c, 403, "DENIED", err.message);
   }
   if (err instanceof RegistryError) {
-    return ociErrorJson(
-      c,
-      err.status as 400 | 401 | 403 | 404 | 409 | 413,
-      err.code,
-      err.message,
-      err.detail,
-    );
+    return ociErrorJson(c, err.status, err.code, err.message, err.detail);
   }
   // Unknown — bubble up to the surrounding handler if any.
   throw err;
+}
+
+function uploadRange(c: OciContext) {
+  const header = c.req.header("Content-Range");
+  if (header === undefined) return undefined;
+  const match = /^(?:bytes )?(\d+)-(\d+)$/.exec(header);
+  const start = Number(match?.[1]),
+    end = Number(match?.[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    end < start ||
+    !Number.isSafeInteger(end + 1)
+  )
+    throw new RegistryError("BLOB_UPLOAD_INVALID", "invalid upload Content-Range", 416);
+  return { start, end };
 }
 
 function readPrincipal(c: OciContext): RbacPrincipal {
@@ -171,6 +181,24 @@ export function createOciRoutes(options: CreateOciRoutesOptions): Hono<RegistryE
     return handleStartUpload(c, service, publisherRoles);
   });
 
+  r.get("/:rest{.+}/blobs/uploads/:uuid", async (c) => {
+    try {
+      const { ns } = authorize(readPrincipal(c), c.req.param("rest"), "write", publisherRoles);
+      const repo = await service.findRepository(ns);
+      if (!repo)
+        throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "upload not found in repository", 404);
+      const uploadId = c.req.param("uuid");
+      const { totalUploaded } = await service.uploadStatus(repo.id, uploadId);
+      c.header("Location", `/v2/${c.req.param("rest")}/blobs/uploads/${uploadId}`);
+      c.header("Docker-Upload-UUID", uploadId);
+      c.header("Range", `0-${Math.max(totalUploaded - 1, 0)}`);
+      c.header("Cache-Control", "no-store");
+      return c.body(null, 204);
+    } catch (error) {
+      return ociError(c, error);
+    }
+  });
+
   r.patch("/:rest{.+}/blobs/uploads/:uuid", async (c) => {
     try {
       const principal = readPrincipal(c);
@@ -180,7 +208,7 @@ export function createOciRoutes(options: CreateOciRoutesOptions): Hono<RegistryE
         throw new RegistryError("BLOB_UPLOAD_UNKNOWN", "upload not found in repository", 404);
       const uploadId = c.req.param("uuid");
       const body = readBodyStream(c);
-      const r2 = await service.appendChunk(repo.id, uploadId, body);
+      const r2 = await service.appendChunk(repo.id, uploadId, body, uploadRange(c));
       c.header("Location", `/v2/${c.req.param("rest")}/blobs/uploads/${uploadId}`);
       c.header("Range", `0-${Math.max(r2.totalUploaded - 1, 0)}`);
       c.header("Docker-Upload-UUID", uploadId);
@@ -208,7 +236,7 @@ export function createOciRoutes(options: CreateOciRoutesOptions): Hono<RegistryE
         );
       }
       const body = readBodyStream(c);
-      const r2 = await service.completeUpload(repo.id, uploadId, digest, body);
+      const r2 = await service.completeUpload(repo.id, uploadId, digest, body, uploadRange(c));
       c.header("Location", `/v2/${c.req.param("rest")}/blobs/${r2.digest}`);
       c.header("Docker-Content-Digest", r2.digest);
       return c.body(null, 201);

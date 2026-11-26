@@ -284,6 +284,70 @@ function scientificManifest(): EcosystemManifest {
 }
 
 describe("Ecosystem release signature and validation", () => {
+  test.each([
+    "Bare",
+    "Singularity",
+  ] as const)("validates a signed %s site runtime and its usecase binding", (kind) => {
+    const software = spackAsset("Solver", "solver", "1");
+    software.kind = "site-runtime";
+    const facility = kind === "Bare" ? { kind } : { kind, image: "solver", tag: "1" };
+    software.payload = {
+      kind: "site-runtime",
+      siteIds: ["site-a"],
+      runtime: {
+        ...facility,
+        path: kind === "Bare" ? "/opt/solver/run" : "/opt/solver/solver.sif",
+        sha256: "1".repeat(64),
+      },
+    };
+    const capability = usecaseAsset(software, 1);
+    capability.payload.spec = {
+      ...(capability.payload.spec as Record<string, unknown>),
+      software: facility,
+    };
+    const manifest = { ...smallManifest(), assets: [software, capability] };
+    expect(() => validateEcosystemManifest(manifest)).not.toThrow();
+    capability.payload.spec = {
+      ...(capability.payload.spec as Record<string, unknown>),
+      software:
+        kind === "Bare" ? { kind: "Singularity", image: "solver", tag: "1" } : { kind: "Bare" },
+    };
+    expect(() => validateEcosystemManifest(manifest)).toThrow();
+    software.payload.siteIds = [];
+    expect(() => validateEcosystemManifest(manifest)).toThrow("SoftwareAssetPayload");
+  });
+
+  test("rejects a workflow that pairs its usecase with another published software asset", () => {
+    const solver = spackAsset("Solver", "solver", "1");
+    const other = spackAsset("Viewer", "viewer", "1");
+    const capability = usecaseAsset(solver, 1);
+    const workflow = workflowAsset(1);
+    workflow.payload.yamlContent = JSON.stringify({
+      name: workflow.name,
+      spec: {
+        nodeDrafts: [
+          {
+            type: "SoftwareUsecaseComputing",
+            id: "compute",
+            name: "compute",
+            usecaseRef: {
+              source: "platform-fork",
+              name: capability.name,
+              version: capability.version,
+            },
+            softwareRef: { source: "platform-fork", name: other.name, version: other.version },
+          },
+        ],
+      },
+    });
+    expect(() =>
+      validateEcosystemManifest({
+        ...smallManifest(),
+        assets: [solver, other, capability, workflow],
+      }),
+    ).toThrow("softwareRef differs from the selected usecase");
+  });
+
   test("verifies an Ed25519 signature over canonical manifest JSON", () => {
     const manifest = smallManifest();
     const keys = generateKeyPairSync("ed25519");

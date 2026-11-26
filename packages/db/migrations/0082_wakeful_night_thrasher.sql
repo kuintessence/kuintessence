@@ -1,0 +1,2 @@
+ALTER TABLE "compute_interconnects" DROP CONSTRAINT "compute_interconnects_different_ends";--> statement-breakpoint
+ALTER TABLE "compute_interconnects" ADD CONSTRAINT "compute_interconnects_different_ends" CHECK ("compute_interconnects"."from_center_id" <> "compute_interconnects"."to_center_id" OR COALESCE("compute_interconnects"."metadata"->>'networkType' IN ('high-speed', 'dedicated'), false));

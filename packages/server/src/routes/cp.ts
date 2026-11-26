@@ -4,13 +4,21 @@
 // on the Hono context. Handlers read `cpScope` and pass it to the
 // CpConsoleService for tenant-scoped operations.
 
-import { AppError, ErrorCode, hasRole, type RoleName } from "@kuintessence/shared";
+import {
+  AppError,
+  ErrorCode,
+  hasRole,
+  RecipeCommitSchema,
+  RecipeRepositoryIdSchema,
+  type RoleName,
+} from "@kuintessence/shared";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzService } from "../authz/service";
 import { CpRbacError, type CpScope, cpRbac, deriveCpScope } from "../middleware/cp-rbac";
 import type { BoundPrincipal } from "../middleware/principal-binder";
+import type { PreferenceService } from "../preferences/preference-service";
 import type { AgentRegistrationService } from "../services/agent-registration";
 import type { CpConsoleService } from "../services/cp-console";
 import {
@@ -38,6 +46,7 @@ import {
 } from "./data-market";
 
 export interface CpRoutesDeps {
+  preferences?: Pick<PreferenceService, "loadGlobal" | "resolveAgentCostRates">;
   consoleService: CpConsoleService;
   availability?: SoftwareAvailabilityService;
   softwareOperations?: SoftwareOperationService;
@@ -123,12 +132,19 @@ const SoftwareOperationBatchRequestSchema = z.object({
   specs: z.array(z.string()).min(1).max(MAX_SOFTWARE_OPERATION_BATCH_RAW_LINES),
 });
 
-const SoftwareOperationListQuerySchema = z.object({
-  agentId: z.string().optional(),
-  action: SoftwareOperationActionSchema.optional(),
-  status: z.enum(["queued", "running", "succeeded", "failed", "rejected"]).optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
-});
+const SoftwareOperationListQuerySchema = z
+  .object({
+    recipeRepositoryId: RecipeRepositoryIdSchema.optional(),
+    recipeCommit: RecipeCommitSchema.optional(),
+    agentId: z.string().optional(),
+    action: SoftwareOperationActionSchema.optional(),
+    status: z.enum(["queued", "running", "succeeded", "failed", "rejected"]).optional(),
+    limit: z.coerce.number().int().min(1).max(500).optional(),
+  })
+  .refine(
+    (q) => Boolean(q.recipeCommit) === Boolean(q.recipeRepositoryId),
+    "Recipe repository and commit must be specified together",
+  );
 
 const SoftwareOperationMaintenanceSchema = z
   .object({
@@ -358,11 +374,33 @@ export function buildCpRouter(deps: CpRoutesDeps) {
     return c.json({ success: true, data }, 201);
   });
 
+  r.post("/data/versions/:versionId/replicas/:replicaId/cancel", async (c) => {
+    const scope = c.get("cpScope") as CpScope;
+    requireCpDataMutationOrganization(scope);
+    await requireDataMarket(deps).cancelReplica(
+      cpDataActor(c, scope),
+      z.uuid().parse(c.req.param("versionId")),
+      z.uuid().parse(c.req.param("replicaId")),
+    );
+    return c.json({ success: true, data: null });
+  });
+
   r.get("/data/imports", async (c) => {
     const service = requireDataMarket(deps);
     const scope = c.get("cpScope") as CpScope;
     const data = await service.listProviderImports(cpDataActor(c, scope), parseCpDataPageQuery(c));
     return c.json({ success: true, data });
+  });
+
+  r.post("/data/assets/:assetId/imports/:importId/cancel", async (c) => {
+    const scope = c.get("cpScope") as CpScope;
+    requireCpDataMutationOrganization(scope);
+    await requireDataMarket(deps).cancelProviderImport(
+      cpDataActor(c, scope),
+      z.uuid().parse(c.req.param("assetId")),
+      z.uuid().parse(c.req.param("importId")),
+    );
+    return c.json({ success: true, data: { status: "canceled" } });
   });
 
   r.post("/data/imports", async (c) => {
@@ -501,6 +539,32 @@ export function buildCpRouter(deps: CpRoutesDeps) {
     return c.json(result);
   });
 
+  r.get("/software/install-estimate", async (c) => {
+    const q = z
+      .strictObject({
+        agentId: z.string().min(1).max(255),
+        spec: z.string().trim().min(1).max(500),
+        cpus: z.coerce.number().int().min(1).max(65536),
+        minutes: z.coerce.number().positive().max(525600).optional(),
+      })
+      .parse(c.req.query());
+    const service = deps.softwareOperations;
+    if (!service)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "Software operation service is unavailable");
+    await verifyCpAgentScope(
+      service,
+      c.get("cpScope") as CpScope,
+      deps.authz,
+      c,
+      q.agentId,
+      "operate",
+    );
+    const global = await deps.preferences?.loadGlobal();
+    const rates = await deps.preferences?.resolveAgentCostRates([q.agentId], global?.costRates);
+    const rate = rates && Object.hasOwn(rates, q.agentId) ? (rates[q.agentId] ?? null) : null;
+    return c.json(await service.estimateInstallation({ ...q, rate }));
+  });
+
   r.get("/software/operations", async (c) => {
     const service = deps.softwareOperations;
     if (!service) {
@@ -520,6 +584,9 @@ export function buildCpRouter(deps: CpRoutesDeps) {
       ...(q.status ? { status: q.status } : {}),
       limit: q.limit,
       agentScopeVerified: Boolean(q.agentId),
+      ...(q.recipeRepositoryId && q.recipeCommit
+        ? { recipe: { repositoryId: q.recipeRepositoryId, commit: q.recipeCommit } }
+        : {}),
     });
     return c.json({ items });
   });
@@ -1139,7 +1206,10 @@ async function listAgentsThroughSpice(
     return [];
   }
   const visible = new Set(visibleIds);
-  return deps.consoleService.listAgentsByIds([...visible]);
+  const agents = await deps.consoleService.listAgentsByIds([...visible]);
+  return scope.activeOrganizationId
+    ? agents.filter((agent) => agent.providerOrgId === scope.activeOrganizationId)
+    : agents;
 }
 
 function isDeferredCpAgentAuthorizationRoute(request: {

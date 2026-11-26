@@ -27,9 +27,11 @@ import {
   type PgDb,
 } from "@kuintessence/db";
 import { eq } from "drizzle-orm";
+import { parquetReadObjects } from "hyparquet";
 import { DrizzleWebhookRepository } from "../../routes/metering";
-import type { JobUsageRecord, UsageBucketRow } from "../metering";
+import { type JobUsageRecord, MeteringService, type UsageBucketRow } from "../metering";
 import { MeteringAggregator } from "../metering-aggregator";
+import { exportChunks } from "../metering-export";
 import { DrizzleMeteringRepository } from "../metering-repository-drizzle";
 
 // Default to the local dev PG when no env is set — matches the suite-wide
@@ -120,6 +122,40 @@ describeIfPg("DrizzleMeteringRepository", () => {
     // Suppress unused-tracking-list lint by inspecting at teardown.
     void insertedJobIds.length;
     void insertedWebhookIds.length;
+  });
+
+  test("streams a tenant snapshot across cursor batches and preserves totals beyond the last page", async () => {
+    const orgId = crypto.randomUUID();
+    const startedAt = new Date("2026-06-01T00:00:00Z");
+    try {
+      await db.insert(meteringUsageRaw).values(
+        Array.from({ length: 1025 }, () => ({
+          ...makeJobUsage({ orgId, userId: crypto.randomUUID(), startedAt }),
+          networkEgressMb: "1.25",
+        })),
+      );
+      const req = {
+        period: "raw" as const,
+        grouping: "user" as const,
+        from: startedAt.toISOString(),
+        to: startedAt.toISOString(),
+        offset: 0,
+      };
+      const scope = { kind: "orgs" as const, orgIds: [orgId] };
+      const parts: Buffer[] = [];
+      for await (const data of exportChunks("parquet", repo.streamGroups(scope, req)))
+        parts.push(Buffer.from(data));
+      const result = await parquetReadObjects({
+        file: Uint8Array.from(Buffer.concat(parts)).buffer,
+      });
+      expect(result).toHaveLength(1025);
+      expect(result.every((r) => r.networkEgressMb === 1.25 && r.jobCount === 1)).toBe(true);
+      const after = [];
+      for await (const page of repo.streamGroups(scope, { ...req, offset: 1025 })) after.push(page);
+      expect(after).toEqual([{ total: 1025, rows: [] }]);
+    } finally {
+      await db.delete(meteringUsageRaw).where(eq(meteringUsageRaw.orgId, orgId));
+    }
   });
 
   test("insertRaw persists a row and returns the assigned id", async () => {
@@ -243,6 +279,47 @@ describeIfPg("DrizzleMeteringRepository", () => {
     const agg = new MeteringAggregator({ repo, now: () => new Date("2026-05-29T00:00:00Z") });
     const result = await agg.runHourlyRollup();
     expect(result.bucketsWritten).toBeGreaterThanOrEqual(1);
+  });
+
+  test("successive promotions of one hour preserve both jobs and replay once", async () => {
+    let now = new Date("2026-05-08T12:30:00Z");
+    for (const time of ["12:10", "12:40"])
+      await repo.insertRaw(
+        makeJobUsage({
+          startedAt: new Date("2026-04-30T23:00:00Z"),
+          clusterName: "rollup-regression",
+          finishedAt: new Date(`2026-05-01T${time}:00Z`),
+          cpuCoreSeconds: 100,
+        }),
+        now,
+      );
+    const service = new MeteringService({ repo });
+    const summary = (period: "raw" | "hourly") =>
+      service.query(
+        { kind: "orgs", orgIds: [TEST_ORG_A] },
+        {
+          from: "2026-05-01T00:00:00Z",
+          to: "2026-05-01T23:59:59.999Z",
+          period,
+          grouping: "cluster",
+          offset: 0,
+        },
+        "finishedAt",
+      );
+    expect(
+      (await summary("raw")).rows.find((r) => r.groupKey === "rollup-regression")?.jobCount,
+    ).toBe(2);
+    const aggregator = new MeteringAggregator({ repo, now: () => now });
+    await aggregator.runHourlyRollup();
+    now = new Date("2026-05-08T13:30:00Z");
+    await aggregator.runHourlyRollup();
+    await aggregator.runHourlyRollup();
+    const row = await db
+      .select()
+      .from(meteringUsageHourly)
+      .where(eq(meteringUsageHourly.clusterName, "rollup-regression"));
+    expect(row).toHaveLength(1);
+    expect(row[0]).toMatchObject({ jobCount: 2, cpuCoreSeconds: 200 });
   });
 
   test("upsertBuckets inserts new rows and updates on conflict (composite PK)", async () => {

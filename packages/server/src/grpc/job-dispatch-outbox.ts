@@ -27,7 +27,7 @@ import {
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
 import { federationExecutionDeadline } from "@kuintessence/shared/federation";
-import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
   assertRunningDataBindings,
   type PreparedFederationDataDispatch,
@@ -189,6 +189,8 @@ export class JobDispatchOutbox {
   }
 
   async redeliver(agentId?: string): Promise<void> {
+    const owners = agentId ? [agentId] : this.dispatcher.onlineAgentIds();
+    if (!owners.length) return;
     const rows = await this.db
       .select({ jobId: jobDispatchOutbox.jobId })
       .from(jobDispatchOutbox)
@@ -196,6 +198,7 @@ export class JobDispatchOutbox {
       .leftJoin(workflowRuns, eq(workflowRuns.id, jobDispatchOutbox.workflowRunId))
       .where(
         and(
+          inArray(jobDispatchOutbox.agentId, owners),
           isNull(jobDispatchOutbox.acknowledgedAt),
           eq(jobs.status, "queued"),
           lt(jobs.revokedEpoch, jobDispatchOutbox.dispatchEpoch),
@@ -251,7 +254,7 @@ export class JobDispatchOutbox {
         eq(federationWorkflowBindings.workflowRunId, jobDispatchOutbox.workflowRunId),
       )
       .where(eq(jobDispatchOutbox.jobId, jobId));
-    if (!identity) return false;
+    if (!identity || !this.dispatcher.isOnline(identity.agentId)) return false;
     const reservationId =
       identity.input?.federationReservationId ?? identity.boundReservationId ?? undefined;
     const preparedMessage = fromBinary(

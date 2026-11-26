@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -46,6 +47,23 @@ import {
  * a parent constraint and the soft references are checked by the service
  * layer at write time.
  */
+
+/** Latest completed UTC period for each scheduled rollup or summary. */
+export const meteringCronPeriods = pgTable("metering_cron_periods", {
+  stage: text("stage").primaryKey(),
+  periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+});
+
+/** NetDrive logical residence, owned by the file owner independently of jobs. */
+export const netdriveStorageDaily = pgTable(
+  "netdrive_storage_daily",
+  {
+    day: date("day").notNull(),
+    ownerId: uuid("owner_id").notNull(),
+    byteSeconds: numeric("byte_seconds").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.day, t.ownerId] })],
+);
 
 export const meteringUsageRaw = pgTable(
   "metering_usage_raw",

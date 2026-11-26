@@ -362,7 +362,7 @@ describe.skipIf(!helm)("Helm preview render (Actions only)", () => {
     expect(items.some((item) => item.kind === "NetworkPolicy")).toBe(false);
   });
 
-  test("optional PDBs select the matching release Pods and HPA targets its own Deployment", () => {
+  test("optional PDBs select the matching release Pods and HPA targets its relay StatefulSet", () => {
     for (const name of ["user-one", "user-two"]) {
       const result = run([
         "template",
@@ -375,7 +375,7 @@ describe.skipIf(!helm)("Helm preview render (Actions only)", () => {
         "--set",
         "server.podDisruptionBudget.enabled=true,registry.podDisruptionBudget.enabled=true",
         "--set",
-        "server.autoscaling.enabled=true",
+        "server.autoscaling.enabled=true,server.relay.domain=peer.example.org,server.relay.existingSecret=relay",
       ]);
       expect(result.code, result.stderr).toBe(0);
       const items = parseResources(result.stdout);
@@ -383,14 +383,19 @@ describe.skipIf(!helm)("Helm preview render (Actions only)", () => {
         const pdb = resource(items, "PodDisruptionBudget", component, name);
         const selector = selectorLabels(pdb);
         expect(selector[instanceLabel]).toBe(name);
-        const deployment = resource(items, "Deployment", component, name);
+        const deployment = resource(
+          items,
+          component === "server" ? "StatefulSet" : "Deployment",
+          component,
+          name,
+        );
         expect(selects(selector, deployment.spec?.template?.metadata?.labels)).toBe(true);
         expect(selects(selector, { ...selector, [instanceLabel]: `${name}-other` })).toBe(false);
       }
       const hpa = resource(items, "HorizontalPodAutoscaler", "server", name);
       expect(hpa.metadata.labels?.[instanceLabel]).toBe(name);
       expect(hpa.spec?.scaleTargetRef).toMatchObject({
-        kind: "Deployment",
+        kind: "StatefulSet",
         name: `${name}-server`,
       });
     }

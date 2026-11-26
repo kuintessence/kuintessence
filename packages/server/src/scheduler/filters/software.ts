@@ -1,5 +1,18 @@
 import type { AgentRow, FilterStage, PlacementContext, StageResult } from "../types";
 
+export function softwareAvailabilityKey(
+  req: NonNullable<PlacementContext["job"]["softwareRequirements"]>[number],
+): string {
+  return JSON.stringify([
+    req.name,
+    req.version,
+    req.assetId,
+    req.spec,
+    req.siteRuntimeRevisionId,
+    req.installable,
+  ]);
+}
+
 export interface SoftwareFilterDeps {
   /** Map from agentId → Set of "name@version" strings the agent has installed. */
   agentSoftware: Map<string, Set<string>>;
@@ -25,12 +38,16 @@ export class SoftwareFilter implements FilterStage {
 
     for (const req of reqs) {
       const key = req.version ? `${req.name}@${req.version}` : req.name;
-      const availabilityReasons = this.deps.availability?.get(key)?.get(agent.agentId) ?? [];
-      if (availabilityReasons.length > 0) {
-        missing.push(`${key} (${availabilityReasons.join("; ")})`);
+      const reasons = this.deps.availability?.get(softwareAvailabilityKey(req))?.get(agent.agentId);
+      if (reasons) {
+        if (reasons.length) missing.push(`${key} (${reasons.join("; ")})`);
         continue;
       }
-      if (this.deps.availability?.get(key)?.has(agent.agentId) || req.installable) continue;
+      if (req.siteRuntimeRevisionId) {
+        missing.push(`${key} (site runtime availability was not confirmed)`);
+        continue;
+      }
+      if (req.installable) continue;
       const hasKeyed = installed.has(key);
       // If no version pinned, accept any installed version of this software
       const hasName = req.version

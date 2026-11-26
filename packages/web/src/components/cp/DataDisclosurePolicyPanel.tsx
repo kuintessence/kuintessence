@@ -6,6 +6,7 @@ import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 
 interface Policy {
   id: string;
@@ -118,15 +119,13 @@ function PolicyEditor({ scope, versionId }: { scope: ApiOrganizationScope; versi
     <section className="space-y-3 border-t pt-4" aria-label={t("cp.data.disclosure.title")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold">{t("cp.data.disclosure.title")}</h3>
-        <Button
+        <RefreshButton
           variant="ghost"
-          size="sm"
           type="button"
           onClick={() => void refresh()}
           disabled={query.isFetching || mutation.isPending}
-        >
-          {t("common.refresh")}
-        </Button>
+          label={t("common.refresh")}
+        ></RefreshButton>
       </div>
       {query.isPending ? (
         <p role="status" className="text-sm">

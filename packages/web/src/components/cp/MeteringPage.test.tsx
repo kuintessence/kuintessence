@@ -275,12 +275,13 @@ describe("MeteringPage", () => {
     expect(String(call?.[0])).toContain("/metering/export?");
     expect(String(call?.[0])).toContain("format=csv");
     expect(String(call?.[0])).toContain("grouping=org");
+    expect(String(call?.[0])).not.toContain("limit=");
     expect(String(call?.[1])).toContain(".csv");
   });
 
   test("export failure renders friendly copy without exposing backend details", async () => {
     stubFetch({ rows: [row()], total: 1 });
-    downloadMock.mockRejectedValueOnce(new Error("Parquet export is not enabled"));
+    downloadMock.mockRejectedValueOnce(new Error("Object storage connection failed"));
 
     render(<MeteringPage />, { wrapper: makeWrapper() });
     await waitFor(() => {
@@ -292,7 +293,7 @@ describe("MeteringPage", () => {
     await waitFor(() => {
       const error = screen.getByTestId("metering-export-error");
       expect(error.textContent).toContain("cp.metering.exportFailed");
-      expect(error.textContent).not.toContain("Parquet export is not enabled");
+      expect(error.textContent).not.toContain("Object storage connection failed");
     });
   });
 
@@ -344,7 +345,7 @@ describe("MeteringPage", () => {
     expect(downloadMock).not.toHaveBeenCalled();
   });
 
-  test("labels a metering result that was truncated at the shared export limit", async () => {
+  test("labels a metering result that was truncated for the on-screen table", async () => {
     stubFetch({ rows: [row()], total: 1_001 });
 
     render(<MeteringPage showWebhooks={false} />, { wrapper: makeWrapper() });
@@ -360,4 +361,17 @@ vi.mock("../../lib/use-organization-name", () => ({
   useOrganizationName: () => (id: string) => id,
 }));
 
-vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));
+vi.mock("../function-maps/FunctionMaps", () => ({
+  FunctionMaps: ({
+    dashboard,
+    common,
+  }: {
+    dashboard?: import("react").ReactNode;
+    common?: import("react").ReactNode;
+  }) => (
+    <>
+      {common}
+      {dashboard}
+    </>
+  ),
+}));

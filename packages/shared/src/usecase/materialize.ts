@@ -14,7 +14,7 @@
 
 import { posix as posixPath } from "node:path";
 import type { LicensedMaterialRequest } from "../schemas/job";
-import { StagePathSchema } from "../schemas/job";
+import { EnvironmentNameSchema, StagePathSchema } from "../schemas/job";
 import { type DataAssetRequirement, legacyLicensedMaterialsToDataRequirements } from "./package";
 
 export type SoftwareSpec =
@@ -124,7 +124,7 @@ function asFiles(value: string | FileInputValue | undefined, descriptor: string)
 
 export function materialize(input: MaterializeInput): MaterializedTask {
   const positioned: { sort: number; tokens: string[] }[] = [];
-  const envVars: Record<string, string> = {};
+  const envVars: Record<string, string> = Object.create(null);
   const inputStaging: { fileMetadataId: string; stagePath: string }[] = [];
   let stdinText: string | undefined;
 
@@ -147,10 +147,10 @@ export function materialize(input: MaterializeInput): MaterializedTask {
         if (!material) {
           throw new Error(`materialize: no Environment material "${ref.descriptor}"`);
         }
-        envVars[material.key] = renderTokens(
-          material.valueFormat,
-          asText(input.inputs[slot.descriptor], slot.descriptor),
-        ).join(" ");
+        const key = EnvironmentNameSchema.parse(material.key);
+        if (Object.hasOwn(envVars, key)) throw new Error(`Duplicate environment variable '${key}'`);
+        const value = asText(input.inputs[slot.descriptor], slot.descriptor);
+        envVars[key] = material.valueFormat.replaceAll("{}", () => value);
       } else if (ref.kind === "FileInputRef") {
         const material = input.filesomeInputs.find((f) => f.descriptor === ref.descriptor);
         if (!material) {

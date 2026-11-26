@@ -149,6 +149,42 @@ export class MarketLedger {
       } else {
         if (Date.parse(demand.createdAt) > now + 60000 || Date.parse(demand.expiresAt) <= now)
           return fail("AUTHORIZATION_EXPIRED");
+        if (demand.reopens) {
+          const parentId = demand.reopens.demandId;
+          const parentBytes = await stub.getState(stub.createCompositeKey("demand", [parentId]));
+          if (!parentBytes.length || parentId === id) return fail("OPERATION_CONFLICT");
+          const parent = MarketDemandStateSchema.parse(
+            JSON.parse(Buffer.from(parentBytes).toString()),
+          );
+          if (parent.demand.sourceSiteId !== org.siteId) return fail("POLICY_DENIED");
+          if (
+            parent.version !== demand.reopens.version ||
+            !["CLOSED", "CANCELLED"].includes(parent.status)
+          )
+            return fail("OPERATION_CONFLICT");
+          const successor = stub.createCompositeKey("reopened-demand", [parentId]);
+          if ((await stub.getState(successor)).length) return fail("OPERATION_CONFLICT");
+          if (parent.claim) {
+            const domain = parent.claim.commercialDomainId;
+            if (!domain) return fail("OPERATION_CONFLICT");
+            const response = await stub.invokeChaincode(
+              "kq-commercial",
+              ["GetClaimDischarge", domain, parent.claim.claimId, parentId],
+              stub.getChannelID(),
+            );
+            if (response.status !== 200 || !response.payload) return fail("LEDGER_REQUIRED");
+            const proof = z
+              .strictObject({ state: z.enum(["unreserved", "released", "settled"]) })
+              .parse(JSON.parse(Buffer.from(response.payload).toString()));
+            const expected = parent.unreservedClosure
+              ? "unreserved"
+              : parent.closure?.gate.state === "REVOKED"
+                ? "released"
+                : "settled";
+            if (proof.state !== expected) return fail("OPERATION_CONFLICT");
+          }
+          await stub.putState(successor, encode({ demandId: id }));
+        }
         await stub.putState(
           key,
           encode({
@@ -435,6 +471,17 @@ export class MarketLedger {
       Date.parse(claim.expiresAt) > Date.parse(prior.demand.expiresAt)
     )
       return fail("AUTHORIZATION_EXPIRED");
+    // A reservation identity cannot be reused by a later demand generation.
+    const claimKey = stub.createCompositeKey("market-claim-id", [claim.claimId]);
+    if ((await stub.getState(claimKey)).length) return fail("OPERATION_CONFLICT");
+    if (prior.demand.reopens) {
+      const parentBytes = await stub.getState(
+        stub.createCompositeKey("demand", [prior.demand.reopens.demandId]),
+      );
+      const parent = MarketDemandStateSchema.parse(JSON.parse(Buffer.from(parentBytes).toString()));
+      if (parent.claim?.claimId === claim.claimId) return fail("OPERATION_CONFLICT");
+    }
+    await stub.putState(claimKey, encode({ demandId: id }));
     // This read + write is validated by Fabric MVCC. Expiry alone never reopens a possibly funded claim.
     await stub.putState(
       key,

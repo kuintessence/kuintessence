@@ -39,7 +39,7 @@ export function assertInterconnectOrg(scope: InterconnectScope, orgId: string) {
 }
 async function centerForScope(db: Db, scope: InterconnectScope, id: string) {
   const [center] = await db.select().from(computeCenters).where(eq(computeCenters.id, id));
-  if (!center) fail("算力中心不存在或不可访问", 404);
+  if (!center) fail("可用区不存在或不可访问", 404);
   assertInterconnectOrg(scope, center.orgId);
   return center;
 }
@@ -202,7 +202,7 @@ export class InterconnectService {
       assertInterconnectOrg(scope, input.orgId);
       if (id) {
         const previous = await centerForScope(tx, scope, id);
-        if (previous.orgId !== input.orgId) fail("已有算力中心不能更换所属组织");
+        if (previous.orgId !== input.orgId) fail("已有可用区不能更换所属算力中心");
         await tx
           .update(computeCenters)
           .set({ metadata: input.metadata, updatedAt: new Date() })
@@ -228,6 +228,15 @@ export class InterconnectService {
         if (!old) fail("集群不存在", 404);
         const oldCenter = await centerForScope(tx, scope, old.centerId);
         if (oldCenter.orgId !== center.orgId) fail("集群不能跨组织迁移");
+        if (old.centerId !== input.centerId) {
+          const links = await tx
+            .select({ id: computeInterconnects.id })
+            .from(computeInterconnects)
+            .where(
+              sql`${computeInterconnects.metadata}->>'fromClusterId' = ${id} OR ${computeInterconnects.metadata}->>'toClusterId' = ${id}`,
+            );
+          if (links.length) fail("请先移除集群关联的传输链路再迁移可用区", 409);
+        }
       }
       if (input.agentIds.length) {
         const selected = await tx
@@ -286,6 +295,17 @@ export class InterconnectService {
     return this.mutate(scope, "link", id, async (tx) => {
       await centerForScope(tx, scope, input.fromCenterId);
       await centerForScope(tx, scope, input.toCenterId);
+      for (const [clusterId, centerId] of [
+        [input.metadata.fromClusterId, input.fromCenterId],
+        [input.metadata.toClusterId, input.toCenterId],
+      ]) {
+        if (!clusterId) continue;
+        const [cluster] = await tx
+          .select()
+          .from(computeClusters)
+          .where(eq(computeClusters.id, clusterId));
+        if (!cluster || cluster.centerId !== centerId) fail("链路集群必须属于所选可用区");
+      }
       if (id) {
         const [old] = await tx
           .select()
@@ -327,12 +347,19 @@ export class InterconnectService {
             .where(
               sql`${computeInterconnects.fromCenterId} = ${id} OR ${computeInterconnects.toCenterId} = ${id}`,
             );
-          if (children.length || links.length) fail("请先移除中心下的集群和关联链路", 409);
+          if (children.length || links.length) fail("请先移除可用区下的集群和关联链路", 409);
           await tx.delete(computeCenters).where(eq(computeCenters.id, id));
         } else if (kind === "cluster") {
           const [row] = await tx.select().from(computeClusters).where(eq(computeClusters.id, id));
           if (!row) fail("集群不存在", 404);
           await centerForScope(tx, scope, row.centerId);
+          const links = await tx
+            .select({ id: computeInterconnects.id })
+            .from(computeInterconnects)
+            .where(
+              sql`${computeInterconnects.metadata}->>'fromClusterId' = ${id} OR ${computeInterconnects.metadata}->>'toClusterId' = ${id}`,
+            );
+          if (links.length) fail("请先移除集群关联的传输链路", 409);
           await tx.delete(computeClusters).where(eq(computeClusters.id, id));
         } else {
           const [row] = await tx

@@ -33,6 +33,7 @@ type Stub = Pick<
   | "getPrivateData"
   | "getPrivateDataHash"
   | "putPrivateData"
+  | "purgePrivateData"
   | "getTransient"
   | "getDateTimestamp"
 >;
@@ -49,7 +50,7 @@ export class CaseLedger {
     this.trust = FabricCaseTrustSchema.parse(trust);
     this.config = encode(this.trust);
   }
-  private organization(identity: Identity, role: "case" | "trust-admin") {
+  private organization(identity: Identity, role: "case" | "trust-admin" | "case-custodian") {
     const org = this.trust.organizations.find(
       (value) =>
         value.mspId === identity.getMSPID() &&
@@ -97,10 +98,105 @@ export class CaseLedger {
       return fail("DATA_WAITING");
     return value;
   }
+  private async retention(stub: Stub, identity: Identity, action: string, params: string[]) {
+    const actor = this.organization(identity, "case-custodian");
+    const [domainId, id] = z.tuple([z.uuid(), z.uuid()]).parse(params);
+    const domain = this.trust.domains.find((item) => item.domainId === domainId);
+    if (!domain || !caseMembers(domain).includes(actor.siteId)) return fail("POLICY_DENIED");
+    const key = (kind: string, ...parts: string[]) =>
+      stub.createCompositeKey(kind, [domainId, id, ...parts]);
+    const bytes = await this.value(stub, domain.collection, key("case-evidence"));
+    const record = bytes.length
+      ? z.object({ receipt: CaseReceiptSchema }).parse(JSON.parse(Buffer.from(bytes).toString()))
+      : null;
+    const stateKey = key("case-retention");
+    const stateBytes = await this.value(stub, domain.collection, stateKey);
+    const policy = z.strictObject({
+      revision: z.number().int().nonnegative(),
+      digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+      receipt: CaseReceiptSchema,
+      holds: z.array(z.uuid()).max(3),
+      approvals: z.record(z.uuid(), z.iso.datetime()),
+      purged: z.boolean(),
+    });
+    const hash = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+    if (!record && !stateBytes.length) return fail("ASSET_UNAVAILABLE");
+    const state = stateBytes.length
+      ? policy.parse(JSON.parse(Buffer.from(stateBytes).toString()))
+      : policy.parse({
+          revision: 0,
+          digest: hash,
+          receipt: record?.receipt,
+          holds: [],
+          approvals: {},
+          purged: false,
+        });
+    if (
+      state.receipt.recordId !== id ||
+      (state.purged
+        ? !!record
+        : !record || state.digest !== hash || state.receipt.digest !== record.receipt.digest)
+    )
+      return fail("DATA_WAITING");
+    const transient = stub.getTransient();
+    if (action === "InspectCaseRetention") {
+      if (transient.size) return fail("INVALID_MESSAGE");
+      return encode(state);
+    }
+    const data = transient.get("retention");
+    if (!data || transient.size !== 1 || data.length > 1024) return fail("INVALID_MESSAGE");
+    const change = z
+      .strictObject({
+        revision: z.number().int().nonnegative(),
+        digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        action: z.enum(["hold", "release-hold", "archive", "purge"]),
+        retainUntil: z.iso.datetime().optional(),
+      })
+      .parse(JSON.parse(Buffer.from(data).toString()));
+    if (
+      (change.action === "archive") !== (change.retainUntil !== undefined) ||
+      change.digest !== state.digest
+    )
+      return fail("OPERATION_CONFLICT");
+    if (state.purged && change.action === "purge") return encode(state);
+    if (state.purged || state.revision !== change.revision) return fail("OPERATION_CONFLICT");
+    if (change.action === "hold") {
+      if (!state.holds.includes(actor.siteId)) state.holds.push(actor.siteId);
+    } else if (change.action === "release-hold") {
+      state.holds = state.holds.filter((site) => site !== actor.siteId);
+    } else if (change.action === "archive" && change.retainUntil) {
+      const prior = state.approvals[actor.siteId];
+      if (
+        Date.parse(change.retainUntil) < stub.getDateTimestamp().getTime() ||
+        (prior && Date.parse(change.retainUntil) < Date.parse(prior))
+      )
+        return fail("OPERATION_CONFLICT");
+      state.approvals[actor.siteId] = change.retainUntil;
+    } else {
+      const withdrawn = await this.value(stub, domain.collection, key("case-withdrawn"));
+      if (
+        Buffer.from(withdrawn).toString() !== state.receipt.digest ||
+        state.holds.length ||
+        !caseMembers(domain).every((site) => {
+          const until = state.approvals[site];
+          return until && Date.parse(until) <= stub.getDateTimestamp().getTime();
+        })
+      )
+        return fail("POLICY_DENIED");
+      await stub.purgePrivateData(domain.collection, key("case-evidence"));
+      state.purged = true;
+    }
+    state.revision++;
+    await stub.putPrivateData(domain.collection, stateKey, encode(state));
+    return encode(state);
+  }
+
   async invoke(stub: Stub, identity: Identity): Promise<Buffer> {
     if (!Buffer.from(await stub.getState(ConfigKey)).equals(this.config))
       return fail("POLICY_DENIED");
     const { fcn, params } = stub.getFunctionAndParameters();
+    if (fcn === "InspectCaseRetention" || fcn === "ChangeCaseRetention")
+      return this.retention(stub, identity, fcn, params);
     if (fcn === "RevokeKey") {
       const org = this.organization(identity, "trust-admin");
       const [site, id] = z
@@ -128,7 +224,23 @@ export class CaseLedger {
         domain.collection,
         stub.createCompositeKey(recordType, [domainId, recordId]),
       );
-      if (!bytes.length) return encode({ receipt: null });
+      if (!bytes.length) {
+        if (recordType === "case-evidence") {
+          const archive = await this.value(
+            stub,
+            domain.collection,
+            stub.createCompositeKey("case-retention", [domainId, recordId]),
+          );
+          if (archive.length) {
+            const state = z
+              .object({ purged: z.literal(true), receipt: CaseReceiptSchema })
+              .parse(JSON.parse(Buffer.from(archive).toString()));
+            if (state.receipt.recordId !== recordId) return fail("OPERATION_CONFLICT");
+            return encode({ receipt: state.receipt });
+          }
+        }
+        return encode({ receipt: null });
+      }
       const stored = z
         .object({ receipt: CaseReceiptSchema })
         .parse(JSON.parse(Buffer.from(bytes).toString()));

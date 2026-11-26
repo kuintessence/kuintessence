@@ -478,13 +478,15 @@ describe("LocalWorkflowRunner.run", () => {
     writeFileSync(join(dir, "frame_1.txt"), "A");
     writeFileSync(join(dir, "frame_3.txt"), "C");
 
-    let workerLaunches = 0;
+    const workerGroups: Array<string | undefined> = [];
     const adapter: SchedulerAdapter = {
-      type: "fake",
+      type: "slurm",
       version: "0",
       async submit(spec) {
         if (spec.name === "worker") {
-          workerLaunches += 1;
+          workerGroups.push(spec.forEachGroup);
+        } else {
+          expect(spec.forEachGroup).toBeUndefined();
         }
         return { schedulerJobId: "S1" };
       },
@@ -558,7 +560,7 @@ describe("LocalWorkflowRunner.run", () => {
             type: "Reduce",
             from: { loop: "fan", output: "oks" },
             reducer: { kind: "Collect" },
-            output: { kind: "SingleFile", descriptor: "all" },
+            output: { kind: "Value", descriptor: "all" },
           },
         ],
         nodeRelations: [
@@ -574,7 +576,11 @@ describe("LocalWorkflowRunner.run", () => {
     expect(result.status.gen).toBe("Succeeded");
     expect(result.values.gen?.values.frames).toEqual(["A", "B", "C"]);
     expect(result.status.fan).toBe("Succeeded");
-    expect(workerLaunches).toBe(3);
+    expect(workerGroups).toHaveLength(3);
+    expect(workerGroups[0]).toMatch(/^[a-f0-9]{64}$/);
+    expect(new Set(workerGroups).size).toBe(1);
+    await runner.run(wf, "tester");
+    expect(new Set(workerGroups).size).toBe(2);
     expect(result.status.gather).toBe("Succeeded");
     expect(result.values.gather?.values.all).toEqual([1, 1, 1]);
   });

@@ -1,7 +1,7 @@
 import {
   FederationAgreementContextSchema,
   FederationCurrentCapabilitiesSchema,
-  type FederationDelegation,
+  type FederationSubmission,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { FederationOutboundViewSchema } from "@kuintessence/shared/federation/outbound-views";
@@ -44,7 +44,7 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState<FederationDelegation | null>(null);
+  const [draft, setDraft] = useState<FederationSubmission | null>(null);
   const [confirming, setConfirming] = useState(false);
   const focus = useRef<HTMLElement | null>(null);
   const readOnly = useMobileMutationBlocked("/federation/outbound");
@@ -104,7 +104,7 @@ function TasksPanel({ scope, switching }: { scope: ApiOrganizationScope; switchi
     refetchIntervalInBackground: false,
   });
   const submit = useMutation({
-    mutationFn: async (request: FederationDelegation) => {
+    mutationFn: async (request: FederationSubmission) => {
       if (!allowed.current) throw new Error("Delegation unavailable");
       const row = FederationOutboundViewSchema.parse(
         (await api.post<{ data: unknown }>("/federation/outbound", request, scope)).data,

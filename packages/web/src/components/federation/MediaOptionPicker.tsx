@@ -9,7 +9,7 @@ import { useTranslation } from "react-i18next";
 import type { z } from "zod";
 import { api } from "../../lib/api-client";
 import { compactUuid, statusLabel } from "../../lib/format";
-import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 import { checkMediaScope, MediaPagination, type MediaScope } from "./MediaLogisticsShared";
 
 type Options = z.infer<typeof MediaOptionsSchema>;
@@ -116,9 +116,12 @@ export function MediaOptionPicker({
       {query.isError ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
           {t("federation.loadFailed")}
-          <Button type="button" variant="outline" onClick={() => void query.refetch()}>
-            {t("federation.refresh")}
-          </Button>
+          <RefreshButton
+            type="button"
+            variant="outline"
+            onClick={() => void query.refetch()}
+            label={t("federation.refresh")}
+          ></RefreshButton>
         </div>
       ) : (
         <>

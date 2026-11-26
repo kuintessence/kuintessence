@@ -1,0 +1,1 @@
+CREATE INDEX "file_transfers_terminal_checkpoint_idx" ON "file_transfers" USING btree (encode(sha256("id"::text::bytea), 'hex')) WHERE direction = 'cluster_to_cloud' and state in ('succeeded', 'cancelled');

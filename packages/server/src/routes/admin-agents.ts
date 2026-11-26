@@ -13,8 +13,7 @@ import type { BoundPrincipal } from "../middleware/principal-binder";
  * the local CA and ledgers the issuance in `agent_certs`. Returns the
  * signed cert plus the CA bundle so the Agent can pin the trust root.
  *
- * Out of scope for B3: enrollment-token gating (Agent-direct CSR flow with
- * AGENT_ENROLL_TOKEN), CRL distribution endpoint, OCSP responder, Web UI.
+ * CRL and OCSP distribution use the public agent-pki routes.
  */
 
 const IssueCertBodySchema = z.object({

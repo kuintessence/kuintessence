@@ -13,6 +13,7 @@
   "sourcePolicy": "clean",
   "sequence": 12,
   "serverRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "serverProtocolRange": { "min": 1, "max": 1 },
   "stateFormat": "slurm-site-v5",
   "architecture": "x86_64",
   "minGlibc": "2.36",
@@ -35,8 +36,12 @@
 ```
 
 - `channel` 是发布目标，不写入严格的下载 manifest；记录在 `prepare.json` 供审核。`sequence` 是该通道单调增长序号，不是软件版本。
-- `serverRevision` 必须等于构建仓库当前完整 Git HEAD，且应与准备上线的平台 Server revision 一致。准备记录包含 `sourceDirty`；有未提交修改时可构建用于审核，但不能把该产物视为纯净 revision 的可复现构建。正式发布须显式使用 `mode=release`，选择干净提交或下文说明的完整 sealed 源码快照。
+- `serverRevision` 必须等于构建仓库当前完整 Git HEAD，用于追溯 CLI/Agent 构建来源。声明下述协议范围后，不再要求它等于当前部署的 Server commit。准备记录包含 `sourceDirty`；有未提交修改时可构建用于审核，但不能把该产物视为纯净 revision 的可复现构建。正式发布须显式使用 `mode=release`，选择干净提交或下文说明的完整 sealed 源码快照。
+- `serverProtocolRange` 是可选的已验证兼容范围，含闭区间 `min/max` 两个正整数（上限 2147483647），随 manifest 签名。Server 的 `/api/agent-binaries` 实时响应通过 `siteProtocolVersion` 声明代码实现的站点协议版本；只有落在签名范围内才放行，Git commit 可以不同。当前协议为1，示例的 `1..1` 已允许协议不变的多次 Server 更新。只有验证旧协议兼容后才下调 min，不能为未知未来协议预填较大的 max。
+- 协议覆盖站点 HTTP、connectRPC、注册、诊断和文件传输契约；破坏兼容性的变更必须提升 `packages/shared/src/site-protocol.ts` 中的版本并验证受影响的 CLI/Agent。增加可选字段等兼容变更不因 Git commit 改变而提升协议版本。这里不使用产品包 SemVer 或 Git 提交区间推断兼容；SQLite 状态迁移继续单独由 `stateFormat` 管理。
+- 未声明 `serverProtocolRange` 的历史发行继续要求精确 revision 匹配。显式声明范围但 Server 未报告有效协议版本时停止，不回退到 commit 相等。先升级 Server，再交付新版 bootstrap 和重新签名的发行；旧 bootstrap 仍按 commit 检查，旧 Server 的严格 manifest schema 不能读取新增字段。改本地清单、跳过签名或放宽旧包配置均不能完成迁移。
 - `stateFormat` 是站点状态数据库兼容约定，由发行负责人验证；工具不会因版本字符串相同就推断迁移安全。
+- 显式共享 HOME 模式使用 `slurm-site-v5-shared-home-v1`，必须搭配支持 SQLite DELETE journal 的新版 Agent；旧 WAL 二进制不能改标签后复用。首轮 `requireSpack=false`，无需 runtime/SIF/profile；安装与 tmux 运行见[共享 HOME 手册](../examples/slurm-user-site/SHARED-HOME.md)。
 - `architecture` 与 `buildTarget` 必须对应：x86_64 可选 `bun-linux-x64` 或 `bun-linux-x64-baseline`，aarch64 选 `bun-linux-arm64`。Agent 沿用既有 `scripts/build-agent-bundle.cjs` 的 ssh2 portable external flags，避免捆入构建机原生扩展；生成文件也会核对 ELF 架构。
 - `minGlibc`、`cpuFlags` 均为必填兼容性声明，必须有目标机器验证依据。baseline 不表示任意老 CPU 都兼容；普通 x64 Bun target 的 CPU 要求也不能照抄 baseline。工具不会从编译成功推断旧 glibc、CPU、调度器、SIF 或网络隔离可用。
 - `computeInventory` 可省略；填写时必须是相对请求文件的 `modules-smoke.sh` 计算节点 `result.json` 路径。工具严格验证 v1 inventory、`ok=true`、OS信息、glibc、架构、Python探测及共享工作目录的写入/读回/删除证据；编译器/MPI的 `failed` 会拒绝，`not-tested` 保留未验证含义。仅支持当前 Linux/glibc 报告，不将 musl、缺失信息或其他格式解释为兼容。
@@ -62,7 +67,7 @@ kq-release-review/
     runtime.sif
 ```
 
-`manifest.json` 直接使用平台 `/site-releases` 的格式：version/sequence/serverRevision/stateFormat/architecture/minGlibc/cpuFlags/redistribution/files。这里不是旧 `/agent-binaries` 的双架构 bundle manifest；不能互换。`prepare.json` 保存 channel、源码 revision/dirty、Bun版本、target、manifest摘要、`requireSpack` 和未签名/未发布标记。有 inventory 时记录 `compatibilityEvidence="inventory-checked"` 与原始 report 字节的 `computeInventorySha256`，不复制报告、不记录现场或平台本地路径；没有报告时明确标 `static-only`。这两种状态都不表示现场安装/运行成功。新增准备字段不进入严格的站点下载 manifest。
+`manifest.json` 直接使用平台 `/site-releases` 的格式：version/sequence/serverRevision/stateFormat/architecture/minGlibc/cpuFlags/redistribution/files，以及可选的 serverProtocolRange。这里不是旧 `/agent-binaries` 的双架构 bundle manifest；不能互换。`prepare.json` 保存 channel、源码 revision/dirty、Bun版本、target、manifest摘要、`requireSpack` 和未签名/未发布标记。有 inventory 时记录 `compatibilityEvidence="inventory-checked"` 与原始 report 字节的 `computeInventorySha256`，不复制报告、不记录现场或平台本地路径；没有报告时明确标 `static-only`。这两种状态都不表示现场安装/运行成功。构建准备专用字段不进入站点下载 manifest。
 
 可以在兼容的构建机上执行 `artifacts/kq --help` 与 `artifacts/kq site --help` 验证独立 CLI；不要用 Agent main 做构建 smoke，因为它会尝试连接或启动 Agent 工作流。
 

@@ -18,8 +18,7 @@ import forge from "node-forge";
  * fingerprint is now the source of truth and the handler is expected to
  * pin its `agentId` to the verifier output.
  *
- * Out of scope for B3: CRL/OCSP, intermediate CAs, hot-reload of trusted
- * roots, hardware-backed keys.
+ * The verifier reads the certificate ledger on each connection.
  */
 export interface MtlsVerifyInput {
   readonly peerCertPem: string | null;

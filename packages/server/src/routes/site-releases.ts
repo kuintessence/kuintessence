@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
+import { siteProtocolRangeSchema } from "@kuintessence/shared";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -10,6 +11,7 @@ export const siteReleaseSchema = z
     version: z.literal(1),
     sequence: z.number().int().positive(),
     serverRevision: z.string().regex(/^[a-f0-9]{40}$/),
+    serverProtocolRange: siteProtocolRangeSchema.optional(),
     stateFormat: z.string().regex(/^[a-zA-Z0-9_.-]{1,64}$/),
     architecture: z.enum(["x86_64", "aarch64"]),
     minGlibc: z.string().regex(/^\d+\.\d+$/),

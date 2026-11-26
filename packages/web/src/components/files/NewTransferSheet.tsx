@@ -1,6 +1,6 @@
 import {
   apiErrorReason,
-  type CloudObject,
+  type NetDriveListItem,
   type Transfer,
   type TransferDirection,
 } from "@kuintessence/shared/browser";
@@ -118,7 +118,7 @@ export interface NewTransferSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialDirection: TransferDirection;
-  cloudObjects: CloudObject[];
+  cloudObjects: NetDriveListItem[];
   cloudListVerified: boolean;
   cloudSelected: string | null;
   clusterAgent: AgentRow | null;
@@ -158,7 +158,7 @@ export function NewTransferSheet({
   const hadCloudSource = useRef(false);
 
   const cloudObj = cloudObjects.find((o) => o.id === cloudSelected) ?? null;
-  const cloudObjKey = cloudObj?.key ?? null;
+  const cloudObjKey = cloudObj?.path ?? null;
   const clusterAgentId = clusterAgent?.agentId ?? null;
   const clusterAgentSiteName = clusterAgent?.siteName ?? null;
   const clusterContext = JSON.stringify({
@@ -173,11 +173,11 @@ export function NewTransferSheet({
     : "";
   const sourcePath =
     sourceSelection?.path ??
-    (direction === "cloud_to_cluster" ? (cloudObj?.key ?? "") : pageClusterSource);
+    (direction === "cloud_to_cluster" ? (cloudObj?.path ?? "") : pageClusterSource);
   const cloudSource =
     sourceSelection?.location === "cloud"
       ? cloudObjects.find(
-          (object) => object.id === sourceSelection.id && object.key === sourceSelection.path,
+          (object) => object.id === sourceSelection.id && object.path === sourceSelection.path,
         )
       : cloudObj;
   const cloudSourceUsable = cloudSource?.canUse === true;

@@ -13,8 +13,8 @@ import { FEDERATION_SECTIONS, type FederationSection } from "../../lib/federatio
 import { federationReadFailed } from "../../lib/federation-query-state";
 import { refreshOrganizationScope } from "../../lib/organization-query-scope";
 import { FunctionMaps } from "../function-maps/FunctionMaps";
-import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementPanel } from "./AgreementPanel";
 import { CommercialPanel } from "./CommercialPanel";
 import { FederationAssetsPanel } from "./FederationAssetsPanel";
@@ -99,9 +99,11 @@ function OrganizationAgreements({
       <div role="alert">
         <PageHeader title={pageTitle} />
         <p>{t("federation.loadFailed")}</p>
-        <Button variant="outline" onClick={() => void context.refetch()}>
-          {t("federation.refresh")}
-        </Button>
+        <RefreshButton
+          variant="outline"
+          onClick={() => void context.refetch()}
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
     );
   return (

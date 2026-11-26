@@ -207,15 +207,14 @@ export const ociUploadSession = pgTable("oci_upload_session", {
     .references(() => ociRepository.id, { onDelete: "cascade" })
     .notNull(),
   uuidToken: varchar("uuid_token", { length: 64 }).notNull().unique(),
+  completedDigest: varchar("completed_digest", { length: 71 }),
   totalUploaded: bigint("total_uploaded", { mode: "number" }).notNull().default(0),
   storageKey: varchar("storage_key", { length: 512 }).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 /**
- * Spack buildcache index row. `(hash, arch)` is the natural key — the
- * same Spack DAG hash can produce different binaries per arch, so both
- * fields are needed.
+ * A Spack DAG hash belongs to one entry within a namespaced repository.
  */
 export const spackPackage = pgTable(
   "spack_package",
@@ -223,18 +222,24 @@ export const spackPackage = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     namespaceKind: varchar("namespace_kind", { length: 16 }).notNull(),
     namespaceOwner: uuid("namespace_owner"),
+    repositoryName: text("repository_name").notNull(),
     spec: varchar("spec", { length: 500 }).notNull(),
     /** Spack 32-char DAG hash. */
     hash: varchar("hash", { length: 64 }).notNull(),
     arch: varchar("arch", { length: 64 }).notNull(),
     buildcacheUrl: text("buildcache_url").notNull(),
-    manifestUrl: text("manifest_url").notNull(),
+    manifestUrl: text("manifest_url"),
     sizeBytes: bigint("size_bytes", { mode: "number" }),
     uploadedBy: uuid("uploaded_by"),
     uploadedAt: timestamp("uploaded_at").defaultNow().notNull(),
   },
   (t) => ({
-    hashArchIdx: uniqueIndex("spack_package_hash_arch_idx").on(t.hash, t.arch),
+    repositoryHashIdx: uniqueIndex("spack_package_repository_hash_idx").on(
+      t.namespaceKind,
+      sql`coalesce(${t.namespaceOwner}::text, '')`,
+      t.repositoryName,
+      t.hash,
+    ),
     nsArchIdx: index("spack_package_ns_arch_idx").on(t.namespaceKind, t.namespaceOwner, t.arch),
     namespaceKindCheck: check(
       "spack_package_namespace_kind_check",

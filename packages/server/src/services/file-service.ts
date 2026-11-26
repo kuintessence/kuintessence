@@ -1,12 +1,11 @@
 import {
   AppError,
-  type CloudObject,
-  type CloudObjectCreate,
-  type CloudObjectRename,
   type ClusterEntry,
   ErrorCode,
   type Transfer,
   type TransferCreate,
+  TransferCreateSchema,
+  TransferSchema,
   type TransferState,
 } from "@kuintessence/shared";
 import type { AgentDispatcher } from "../grpc/dispatcher";
@@ -33,21 +32,26 @@ export function shellSingleQuote(s: string): string {
  * user create arbitrary directory trees on the cluster as the agent's identity.
  * A missing path now just fails `ls` so the route can report that the path is unavailable.
  */
+function clusterUserPath(path: string) {
+  return `p=$(realpath -m -- ${shellSingleQuote(path)}) || exit 2; case "$p/" in */.kq-replicas/*) exit 2;; esac`;
+}
+
 export function buildClusterLsCommand(path: string): string {
-  return `ls -la --time-style=long-iso ${shellSingleQuote(path)}`;
+  return `${clusterUserPath(path)}; cd -P -- "$p" || exit 2; case "$(pwd -P)/" in */.kq-replicas/*) exit 2;; esac; ls -la --time-style=long-iso -- .`;
 }
 
 export function buildClusterDownloadCommand(path: string): string {
-  return `test -f ${shellSingleQuote(path)} && base64 ${shellSingleQuote(path)} | tr -d '\\n'`;
+  return `${clusterUserPath(path)}; test -f "$p" || exit 2; exec 3<"$p"; test -f /proc/self/fd/3 || exit 2; opened=$(readlink -f /proc/self/fd/3) || exit 2; case "$opened/" in */.kq-replicas/*) exit 2;; esac; base64 <&3 | tr -d '\\n'`;
 }
 
 export function buildClusterSourceFileCheckCommand(path: string): string {
-  return `test -f ${shellSingleQuote(path)}`;
+  return `${clusterUserPath(path)}; test -f "$p"`;
 }
 
 export function buildClusterTargetParentCheckCommand(path: string): string {
   return [
-    `dir=$(dirname -- ${shellSingleQuote(path)})`,
+    clusterUserPath(path),
+    'dir=$(dirname -- "$p")',
     'while [ ! -e "$dir" ]; do parent=$(dirname -- "$dir"); if [ "$parent" = "$dir" ]; then echo MISSING; exit 2; fi; dir="$parent"; done',
     'if [ ! -d "$dir" ]; then echo MISSING; exit 2; fi',
     'if [ ! -x "$dir" ] || [ ! -w "$dir" ]; then echo NOT_WRITABLE; exit 3; fi',
@@ -114,12 +118,14 @@ export interface FileTransferRunner {
     transferId: string,
     data: TransferCreate,
     onProgress: (event: TransferProgressEvent) => void,
+    completionOnly?: boolean,
   ): Promise<void>;
+  discardSession?(transferId: string, ownerId: string): Promise<void>;
   cancel(transferId: string, ownerId?: string): Promise<boolean>;
 }
 
 export interface TransferDispatchOptions {
-  beforeDispatch?: () => Promise<TransferDispatchAuthorization | undefined>;
+  beforeDispatch?: (data: TransferCreate) => Promise<TransferDispatchAuthorization | undefined>;
 }
 
 export interface FileTransferListFilter {
@@ -131,15 +137,20 @@ export interface FileTransferStore {
   listByUser(userId: string, filter?: FileTransferListFilter): Promise<Transfer[]>;
   getByUser(userId: string, id: string): Promise<Transfer | null>;
   create(transfer: Transfer): Promise<Transfer>;
-  update(userId: string, id: string, patch: FileTransferPatch): Promise<Transfer | null>;
   transition(
     userId: string,
     id: string,
     from: TransferState,
     patch: FileTransferPatch,
+    expectedStartedAt?: string,
   ): Promise<Transfer | null>;
   markRunningRootPolicyChanged(rootId: string, changedAt: string): Promise<Transfer[]>;
   markInterrupted(error: string): Promise<number>;
+  coordinateCancel?(
+    userId: string,
+    id: string,
+    cancel: (row: Transfer) => Promise<boolean>,
+  ): Promise<Transfer>;
 }
 
 export class InMemoryFileTransferStore implements FileTransferStore {
@@ -163,22 +174,20 @@ export class InMemoryFileTransferStore implements FileTransferStore {
     return transfer;
   }
 
-  async update(userId: string, id: string, patch: FileTransferPatch): Promise<Transfer | null> {
-    const current = await this.getByUser(userId, id);
-    if (!current) return null;
-    const updated = { ...current, ...patch };
-    this.transfers.set(id, updated);
-    return updated;
-  }
-
   async transition(
     userId: string,
     id: string,
     from: TransferState,
     patch: FileTransferPatch,
+    expectedStartedAt?: string,
   ): Promise<Transfer | null> {
-    const current = await this.getByUser(userId, id);
-    if (!current || current.state !== from) return null;
+    const current = this.transfers.get(id);
+    if (
+      current?.userId !== userId ||
+      current.state !== from ||
+      (expectedStartedAt !== undefined && current.startedAt !== expectedStartedAt)
+    )
+      return null;
     const updated = { ...current, ...patch };
     this.transfers.set(id, updated);
     return updated;
@@ -212,16 +221,7 @@ export class InMemoryFileTransferStore implements FileTransferStore {
   }
 }
 
-/**
- * In-memory file compatibility service.
- *
- * Legacy cloud objects live in a per-user map and mock transfers tick copiedBytes so older
- * clients can still exercise the compatibility surface. Cluster listings always come from a
- * live Agent shell channel; production NetDrive transfers use the attached TransferRunner.
- */
 export class FileService {
-  private readonly cloud = new Map<string, CloudObject>();
-  private readonly tickers = new Map<string, ReturnType<typeof setInterval>>();
   private runner: FileTransferRunner | null = null;
   private dispatcher: AgentDispatcher | null = null;
   private shellExecRegistry: ShellExecRegistry | null = null;
@@ -247,7 +247,7 @@ export class FileService {
     const agentId = this.selectOnlineAgent(target);
     if (!agentId) return { status: "unavailable" };
     const requestId = crypto.randomUUID();
-    const pending = this.shellExecRegistry.await(requestId, 10_000);
+    const pending = this.shellExecRegistry.await(requestId, 10_000, agentId);
     const queued = this.dispatcher.pushShellExec(
       agentId,
       requestId,
@@ -275,7 +275,7 @@ export class FileService {
     const agentId = this.selectOnlineAgent(target);
     if (!agentId) return { status: "unavailable" };
     const requestId = crypto.randomUUID();
-    const pending = this.shellExecRegistry.await(requestId, 30_000);
+    const pending = this.shellExecRegistry.await(requestId, 30_000, agentId);
     const queued = this.dispatcher.pushShellExec(
       agentId,
       requestId,
@@ -304,7 +304,7 @@ export class FileService {
     const agentId = this.selectOnlineAgent(target);
     if (!agentId) return { status: "unavailable" };
     const requestId = crypto.randomUUID();
-    const pending = this.shellExecRegistry.await(requestId, 10_000);
+    const pending = this.shellExecRegistry.await(requestId, 10_000, agentId);
     const command =
       direction === "cluster_to_cloud"
         ? buildClusterSourceFileCheckCommand(path)
@@ -334,7 +334,7 @@ export class FileService {
     const agentId = this.selectOnlineAgent(target);
     if (!agentId) return { status: "unavailable" };
     const requestId = crypto.randomUUID();
-    const pending = this.shellExecRegistry.await(requestId, 10_000);
+    const pending = this.shellExecRegistry.await(requestId, 10_000, agentId);
     const queued = this.dispatcher.pushShellExec(
       agentId,
       requestId,
@@ -358,48 +358,6 @@ export class FileService {
     } catch {
       return { status: "missing" };
     }
-  }
-
-  // -------- Cloud objects --------
-
-  listCloud(userId: string, prefix = ""): CloudObject[] {
-    return [...this.cloud.values()]
-      .filter((o) => o.userId === userId && o.key.startsWith(prefix))
-      .sort((a, b) => a.key.localeCompare(b.key));
-  }
-
-  createCloud(userId: string, data: CloudObjectCreate): CloudObject {
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    const obj: CloudObject = {
-      id,
-      userId,
-      key: data.key,
-      size: data.size,
-      contentType: data.contentType,
-      createdAt: now,
-      modifiedAt: now,
-      etag: hashKey(`${userId}:${data.key}:${data.size}`),
-      uploadUrl: `/api/files/cloud/${id}/upload`,
-    };
-    this.cloud.set(id, obj);
-    return obj;
-  }
-
-  rename(userId: string, id: string, data: CloudObjectRename): CloudObject {
-    const o = this.requireOwnedCloud(userId, id);
-    const updated: CloudObject = {
-      ...o,
-      key: data.key,
-      modifiedAt: new Date().toISOString(),
-    };
-    this.cloud.set(id, updated);
-    return updated;
-  }
-
-  deleteCloud(userId: string, id: string): void {
-    const o = this.requireOwnedCloud(userId, id);
-    this.cloud.delete(o.id);
   }
 
   // -------- Transfers --------
@@ -452,27 +410,22 @@ export class FileService {
   async resumeTransfer(
     userId: string,
     id: string,
-    options: TransferDispatchOptions,
+    options: TransferDispatchOptions & {
+      preflight?: (data: TransferCreate, completionOnly: boolean) => Promise<void>;
+    },
   ): Promise<Transfer> {
     const transfer = await this.requireOwnedTransfer(userId, id);
     if (transfer.state !== "failed")
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Only failed transfers can be resumed", 409);
-    const data: TransferCreate = {
-      direction: transfer.direction,
-      source: transfer.source,
-      target: transfer.target,
-      ...(transfer.agentId ? { agentId: transfer.agentId } : {}),
-      ...(transfer.siteId ? { siteId: transfer.siteId } : {}),
-      ...(transfer.totalBytes !== null ? { totalBytes: transfer.totalBytes } : {}),
-      ...(transfer.sourceFileId ? { sourceFileId: transfer.sourceFileId } : {}),
-      ...(transfer.jobId ? { jobId: transfer.jobId } : {}),
-      ...(transfer.workflowRunId ? { workflowRunId: transfer.workflowRunId } : {}),
-      ...(transfer.netdriveFileIds ? { netdriveFileIds: transfer.netdriveFileIds } : {}),
-    };
-    if (
-      !this.runner ||
-      (!this.runner.canHandle(data) && !(await this.runner.canResume?.(userId, id, data)))
-    )
+    const data = TransferCreateSchema.parse({
+      ...transfer,
+      totalBytes: transfer.totalBytes ?? undefined,
+      agentId: transfer.agentId ?? undefined,
+      siteId: transfer.siteId ?? undefined,
+    });
+    const completionOnly = (await this.runner?.canResume?.(userId, id, data)) ?? false;
+    await options.preflight?.(data, completionOnly);
+    if (!this.runner || (!completionOnly && !this.runner.canHandle(data)))
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Transfer Agent is unavailable", 409);
     const queued = await this.transferStore.transition(userId, id, "failed", {
       state: "queued",
@@ -481,25 +434,27 @@ export class FileService {
     });
     if (!queued)
       throw new AppError(ErrorCode.VALIDATION_ERROR, "Transfer changed concurrently", 409);
-    void this.dispatchTransfer(userId, userId, id, data, options);
+    void this.dispatchTransfer(userId, userId, id, data, {
+      ...options,
+      completionOnly,
+      previousStartedAt: queued.startedAt,
+    });
     return queued;
   }
 
   async cancelTransfer(userId: string, id: string): Promise<Transfer> {
     const t = await this.requireOwnedTransfer(userId, id);
     if (t.state !== "running" && t.state !== "queued" && t.state !== "failed") return t;
-    if (t.state === "running" || t.state === "failed") {
-      const accepted = (await this.runner?.cancel(id, userId)) ?? true;
-      if (!accepted) {
-        throw new AppError(
-          ErrorCode.VALIDATION_ERROR,
-          "Transfer can no longer be cancelled because completion has already started",
-          409,
-          { reason: "TRANSFER_CANCELLATION_NOT_ACCEPTED" },
-        );
-      }
+    if (this.transferStore.coordinateCancel)
+      return this.transferStore.coordinateCancel(userId, id, (row) => this.cancelOwned(row));
+    if (!(await this.cancelOwned(t))) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Transfer can no longer be cancelled because completion has already started",
+        409,
+        { reason: "TRANSFER_CANCELLATION_NOT_ACCEPTED" },
+      );
     }
-    this.stopTicker(id);
     const updated = await this.transferStore.transition(userId, id, t.state, {
       state: "cancelled",
       finishedAt: new Date().toISOString(),
@@ -510,6 +465,16 @@ export class FileService {
     return updated;
   }
 
+  async cancelOwned(t: Transfer): Promise<boolean> {
+    if (!this.runner && this.transferStore.coordinateCancel)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "Transfer backend unavailable", 503);
+    if (t.state !== "running" && this.runner?.discardSession) {
+      await this.runner.discardSession(t.id, t.userId);
+      return true;
+    }
+    return t.state === "queued" || ((await this.runner?.cancel(t.id, t.userId)) ?? true);
+  }
+
   reconcileInterruptedTransfers(): Promise<number> {
     return this.transferStore.markInterrupted("TRANSFER_INTERRUPTED_BY_SERVER_RESTART");
   }
@@ -518,36 +483,29 @@ export class FileService {
     return this.transferStore.markRunningRootPolicyChanged(rootId, changedAt);
   }
 
-  /**
-   * Cancel all timers — call from process shutdown.
-   * Public so the test harness can clean up between runs.
-   */
-  shutdown(): void {
-    for (const id of this.tickers.keys()) this.stopTicker(id);
-  }
-
-  // -------- internals --------
-
-  private stopTicker(id: string): void {
-    const tick = this.tickers.get(id);
-    if (tick) {
-      clearInterval(tick);
-      this.tickers.delete(id);
-    }
-  }
-
   private async dispatchTransfer(
     userId: string,
     actorUserId: string | null | undefined,
     id: string,
     data: TransferCreate,
-    options: TransferDispatchOptions,
+    options: TransferDispatchOptions & {
+      completionOnly?: boolean;
+      previousStartedAt?: string | null;
+    },
   ): Promise<void> {
+    let startedAt: string;
     try {
-      const authorization = await options.beforeDispatch?.();
+      const authorization = await options.beforeDispatch?.(data);
+      // Distinguish attempts even after a clock adjustment or a retry in the same millisecond.
+      startedAt = new Date(
+        Math.max(
+          Date.now(),
+          options.previousStartedAt ? Date.parse(options.previousStartedAt) + 1 : 0,
+        ),
+      ).toISOString();
       const running = await this.transferStore.transition(userId, id, "queued", {
         state: "running",
-        startedAt: new Date().toISOString(),
+        startedAt,
         error: null,
         ...(authorization
           ? {
@@ -571,44 +529,55 @@ export class FileService {
     }
 
     try {
-      await this.runner.start(actorUserId, id, data, (event) => {
-        void this.applyTransferProgress(userId, id, event);
-      });
+      await this.runner.start(
+        actorUserId,
+        id,
+        data,
+        (event) => {
+          void this.applyTransferProgress(userId, id, startedAt, event);
+        },
+        options.completionOnly,
+      );
     } catch (error) {
-      await this.transferStore.transition(userId, id, "running", {
-        state: "failed",
-        finishedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
+      await this.transferStore.transition(
+        userId,
+        id,
+        "running",
+        {
+          state: "failed",
+          finishedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : String(error),
+        },
+        startedAt,
+      );
     }
   }
 
   private async applyTransferProgress(
     userId: string,
     id: string,
+    startedAt: string,
     event: TransferProgressEvent,
   ): Promise<void> {
-    const current = await this.transferStore.getByUser(userId, id);
-    if (!current || current.state !== "running") return;
     const finished = event.state !== "running";
-    await this.transferStore.update(userId, id, {
-      copiedBytes: event.copiedBytes || current.copiedBytes,
-      state: event.state,
-      finishedAt: finished ? new Date().toISOString() : null,
-      error: event.error ?? null,
-      ...(event.netdriveFileIds ? { netdriveFileIds: event.netdriveFileIds } : {}),
-    });
-  }
-
-  private requireOwnedCloud(userId: string, id: string): CloudObject {
-    const o = this.cloud.get(id);
-    if (!o || o.userId !== userId) {
-      throw new AppError(ErrorCode.NOT_FOUND, "Cloud object not found", 404);
-    }
-    return o;
+    await this.transferStore.transition(
+      userId,
+      id,
+      "running",
+      {
+        ...(event.copiedBytes ? { copiedBytes: event.copiedBytes } : {}),
+        state: event.state,
+        finishedAt: finished ? new Date().toISOString() : null,
+        error: event.error ?? null,
+        ...(event.netdriveFileIds ? { netdriveFileIds: event.netdriveFileIds } : {}),
+      },
+      startedAt,
+    );
   }
 
   private async requireOwnedTransfer(userId: string, id: string): Promise<Transfer> {
+    if (!TransferSchema.shape.id.safeParse(id).success)
+      throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
     const t = await this.transferStore.getByUser(userId, id);
     if (!t || t.userId !== userId) {
       throw new AppError(ErrorCode.NOT_FOUND, "Transfer not found", 404);
@@ -618,7 +587,7 @@ export class FileService {
 
   private selectOnlineAgent(target: { agentId?: string; siteId?: string }): string | null {
     if (!this.dispatcher) return null;
-    const online = this.dispatcher.onlineAgentIds();
+    const online = this.dispatcher.interactionAgentIds();
     if (target.agentId) return online.includes(target.agentId) ? target.agentId : null;
     if (target.siteId) return online.includes(target.siteId) ? target.siteId : null;
     return online[0] ?? null;
@@ -635,7 +604,7 @@ function parseLsLa(stdout: string): ClusterEntry[] {
     const [, type, sizeStr, dateStr, rawName] = m;
     if (!rawName) continue;
     const name = rawName.trim();
-    if (name === "." || name === "..") continue;
+    if (name === "." || name === ".." || name === ".kq-replicas") continue;
     out.push({
       name,
       kind: type === "d" ? "dir" : "file",
@@ -644,14 +613,4 @@ function parseLsLa(stdout: string): ClusterEntry[] {
     });
   }
   return out;
-}
-
-function hashKey(s: string): string {
-  // Lightweight non-cryptographic hash adequate for an ETag in the in-memory mock.
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return `"${(h >>> 0).toString(16).padStart(8, "0")}"`;
 }

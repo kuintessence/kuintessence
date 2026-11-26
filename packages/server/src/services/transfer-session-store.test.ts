@@ -40,10 +40,14 @@ function fixture() {
     }),
     update: () => ({
       set: (value: { resumeSession: TransferSession | null }) => ({
-        where: async () => {
-          expect(locked).toBe(true);
-          if (row) row.session = structuredClone(value.resumeSession);
-        },
+        where: () => ({
+          returning: async () => {
+            expect(locked).toBe(true);
+            if (!row) return [];
+            row.session = structuredClone(value.resumeSession);
+            return [{ id: "transfer" }];
+          },
+        }),
       }),
     }),
   };

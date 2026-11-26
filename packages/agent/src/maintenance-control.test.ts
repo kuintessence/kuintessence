@@ -8,6 +8,26 @@ import { MaintenanceLease, startMaintenanceControl } from "./maintenance-control
 const first = "a".repeat(32);
 const second = "b".repeat(32);
 
+test("an update cannot stop an Agent without its own granted idle lease", async () => {
+  let stopped = 0;
+  const control = new MaintenanceLease({
+    drain: async () => true,
+    resume: () => {},
+    stop: async () => {
+      stopped += 1;
+    },
+  });
+  expect((await control.request({ action: "stop", lease: first })).ok).toBe(false);
+  expect((await control.request({ action: "drain", lease: first })).ok).toBe(true);
+  expect((await control.request({ action: "stop", lease: second })).ok).toBe(false);
+  expect((await control.request({ action: "stop", lease: first })).ok).toBe(true);
+  await control.stop(first);
+  expect(stopped).toBe(1);
+  control.close();
+  await expect(control.stop(first)).rejects.toThrow("LEASE_MISMATCH");
+  expect((await control.request({ action: "stop", lease: first })).ok).toBe(false);
+});
+
 test("busy does not retain a gate and an old lease cannot resume a new owner", async () => {
   const resumed: string[] = [];
   let idle = false;
@@ -55,12 +75,16 @@ test("private Unix socket accepts newline requests, rejects invalid leases, and 
   await chmod(root, 0o700);
   const path = join(root, "maintenance.sock");
   let drains = 0;
+  const stopped = Promise.withResolvers<void>();
   const server = await startMaintenanceControl(path, {
     drain: async () => {
       drains += 1;
       return true;
     },
     resume: () => {},
+    stop: async () => {
+      stopped.resolve();
+    },
   });
   const request = (value: unknown): Promise<{ ok: boolean; lease: string; reason: string }> =>
     new Promise((resolve, reject) => {
@@ -81,6 +105,9 @@ test("private Unix socket accepts newline requests, rejects invalid leases, and 
     expect((await request({ action: "drain", lease: first })).ok).toBe(true);
     expect((await request({ action: "resume", lease: second })).ok).toBe(false);
     expect((await request({ action: "resume", lease: first })).ok).toBe(true);
+    expect((await request({ action: "drain", lease: first })).ok).toBe(true);
+    expect((await request({ action: "stop", lease: first })).ok).toBe(true);
+    await stopped.promise;
   } finally {
     await server.close();
     expect(await lstat(path).catch(() => undefined)).toBeUndefined();

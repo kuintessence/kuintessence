@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import { SpackMaterialCatalogSchema } from "@kuintessence/shared";
 import { SpackMaterialCatalogLimitError } from "../services/spack-material-catalog";
 import {
@@ -6,6 +8,7 @@ import {
   cleanupMaterials,
   materialApp,
   materialFixture,
+  SOURCE_BLOB,
 } from "./spack-materials.test-helpers";
 import {
   headers,
@@ -75,7 +78,10 @@ describe("material catalog route", () => {
     "repository=public%2F..%2Fprivate",
     "repository[]=public/a",
     "repository=public/a&cursor=guess",
-    "limit=10",
+    "limit=10&limit=2",
+    "limit=1e2",
+    "limit=201",
+    "after=garbage",
     "url=https://example.test",
   ])("rejects ambiguous, path and unsupported queries: %s", async (query) => {
     const f = await materialFixture();
@@ -83,6 +89,40 @@ describe("material catalog route", () => {
     expect(response.status).toBe(422);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(await response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+  });
+
+  test("a continuation reads current permissions and still works after the anchor is removed", async () => {
+    const f = await materialFixture();
+    await f.seed();
+    for (const path of ["source-1", "source-2", "source-3"])
+      await f.store.publish({ ...f.input, sources: [{ blob: SOURCE_BLOB, path }] }, OWNER);
+    let canonical = { ...USER, suspended: false };
+    const app = materialApp(f.store, {
+      ...JWT_OPTIONS,
+      resolveCanonicalPrincipal: async () => canonical,
+    });
+    const request = { headers: { Authorization: `Bearer ${token(USER)}` } };
+    const page = async (after = "") => {
+      const query = new URLSearchParams({ repository: f.input.repository, limit: "2" });
+      if (after) query.set("after", after);
+      const response = await app.request(`${BASE}?${query}`, request);
+      expect(response.status).toBe(200);
+      return SpackMaterialCatalogSchema.parse(await response.json());
+    };
+    const first = await page();
+    expect(first.releases).toHaveLength(2);
+    const anchor = first.releases[1];
+    if (!first.nextCursor || !anchor) throw new Error("Missing page anchor");
+    canonical = { ...canonical, orgIds: [] };
+    expect(await page(first.nextCursor)).toEqual({ releases: [] });
+    canonical = { ...USER, suspended: false };
+    await rm(
+      join(f.root, "manifests", anchor.repositoryId, `${anchor.manifestDigest.slice(7)}.json`),
+    );
+    const last = await page(first.nextCursor);
+    expect(last.releases).toHaveLength(1);
+    expect(last.nextCursor).toBeUndefined();
+    expect(last.releases[0]?.manifestDigest).not.toBe(first.releases[0]?.manifestDigest);
   });
 
   test("resolves live membership rather than JWT role/org claims on each list", async () => {

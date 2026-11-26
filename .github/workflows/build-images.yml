@@ -71,6 +71,8 @@ jobs:
             } else {
               throw new Error("Production images require a main push or published release");
             }
+            const cache = `ghcr.io/${context.repo.owner.toLowerCase()}/${context.repo.repo.toLowerCase()}-buildcache:production-${process.env.COMPONENT}`;
+            core.setOutput("cache", cache);
             core.setOutput("tags", tags.map((tag) => `${repository}:${tag}`).join("\n"));
 
       - uses: docker/setup-buildx-action@v3
@@ -97,8 +99,8 @@ jobs:
           build-args: |
             VITE_PREVIEW_LOGIN=false
             KQ_BUILD_REVISION=${{ github.sha }}
-          cache-from: type=gha,scope=production-${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=production-${{ matrix.component }}
+          cache-from: type=registry,ref=${{ steps.image.outputs.cache }}
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0},mode=max,ignore-error=true', steps.image.outputs.cache) || '' }}
 
       - name: Verify Agent artifacts in the published Server image
         if: matrix.component == 'server'

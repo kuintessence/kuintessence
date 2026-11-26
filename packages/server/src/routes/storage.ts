@@ -17,6 +17,7 @@ import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 import { writeAudit } from "../services/audit-log-writer";
 import type { ClusterFileRootService } from "../services/cluster-file-root";
+import { readDailyStorage } from "../services/storage-metering";
 import type { StorageQuotaService } from "../services/storage-quota";
 
 const ScopeQuerySchema = z
@@ -33,6 +34,8 @@ const ScopeQuerySchema = z
       });
     }
   });
+
+const DailyStorageQuery = z.object({ day: z.iso.date().refine((day) => !day.startsWith("0000")) });
 
 export interface StorageRoutesDeps {
   db: PgDb;
@@ -52,6 +55,37 @@ export function createStorageRoutes(deps: StorageRoutesDeps): Hono {
       const query = c.req.valid("query");
       await requireScopeAccess(c, deps, query.scope, query.scopeId, "use");
       return c.json(await deps.service.getSummary(actor.userId, query.scope, query.scopeId));
+    },
+  );
+
+  routes.get(
+    "/storage/usage/daily",
+    kqValidator("query", DailyStorageQuery, "Invalid UTC day"),
+    async (c) => {
+      const actor = requireActor(c);
+      return c.json(
+        await readDailyStorage(deps.db, c.req.valid("query").day, {
+          ownerId: actor.userId,
+          limit: 1,
+        }),
+      );
+    },
+  );
+
+  routes.get(
+    "/admin/storage/usage/daily",
+    kqValidator(
+      "query",
+      DailyStorageQuery.extend({
+        limit: z.coerce.number().int().min(1).max(1000).default(100),
+        afterOwnerId: z.string().uuid().optional(),
+      }),
+      "Invalid daily storage query",
+    ),
+    async (c) => {
+      await requirePlatformPermission(c, deps.authz, "manage", "storage-quota");
+      const { day, limit, afterOwnerId } = c.req.valid("query");
+      return c.json(await readDailyStorage(deps.db, day, { limit, afterOwnerId }));
     },
   );
 

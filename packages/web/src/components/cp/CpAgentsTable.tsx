@@ -15,8 +15,10 @@ import {
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { AgentCertRevokeDialog } from "../agent/AgentCertRevokeDialog";
+import { AgentUpdates } from "../agents/AgentUpdates";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { RefreshButton } from "../ui/refresh-button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 
 function statusVariant(status: string): "running" | "cancelled" | "failed" | "default" {
@@ -63,9 +65,12 @@ export function CpAgentsTable({ embedded = false }: { embedded?: boolean }) {
       {q.error ? (
         <div className=" p-3 text-sm" data-testid="cp-agents-error">
           {toUserFacingError(q.error, t("cp.dashboard.loadFailed"))}
-          <Button variant="outline" className="ml-3" onClick={() => void q.refetch()}>
-            {t("cp.common.refresh")}
-          </Button>
+          <RefreshButton
+            variant="outline"
+            className="ml-3"
+            onClick={() => void q.refetch()}
+            label={t("cp.common.refresh")}
+          ></RefreshButton>
         </div>
       ) : null}
 
@@ -172,6 +177,11 @@ export function CpAgentsTable({ embedded = false }: { embedded?: boolean }) {
                           {t("cp.agents.certs.button")}
                         </Button>
                       </div>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow className="block sm:table-row">
+                    <TableCell colSpan={5} className="block px-4 pb-3 sm:table-cell sm:px-3">
+                      <AgentUpdates agentId={a.id} />
                     </TableCell>
                   </TableRow>
                   {rootsAgentId === a.id ? (

@@ -40,6 +40,27 @@ export interface LicensedMaterialPrepareOptions {
 export class LicensedMaterialResolver {
   constructor(private readonly options: LicensedMaterialResolverOptions) {}
 
+  async sandboxInputs(requests: LicensedMaterialMountRequest[], signal: AbortSignal) {
+    const root = await this.restrictedRoot();
+    const inputs = [];
+    for (const request of requests) {
+      signal.throwIfAborted();
+      const name = request.targetPath.replace(/^inputs\//, "");
+      const mapping =
+        Object.hasOwn(this.options.registry, request.selectorId) &&
+        this.options.registry[request.selectorId];
+      if (!mapping || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(name))
+        throw new Error("Unknown licensed selector or invalid input path");
+      validateRequiredElements(request.requiredElements ?? []);
+      const hostPath = await this.resolveRestrictedFile(root, mapping.localRelativePath);
+      const digest = normalizeFingerprint(request.fingerprint);
+      if ((await sha256(hostPath, signal)) !== digest)
+        throw new Error("Licensed material fingerprint mismatch");
+      inputs.push({ hostPath, containerPath: `/kq/inputs/${name}`, sha256: digest });
+    }
+    return inputs;
+  }
+
   async prepare(
     requests: LicensedMaterialMountRequest[],
     workRoot: string,
@@ -241,9 +262,9 @@ function inside(root: string, candidate: string): boolean {
   return candidate === root || candidate.startsWith(`${root}${sep}`);
 }
 
-async function sha256(path: string): Promise<string> {
+async function sha256(path: string, signal?: AbortSignal): Promise<string> {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of createReadStream(path, { signal })) hash.update(chunk);
   return hash.digest("hex");
 }
 

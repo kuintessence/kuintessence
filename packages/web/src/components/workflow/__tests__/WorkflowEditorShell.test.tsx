@@ -126,6 +126,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  document.body.style.removeProperty("cursor");
+  document.body.style.removeProperty("user-select");
+  document.body.style.removeProperty("--resize-test-marker");
 });
 
 describe("WorkflowEditorShell", () => {
@@ -202,6 +205,113 @@ spec:
 
     fireEvent.keyDown(screen.getByTestId("rf-right-resize-handle"), { key: "ArrowLeft" });
     expect(screen.getByTestId("rf-right-resize-handle").getAttribute("aria-valuenow")).toBe("236");
+  });
+
+  test.each([
+    {
+      side: "left",
+      movedWidth: "220",
+      clampedWidth: "360",
+      columns: "360px 6px minmax(0,1fr) 6px 224px",
+    },
+    {
+      side: "right",
+      movedWidth: "204",
+      clampedWidth: "196",
+      columns: "200px 6px minmax(0,1fr) 6px 196px",
+    },
+  ])("resizes and clamps the $side panel until pointer release", (panel) => {
+    renderShell();
+    const handle = screen.getByTestId(`rf-${panel.side}-resize-handle`);
+    const grid = screen.getByTestId("rf-shell-grid");
+
+    fireEvent.pointerDown(handle, { clientX: 200, pointerId: 1 });
+    expect(document.body.style.cursor).toBe("col-resize");
+    expect(document.body.style.userSelect).toBe("none");
+
+    fireEvent.pointerMove(document, { clientX: 220, pointerId: 1 });
+    expect(handle.getAttribute("aria-valuenow")).toBe(panel.movedWidth);
+    fireEvent.pointerMove(document, { clientX: 500, pointerId: 1 });
+    expect(handle.getAttribute("aria-valuenow")).toBe(panel.clampedWidth);
+
+    fireEvent.pointerUp(document, { pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 200, pointerId: 1 });
+    expect(grid.style.getPropertyValue("--workflow-editor-columns")).toBe(panel.columns);
+    expect(document.body.style.cursor).toBe("");
+    expect(document.body.style.userSelect).toBe("");
+  });
+
+  test.each([
+    ["pointer cancellation", () => fireEvent.pointerCancel(document, { pointerId: 1 })],
+    ["window blur", () => fireEvent.blur(window)],
+    ["window resize", () => fireEvent.resize(window)],
+    ["panel collapse", () => fireEvent.click(screen.getByTestId("rf-palette-collapse"))],
+  ] as const)("ends resizing and restores page styles on %s", (_reason, endResize) => {
+    renderShell();
+    const handle = screen.getByTestId("rf-left-resize-handle");
+    document.body.style.cursor = "wait";
+    document.body.style.userSelect = "text";
+
+    fireEvent.pointerDown(handle, { clientX: 200, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 220, pointerId: 1 });
+    document.body.style.setProperty("--resize-test-marker", "retained");
+    endResize();
+
+    expect(document.body.style.cursor).toBe("wait");
+    expect(document.body.style.userSelect).toBe("text");
+    expect(document.body.style.getPropertyValue("--resize-test-marker")).toBe("retained");
+    fireEvent.pointerMove(document, { clientX: 240, pointerId: 1 });
+    expect(handle.getAttribute("aria-valuenow")).toBe("220");
+  });
+
+  test.each([
+    ["left", "240", "224"],
+    ["right", "220", "204"],
+  ] as const)("replaces an active drag when the %s handle starts one", (side, leftWidth, rightWidth) => {
+    renderShell();
+    const left = screen.getByTestId("rf-left-resize-handle");
+    const right = screen.getByTestId("rf-right-resize-handle");
+    document.body.style.cursor = "wait";
+    document.body.style.userSelect = "text";
+
+    fireEvent.pointerDown(left, { clientX: 200, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 220, pointerId: 1 });
+    fireEvent.pointerDown(side === "left" ? left : right, { clientX: 300, pointerId: 2 });
+    if (side === "right") fireEvent.click(screen.getByTestId("rf-palette-collapse"));
+
+    fireEvent.pointerMove(document, { clientX: 280, pointerId: 1 });
+    fireEvent.pointerUp(document, { pointerId: 1 });
+    fireEvent.pointerCancel(document, { pointerId: 1 });
+    expect(left.getAttribute("aria-valuenow")).toBe("220");
+    expect(right.getAttribute("aria-valuenow")).toBe("224");
+    expect(document.body.style.cursor).toBe("col-resize");
+
+    fireEvent.pointerMove(document, { clientX: 320, pointerId: 2 });
+    expect(left.getAttribute("aria-valuenow")).toBe(leftWidth);
+    expect(right.getAttribute("aria-valuenow")).toBe(rightWidth);
+
+    fireEvent.pointerUp(document, { pointerId: 2 });
+    expect(document.body.style.cursor).toBe("wait");
+    expect(document.body.style.userSelect).toBe("text");
+  });
+
+  test("restores page styles on unmount and ignores later pointer events", () => {
+    const { unmount } = renderShell();
+    const handle = screen.getByTestId("rf-left-resize-handle");
+    document.body.style.cursor = "wait";
+    document.body.style.userSelect = "text";
+
+    fireEvent.pointerDown(handle, { clientX: 200, pointerId: 1 });
+    unmount();
+    expect(document.body.style.cursor).toBe("wait");
+    expect(document.body.style.userSelect).toBe("text");
+
+    document.body.style.cursor = "crosshair";
+    document.body.style.userSelect = "all";
+    fireEvent.pointerMove(document, { clientX: 250, pointerId: 1 });
+    fireEvent.pointerUp(document, { pointerId: 1 });
+    expect(document.body.style.cursor).toBe("crosshair");
+    expect(document.body.style.userSelect).toBe("all");
   });
 
   test("formats the workflow and toggles precise connection assistance", () => {

@@ -11,6 +11,7 @@ export const MarketDemandSchema = z
     protocolVersion: z.literal(1),
     demandId: Id,
     sourceSiteId: Id,
+    reopens: z.strictObject({ demandId: Id, version: Version }).optional(),
     createdAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
     title: z.string().trim().min(1).max(160),

@@ -53,6 +53,7 @@ const approval = {
     validFrom: date,
     validUntil: until,
     templates: [template],
+    inputPolicy: { scope: "workflow-input-files", maxFiles: 2, maxBytes: 10 },
     resourceLimit: { cpus: 2, memoryMb: 256, gpus: 0, wallTimeSec: 120 },
     termsDigest: digest,
   },
@@ -148,6 +149,25 @@ beforeEach(async () => {
     "result.read",
   ];
   vi.mocked(api.get).mockImplementation(async (path) => {
+    if (path === "/netdrive/files")
+      return {
+        success: true,
+        data: {
+          total: 1,
+          files: [
+            {
+              id: uuid(22),
+              path: "sample.dat",
+              size: 4,
+              updatedAt: date,
+              createdAt: date,
+              sha256: "a".repeat(64),
+              canUse: true,
+              canDelete: true,
+            },
+          ],
+        },
+      };
     if (path === "/federation/capabilities")
       return { data: { orgId, userId: uuid(8), grants, effectiveCapabilities: grants } };
     if (path.endsWith("/context"))
@@ -192,7 +212,7 @@ beforeEach(async () => {
     return { data: {} };
   });
 });
-async function prepare() {
+async function prepare(withFile = false) {
   const create = await screen.findByRole("button", { name: "New task" });
   await waitFor(() => expect(create.hasAttribute("disabled")).toBe(false));
   fireEvent.click(create);
@@ -205,6 +225,13 @@ async function prepare() {
   fireEvent.change(screen.getByLabelText(/Maximum charge/), {
     target: { value: "9007199254740993" },
   });
+  if (withFile) {
+    fireEvent.click(screen.getByRole("button", { name: "Add NetDrive input" }));
+    fireEvent.change(screen.getByLabelText("Template input name"), { target: { value: "input" } });
+    fireEvent.click(screen.getByTestId(/task-input-.*-picker$/));
+    fireEvent.click(await screen.findByText("sample.dat"));
+    fireEvent.click(screen.getByTestId("path-picker-confirm"));
+  }
   fireEvent.click(screen.getByRole("button", { name: "Review task" }));
   return screen.findByRole("dialog");
 }
@@ -226,6 +253,19 @@ test("submits the selected immutable resources only after confirmation and retri
     environmentLockDigest: envDigest,
     maxAmount: "9007199254740993",
     resources,
+  });
+});
+
+test("manual task reviews the selected NetDrive file and submits its local reference", async () => {
+  mount(<FederationTasksPanel scope={scope} switching={false} />);
+  const dialog = await prepare(true);
+  expect(api.post).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalled());
+  expect(vi.mocked(api.post).mock.calls[0]?.[1]).toMatchObject({
+    localInputFiles: [
+      { descriptor: "input", type: "File", files: [{ fileId: uuid(22), path: "sample.dat" }] },
+    ],
   });
 });
 

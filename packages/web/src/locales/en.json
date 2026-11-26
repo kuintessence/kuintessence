@@ -1,4 +1,14 @@
 {
+  "notifications": {
+    "title": "Notifications",
+    "email": "Email notifications",
+    "webhook": "Webhook URL",
+    "secret": "Webhook signing secret",
+    "failed": "Unable to load or save notifications.",
+    "saved": "Delivery settings saved.",
+    "empty": "No notifications.",
+    "read": "Mark as read"
+  },
   "common": {
     "retry": "Retry",
     "loading": "Loading…",
@@ -119,12 +129,15 @@
       "scheduling": "Scheduling and queues",
       "platformOperations": "Platform operations",
       "audit": "Audit and metering",
-      "platformTechnical": "Platform technical operations",
+      "platformTechnical": "Platform settings",
       "softwareAssets": "Software assets",
       "personal": "Account and preferences",
-      "computeResources": "Resources",
+      "computeResources": "Resource operations",
       "federationCollaboration": "Collaboration",
-      "federationAdministration": "Administration"
+      "federationAdministration": "Administration",
+      "overview": "Overview",
+      "computeNetwork": "Compute network",
+      "platformIdentity": "User management"
     },
     "nav": {
       "operationsOverview": "Operations overview",
@@ -132,7 +145,8 @@
       "operationsCompute": "Compute and software",
       "operationsMetering": "Metering and cost",
       "operationsGovernance": "Governance and audit",
-      "interconnect": "Compute & Network Overview"
+      "interconnect": "Compute & Network Overview",
+      "clusterAccess": "Cluster connections"
     }
   },
   "dataMarket": {
@@ -294,7 +308,7 @@
     "title": "Jobs",
     "commandMode": "Command",
     "subtitle": "Auto-refreshes every 5s while any job is pending or running.",
-    "countHint": "{{visible}} visible · {{total}} total",
+    "countHint": "{{visible}}/{{total}} visible",
     "agentFilter": {
       "active": "Showing jobs on Agent {{agentId}}",
       "clear": "Clear Agent filter"
@@ -403,7 +417,7 @@
       "command": "Command",
       "schedulerId": "Scheduler ID",
       "agent": "Agent",
-      "node": "Execution node",
+      "node": "Execution host",
       "schedulerReason": "Scheduler reason",
       "schedulerReasonUnavailable": "The scheduler returned an internal reason that cannot be displayed. Contact the compute resource administrator.",
       "usecase": "Usecase",
@@ -426,7 +440,6 @@
     "logs": {
       "empty": "No log output yet.",
       "connecting": "Connecting to log feed…",
-      "notImplemented": "The log endpoint is unavailable.",
       "unavailable": "The log has not been created yet or has been cleaned.",
       "loadFailed": "Failed to load logs"
     },
@@ -464,6 +477,13 @@
       "textResultUnavailable": "This text result has not been collected."
     },
     "usecase": {
+      "noInputs": "This usecase declares no configurable input files or parameters.",
+      "unboundInputs": "Usecase inputs are not bound to executable materials. Choose another usecase or contact the publisher.",
+      "invalidInput": "This value does not meet the parameter format or range.",
+      "boolean": {
+        "true": "Yes",
+        "false": "No"
+      },
       "mode": "Usecase",
       "selected": "Selected usecase",
       "chooseUsecase": "Choose usecase",
@@ -554,7 +574,7 @@
   "workflows": {
     "title": "Workflows",
     "subtitle": "Track submitted, queued, running, and terminal workflow runs.",
-    "countHint": "{{visible}} visible · {{total}} total",
+    "countHint": "{{visible}}/{{total}} visible",
     "searchPlaceholder": "Search runs",
     "lastUpdated": "Updated {{time}}",
     "notUpdated": "not yet",
@@ -899,12 +919,15 @@
   "agents": {
     "title": "Agents",
     "subtitle": "One card per registered agent. Auto-refreshes every 10s.",
-    "countHint": "{{online}} online · {{total}} total",
+    "countHint": "{{online}}/{{total}} online",
     "empty": "No agents registered yet. Start one with",
     "loadFailed": "The Agent list is temporarily unavailable. Please try again shortly.",
     "softwareLoadFailed": "The Agent software inventory is temporarily unavailable. Please try again shortly.",
     "computeHealth": "Compute health",
     "queueDepth": "Queue depth",
+    "details": "Details",
+    "clusterDetails": "Agent details",
+    "openDetails": "View details for {{name}}",
     "openSsh": "Open SSH",
     "viewJobs": "View jobs on this Agent",
     "healthStatus": {
@@ -959,6 +982,33 @@
       "reconcileInstallation": "Inspect the failed software operation. Reconcile retained workers before retrying installation.",
       "resumeTransfer": "Inspect the failed transfer. Resume the same transfer when authorization and source content are still valid.",
       "updateChecked": "Update checked"
+    },
+    "updater": {
+      "title": "Agent updates",
+      "notice": "Platform update notice",
+      "loading": "Loading update history…",
+      "loadFailed": "Could not load update history",
+      "unsupported": "Agent is offline or has no update supervisor. Remote requests wait for a capable Agent to connect.",
+      "empty": "No update requests",
+      "history": "Update history",
+      "release": "Target release digest (SHA-256)",
+      "message": "Update message",
+      "safety": "Only site-trusted signed releases are applied. Restart waits for jobs, transfers and installations to finish. Sites can disable remote updates.",
+      "request": "Request update",
+      "notify": "Send update notice",
+      "sending": "Submitting…",
+      "sent": "Request recorded",
+      "failed": "Could not submit request",
+      "states": {
+        "requested": "Waiting for Agent",
+        "waiting": "Waiting until safe to restart",
+        "applying": "Switching release",
+        "restarting": "Waiting for the new Agent to connect",
+        "succeeded": "Update completed",
+        "failed": "Update failed; inspect site status",
+        "disabled": "Site does not allow remote updates"
+      },
+      "useRelease": "Use this release"
     }
   },
   "software": {
@@ -1033,6 +1083,7 @@
       "grantsCompleted": "Completed {{count}} downstream grants",
       "actionFailed": "Action failed",
       "kind": {
+        "site-runtime": "Site runtime",
         "spack-package": "Spack package",
         "usecase": "Usecase",
         "workflow-template": "Workflow template"
@@ -1111,7 +1162,8 @@
       "use": "Use template",
       "loaded": "Loaded {{name}} v{{version}} into the editor",
       "usecaseRefs": "Usecase refs",
-      "softwareRefs": "Software refs"
+      "softwareRefs": "Software refs",
+      "workflowStep": "Workflow step"
     },
     "tabs": {
       "templates": "Workflow templates",
@@ -1195,6 +1247,8 @@
       "catalogPackageDescription": "Custom package description",
       "catalogPackageTags": "Custom tags, comma-separated",
       "packageFilePlaceholder": "Paste official package.py content to extract versions, variants, dependencies, provides, maintainers, and license",
+      "recipeFields": "Edit directive fields",
+      "noRecipeFields": "This class has no editable string directives. Edit the Python source directly.",
       "parsePackageFile": "Parse package.py",
       "packageMetadata": "package.py metadata",
       "versions": "Versions",
@@ -1205,8 +1259,8 @@
       "createCatalogPackage": "Add package",
       "packageName": "Spack package, e.g. openfoam",
       "softwareVersion": "Software version, e.g. 2312",
-      "compiler": "Compiler, e.g. gcc@13.2.0",
-      "module": "Module name, e.g. openfoam/2312",
+      "compiler": "Compiler",
+      "module": "Module name",
       "variants": "Variants, e.g. +mpi precision=double",
       "spackSpec": "Spack spec",
       "boundSoftware": "Bound software",
@@ -1283,13 +1337,13 @@
       "packageIdentity": "Package identity",
       "moreVersions": "Show {{count}} more versions",
       "fewerVersions": "Show fewer versions",
-      "availability": "Node availability",
+      "availability": "Cluster availability",
       "installedAvailable": "Installed",
       "installableAvailable": "Installable",
       "blockedNodes": "Blocked",
-      "availabilityFailed": "Could not load node availability.",
-      "moreNodes": "Show {{count}} more nodes",
-      "fewerNodes": "Show fewer nodes",
+      "availabilityFailed": "Could not load cluster availability.",
+      "moreNodes": "Show {{count}} more clusters",
+      "fewerNodes": "Show fewer clusters",
       "license": "License and use conditions",
       "licenseUnavailable": "This asset has no published structured license policy. Unknown licenses cannot be auto-installed.",
       "licenseInheritance": "These conditions are inherited by bound usecases and workflows and are checked again at submission.",
@@ -1542,7 +1596,8 @@
     "tabs": {
       "personal": "Personal and preferences",
       "security": "Platform security",
-      "infrastructure": "Infrastructure"
+      "infrastructure": "Infrastructure",
+      "branding": "Platform branding"
     },
     "personalNav": {
       "account": "Account and session",
@@ -1579,8 +1634,8 @@
     "role": "Role",
     "tokenExpiry": "Token expiry",
     "tokenExpired": "expired",
-    "tokenExpiresIn": "Token expires in",
-    "tokenExpiryUnknown": "Token expiry unknown (legacy session). Sign in again to refresh.",
+    "tokenExpiresIn": "Session validity:",
+    "tokenExpiryUnknown": "Session validity: unknown",
     "appearance": "Appearance",
     "themeLight": "Light",
     "themeDark": "Dark",
@@ -1677,7 +1732,7 @@
       },
       "auditLog": {
         "title": "Platform audit records",
-        "description": "Review desensitized platform operations. Up to the 100 most recent records are shown.",
+        "description": "Search platform operations by action, actor, target and time.",
         "refresh": "Refresh",
         "loadFailed": "Unable to load audit records"
       },
@@ -1753,7 +1808,7 @@
           "description": "Search compute center operations by time range, actor, action, and target."
         },
         "agents": {
-          "title": "Node runtime status",
+          "title": "Cluster runtime status",
           "description": "Inspect registered Agents, heartbeat state, resources, and SSH entry points."
         },
         "cpAgents": {
@@ -1797,7 +1852,7 @@
       "meteringSettings": "Storage quotas and cost settings"
     },
     "sso": {
-      "title": "Single Sign-On (OIDC)",
+      "title": "Single Sign-On",
       "loginDisplayTitle": "Login page display",
       "loginDisplayDescription": "Configure the user-facing identity provider name and platform welcome message. Empty fields use the defaults.",
       "providerDisplayName": "Identity provider name",
@@ -1810,6 +1865,7 @@
       "saved": "SSO configuration saved",
       "saveFailed": "保存 SSO 配置失败，请稍后重试。",
       "enabled": "Enable SSO for this platform",
+      "connectorHelp": "Enter the Dex issuer URL and configure its upstream connector with ID {{id}}.",
       "providerType": "Provider type",
       "issuerUrl": "Issuer URL",
       "clientId": "Client ID",
@@ -1828,7 +1884,7 @@
       "secretStored": "Secret stored (encrypted)"
     },
     "branding": {
-      "titleCard": "Platform branding",
+      "titleCard": "Appearance and sign-in branding",
       "description": "Configure platform identity, login copy, and image assets for each supported language. Empty fields use the built-in defaults.",
       "languages": {
         "zh": "中文（zh）",
@@ -1883,19 +1939,23 @@
     },
     "costRates": {
       "title": "Cluster cost rates",
-      "description": "Per-cluster cost per CPU-hour. Feeds the scheduler's cost scorer. Applies platform-wide.",
+      "description": "Set the default cost per CPU-hour. Compute providers can set rates for their own clusters.",
       "empty": "No cluster rates configured yet.",
-      "clusterPlaceholder": "cluster-name",
+      "clusterPlaceholder": "Select a cluster",
       "ratePlaceholder": "0.00",
       "addRow": "Add cluster",
       "save": "Save",
       "saved": "Cost rates saved",
       "saveFailed": "Save failed",
       "loadFailed": "Failed to load cost rates",
-      "errorEmptyCluster": "Cluster name cannot be empty",
+      "errorEmptyCluster": "Select an available cluster",
       "errorDuplicateCluster": "Duplicate cluster name: {{cluster}}",
       "errorInvalidRate": "Rate for {{cluster}} must be a non-negative number",
-      "rateLabel": "Rate per CPU-hour"
+      "rateLabel": "Rate per CPU-hour",
+      "providerDescription": "Set the cost per CPU-hour for this provider. These rates take precedence over platform defaults.",
+      "legacyRates": "Legacy rates still in use",
+      "unavailableCluster": "Cluster unavailable ({{id}})",
+      "selectOrganization": "Select a compute provider you can manage."
     },
     "clusterFileRoots": {
       "title": "Cluster file roots",
@@ -1937,7 +1997,15 @@
       "invalidCapacity": "Capacity must be a valid positive number. Leave blank for unknown capacity.",
       "organizationSearchPlaceholder": "Name or known organization UUID",
       "addOrganizationId": "Add this organization ID",
-      "path": "Root path"
+      "path": "Root path",
+      "quotaPolicy": "Quota policy",
+      "search": "Search names, paths or providers",
+      "delete": "Delete file root",
+      "deleteHint": "Delete the configuration for {{name}}. Files on the cluster are kept.",
+      "deleted": "File root deleted",
+      "inUse": "This root is linked to transfer, data, or quota records. Disable it to block new access.",
+      "lastRoot": "Disable the last root to keep the current access restrictions in place.",
+      "deleteFailed": "File root could not be deleted"
     },
     "agentCerts": {
       "title": "Agent cert ledger",
@@ -1988,6 +2056,7 @@
       "passphrase": "Key passphrase (optional)",
       "secretHelp": "Auth material is encrypted at rest and never read back.",
       "hostKey": "Host-key pin (base64 SHA-256)",
+      "jumps": "Jump credential Agent IDs in connection order (comma-separated)",
       "hostKeyHelp": "Optional. When set, the agent rejects a mismatched host key (MITM defense). Empty = unverified.",
       "save": "Save credentials"
     },
@@ -2008,7 +2077,9 @@
       "federation-storage": "Input storage reconciliation",
       "federation-trust": "Federation trust",
       "federation-clusters": "Federation clusters"
-    }
+    },
+    "sessionMinutes": "{{count}} minutes remaining",
+    "sessionExpired": "Expired"
   },
   "terminal": {
     "title": "Terminal",
@@ -2340,7 +2411,7 @@
         "section": "Placement preview",
         "title": "Placement preview",
         "subtitle": "Run the queue-aware placement pipeline against this draft.",
-        "button": "Refresh preview",
+        "button": "Check available resources",
         "empty": "Run preview to see how your job will be placed."
       },
       "stages": {
@@ -2376,7 +2447,15 @@
         "title": "No agent passed the placement pipeline",
         "body": "Expand the stages below to see which filter rejected each candidate."
       },
-      "score": "score"
+      "score": "score",
+      "scoreDetails": "Score details",
+      "rawScore": "Raw score",
+      "weightedScore": "Weighted score",
+      "ranking": {
+        "composite": "Composite ranking",
+        "workflow-plan": "Workflow priority",
+        "preferred-queue": "Queue preference"
+      }
     }
   },
   "providers": {
@@ -2389,7 +2468,9 @@
     "phone": "Phone",
     "address": "Address",
     "website": "Website",
-    "centers": "Centers",
+    "centers": "Availability zones",
+    "centersHint": "Clusters belong to availability zones within a compute center. Select a count to view or configure.",
+    "viewCenters": "View availability zones for {{name}} ({{count}})",
     "agents": "Agents",
     "members": "Members",
     "actions": "Actions",
@@ -2417,7 +2498,10 @@
     "loadFailed": "Unable to load compute center information. Please try again.",
     "inUse": "This compute center still has members, resources, or historical records and cannot be deleted.",
     "deleteFailed": "Unable to delete the compute center. Please try again.",
-    "invalidFields": "Check these fields: {{fields}}"
+    "invalidFields": "Check these fields: {{fields}}",
+    "viewAgents": "View clusters for {{name}} ({{count}})",
+    "viewMembers": "View members for {{name}} ({{count}})",
+    "view": "View"
   },
   "agentSoftware": {
     "title": "Installed software",
@@ -2428,10 +2512,14 @@
     "compiler": "Compiler"
   },
   "interconnect": {
+    "searchResources": "Search name, ID or location",
+    "allStatuses": "All statuses",
+    "allNetworkTypes": "All network types",
+    "pageSummary": "{{total}} records · Page {{page}} / {{pages}}",
+    "allOrganizations": "All organizations",
     "missing": "Not provided",
     "empty": "No data",
     "noMatches": "No matching records",
-    "showValues": "View values",
     "loadingAccess": "Checking access…",
     "accessFailed": "Could not check access",
     "denied": "You do not have access to this dashboard",
@@ -2440,7 +2528,7 @@
     "retry": "Retry",
     "refresh": "Refresh",
     "viewSaved": "Default map view saved",
-    "centers": "Compute centers",
+    "centers": "Availability zones",
     "clusters": "Clusters",
     "cpu": "CPU cores",
     "computeTypes": "Compute types",
@@ -2448,21 +2536,21 @@
     "storageCapacity": "Storage capacity",
     "storageTypes": "Storage types",
     "applications": "Applications",
-    "links": "Network links",
-    "link": "Link",
-    "platformScope": "Platform scope",
+    "links": "Transfer links",
+    "link": "Transfer link",
+    "platformScope": "Global compute network",
     "organizationScope": "Authorized organization",
-    "addCenter": "Add center",
+    "addCenter": "Add availability zone",
     "addCluster": "Add cluster",
-    "addLink": "Add link",
+    "addLink": "Add transfer link",
     "jobSuccess": "Job success · 24h",
     "noFinishedJobs": "No completed jobs",
     "agentHealth": "Agent health",
     "noAgents": "No linked agents",
     "distributions": "Resource distribution",
-    "byCenter": "By center",
+    "byCenter": "By availability zone",
     "byCluster": "By cluster",
-    "centerStatus": "Center status",
+    "centerStatus": "Zone status",
     "cpuDistribution": "CPU core distribution",
     "storageDistribution": "Storage capacity distribution",
     "computeDistribution": "Clusters by compute type",
@@ -2470,10 +2558,10 @@
     "applicationDistribution": "Application distribution",
     "details": "Resource details",
     "filter": "Filter:",
-    "filterCenter": "Filter by compute center",
-    "allCenters": "All compute centers",
+    "filterCenter": "Filter by availability zone",
+    "allCenters": "All availability zones",
     "clearFilters": "Clear filters",
-    "editCenter": "Edit center",
+    "editCenter": "Edit availability zone",
     "location": "Location",
     "statusLabel": "Status",
     "storageShort": "Storage",
@@ -2507,7 +2595,7 @@
     "deleted": "Record deleted",
     "mapLoadFailed": "Could not load the map",
     "mapIncomplete": "Map data is incomplete",
-    "mapLabel": "Compute center map",
+    "mapLabel": "Availability zone map",
     "mapTitle": "Center connections",
     "mapLevel": "Map level",
     "world": "World",
@@ -2519,17 +2607,17 @@
     "saveView": "Save default view",
     "mapLoading": "Loading map…",
     "regionMissing": "Saved region is unavailable. Select another region.",
-    "mapLegend": "Ring: center status · Dashed line: observation older than 5 minutes or missing",
+    "mapLegend": "Ring: zone status · Dashed line: observation older than 5 minutes or missing",
     "name": "Name",
     "runningStatus": "Operating status",
-    "organization": "Organization",
+    "organization": "Compute center",
     "country": "Country",
     "state": "Province / state",
     "provinceExample": "e.g. Beijing",
     "city": "City",
     "longitude": "Longitude",
     "latitude": "Latitude",
-    "parentCenter": "Compute center",
+    "parentCenter": "Availability zone",
     "cpuTotal": "Total CPU cores",
     "storageGiB": "Storage capacity (GiB)",
     "unknownBlank": "Leave blank if unknown",
@@ -2538,7 +2626,7 @@
     "applicationsHint": "Software names; linked agent inventory is included automatically",
     "linkedAgents": "Linked agents",
     "noAvailableAgents": "No agents available to link",
-    "chooseCenter": "Select a compute center",
+    "chooseCenter": "Select an availability zone",
     "bandwidthMbps": "Bandwidth (Mbps)",
     "throughputMbps": "Throughput (Mbps)",
     "latencyMs": "Latency (ms)",
@@ -2564,7 +2652,7 @@
     "staleLinks": "{{total}} observations stale or missing",
     "mapNodes": "{{total}} map nodes",
     "clusterCount": "{{total}} clusters",
-    "centerCount": "{{total}} compute centers",
+    "centerCount": "{{total}} availability zones",
     "applicationCounts": "{{software}} applications · {{associations}} cluster associations",
     "viewSoftware": "View software ({{total}})",
     "lastStatus": " · Observation stale or missing; last recorded: {{status}}",
@@ -2573,7 +2661,7 @@
     "editTitle": "Edit {{kind}}",
     "invalidFields": "Check these fields: {{fields}}",
     "connectionsRequired": "Remove the existing associations before deleting this record.",
-    "countingRules": "Includes registered centers and clusters within your access scope. Only linked agents contribute monitoring data. Capacity sums each cluster once; register shared storage only once. Missing values are not zero; partial totals include known values only. Type distributions count clusters containing each type and cannot be added together. Applications are deduplicated by name across versions and agents; declarations do not prove installation. Job success is succeeded / (succeeded + failed) for linked agents over the past 24 hours; cancelled and running jobs are excluded. Center and cluster status comes from registered records, agent status from heartbeats, and link status from sourced observations. Link observations older than 5 minutes are shown as unknown.",
+    "countingRules": "Includes registered availability zones and clusters within your access scope. Only linked agents contribute monitoring data. Capacity sums each cluster once; register shared storage only once. Missing values are not zero; partial totals include known values only. Type distributions count clusters containing each type and cannot be added together. Applications are deduplicated by name across versions and agents; declarations do not prove installation. Job success is succeeded / (succeeded + failed) for linked agents over the past 24 hours; cancelled and running jobs are excluded. Zone and cluster status comes from registered records, agent status from heartbeats, and link status from sourced observations. Link observations older than 5 minutes are shown as unknown.",
     "statuses": {
       "operational": "Operational",
       "degraded": "Degraded",
@@ -2585,13 +2673,22 @@
       "domestic": "Domestic CPU",
       "other": "Other"
     },
-    "centerRecord": "compute center",
+    "centerRecord": "availability zone",
     "clusterRecord": "cluster",
     "linkRecord": "network link",
     "coordinatePair": "Enter both coordinates or leave both blank",
     "observationRequired": "Link status and metrics require an observation time and source",
     "futureObservation": "Observation time cannot be in the future",
-    "differentEndpoints": "Link endpoints must be different"
+    "differentEndpoints": "Link endpoints must be different",
+    "connectionType": "Link type",
+    "standard": "Standard network",
+    "highSpeed": "High-speed network",
+    "dedicated": "Dedicated line",
+    "fromCluster": "Source cluster",
+    "toCluster": "Destination cluster",
+    "allZoneClusters": "All clusters in the zone",
+    "networkHint": "Configure a high-speed LAN within a zone, or a high-speed network / dedicated line across zones. Configured values are not live measurements.",
+    "configuredBandwidth": "Configured bandwidth (Mbps)"
   },
   "adminAccess": {
     "owner": "Owner",
@@ -2737,7 +2834,23 @@
       "updateFailed": "Could not update account status. Try again.",
       "previous": "Previous",
       "next": "Next",
-      "desktopManage": "Use a desktop to change account status."
+      "desktopManage": "Use a desktop to change account status.",
+      "create": "Add user",
+      "edit": "Edit profile",
+      "delete": "Delete user",
+      "email": "Sign-in email",
+      "displayName": "Display name",
+      "platformScope": "Platform-wide",
+      "createHint": "Provision an account in {{scope}}. The user activates it through single sign-on.",
+      "deleteHint": "Permanently delete the platform account for {{email}} and end its sessions. If automatic account creation is enabled, the next single sign-on can recreate the account. Disable it to block access.",
+      "emailInUse": "This email address is already in use. Check the address or find the existing account.",
+      "hasHistory": "This account is linked to platform records and cannot be deleted. Disable it to block access.",
+      "editAction": "Edit",
+      "disableAction": "Disable",
+      "enableAction": "Enable",
+      "deleteAction": "Delete",
+      "allRoles": "All roles",
+      "allStatuses": "All statuses"
     },
     "accounts": {
       "disableConfirm": "Disable execution account {{name}}? New jobs will no longer be able to use this identity."
@@ -2756,9 +2869,21 @@
     "expand": "Expand selection",
     "resultCount": "{{count}} results",
     "clearFilters": "Clear filters",
-    "unavailable": "This option is currently unavailable. Choose another option."
+    "unavailable": "This option is currently unavailable. Choose another option.",
+    "resizeColumn": "Resize {{column}} column"
   },
   "functionMaps": {
+    "appearance": "Appearance",
+    "connection": "Connections",
+    "static": "Static",
+    "flow": "Flowing",
+    "lineColor": "Line color",
+    "neutral": "Neutral",
+    "brand": "Brand",
+    "contrast": "High contrast",
+    "lineWidth": "Line width",
+    "flowDuration": "Flow duration",
+    "related": "Business relationships",
     "portal": "Function and business maps",
     "choose": "Choose a map",
     "permissionFailed": "Cannot verify access. Please retry.",
@@ -2769,8 +2894,8 @@
     "designRelations": "Design relationships: only authorized capabilities or object types are shown.",
     "actualSources": "Runtime data: evaluate individual fields and their timestamps.",
     "compact": "Compact view",
-    "expand": "Expand map",
-    "canvas": "Scrollable map",
+    "expand": "Expand",
+    "canvas": "Business map",
     "mobile": "Text view of map nodes",
     "dependencyLegend": "Lines name their relationship; dashed lines mean containment or observation. Only “depends on” means A depends on B. Reachability does not prove fault propagation.",
     "runtimeLegend": "Lifecycle, progress, health and acquisition are separate. Refresh failure does not mean a resource fault.",
@@ -2855,6 +2980,53 @@
       "unknown": "Health unknown",
       "confirmed-fault": "Confirmed fault",
       "reported-ok": "Probe reports OK"
-    }
+    },
+    "mainFunction": "Main functions",
+    "entrance": "Location",
+    "collapse": "Collapse",
+    "views": {
+      "process": "Business process",
+      "dependency": "Resource relationships",
+      "runtime": "Runtime status",
+      "data": "Data overview"
+    },
+    "preferences": {
+      "title": "Diagrams and view preferences",
+      "scope": "Set connection styling and entry defaults for all diagrams. Preferences are saved per account in this browser.",
+      "mode": "On your next visit",
+      "memory": "Remember my last manual choice",
+      "fixed": "Fixed default",
+      "recommended": "Follow the page recommendation",
+      "default": "Default display",
+      "default_data": "Open data overview by default",
+      "default_diagram": "Open diagram by default",
+      "default_expanded": "Expand diagram by default",
+      "default_collapsed": "Collapse diagram by default",
+      "saved": "Saved. Applies on your next ordinary visit.",
+      "nextEntry": "Saving keeps this view. Defaults apply on your next ordinary visit.",
+      "saveFailed": "Could not save preferences. Check browser storage permissions and retry.",
+      "viewSettings": "View settings",
+      "inherit": "Use shared settings",
+      "centralAppearance": "Set connection styling in Personal center → Appearance and interface.",
+      "dual": "Pages with diagrams and data overviews",
+      "single": "Pages with diagrams only",
+      "overrides": "Settings saved on a page take priority. Choose “Use shared settings” on that page to restore these defaults."
+    },
+    "scopeFunction": "Access the available {{names}} and open their business functions."
+  },
+  "logViewer": {
+    "search": "Search action, actor or target",
+    "action": "Action",
+    "actor": "Actor",
+    "target": "Target",
+    "fromTime": "From",
+    "toTime": "To",
+    "searchButton": "Search",
+    "clear": "Clear",
+    "total": "{{count}} records",
+    "page": "Page {{page}}",
+    "detail": "View log details",
+    "raw": "Sanitized record",
+    "time": "Time"
   }
 }

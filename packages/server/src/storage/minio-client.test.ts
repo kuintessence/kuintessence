@@ -71,7 +71,10 @@ export class FakeMinioBackend implements MinioBackend {
     return { etag };
   }
 
-  async getBlob(key: string): Promise<Buffer> {
+  async getBlob(key: string, versionId?: string, maxBytes?: number): Promise<Buffer> {
+    const stat = await this.head(key, versionId);
+    if (!stat || (maxBytes !== undefined && stat.size > maxBytes))
+      throw new Error("Object version unavailable or too large");
     const o = this.objects.get(key);
     if (!o) throw new Error(`NotFound: ${key}`);
     return o.body;
@@ -115,6 +118,12 @@ export class FakeMinioBackend implements MinioBackend {
 
   async deleteStaging(key: string): Promise<void> {
     this.stagingObjects.delete(key);
+  }
+
+  async copyVersionToStaging(key: string, versionId: string, stagingKey: string): Promise<void> {
+    const source = this.objects.get(key);
+    if (!source || source.versionId !== versionId) throw new Error("Object version unavailable");
+    await this.putStagingBlob(stagingKey, source.body, source.contentType);
   }
 
   async copyStagingToImmutable(
@@ -212,8 +221,8 @@ export class FakeMinioBackend implements MinioBackend {
     };
   }
 
-  async delete(key: string): Promise<void> {
-    this.objects.delete(key);
+  async delete(key: string, versionId?: string): Promise<void> {
+    if (!versionId || this.objects.get(key)?.versionId === versionId) this.objects.delete(key);
   }
 
   async healthCheck(): Promise<void> {
@@ -296,6 +305,12 @@ export class FakeMinioBackend implements MinioBackend {
     });
     this.uploads.delete(uploadId);
     return { etag };
+  }
+
+  async abortIncompleteNetDriveUploads(key: string) {
+    for (const [id, upload] of this.uploads) {
+      if (upload.key === key) await this.abortMultipartUpload(key, id);
+    }
   }
 
   async abortMultipartUpload(key: string, uploadId: string): Promise<void> {

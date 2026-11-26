@@ -180,9 +180,14 @@ export function createNetDriveRoutes(deps: NetDriveRoutesDeps): Hono {
       const body = c.req.valid("json");
       const actor = requireNetDriveActor(c);
       const ownerId = actor.ownerId;
-      const commit = await service.commitFileWithReplacements(ownerId, body);
+      const commit = await service.commitFileWithReplacements(
+        ownerId,
+        body,
+        undefined,
+        (result, tx) =>
+          enqueueNetDriveCommitAuthorization(deps.authz, result, ownerId, actor.orgId, tx),
+      );
       const file = commit.file;
-      await enqueueNetDriveCommitAuthorization(deps.authz, commit, ownerId, actor.orgId);
       await db.insert(auditLog).values({
         actor: actor.ownerId,
         orgId: actor.orgId,
@@ -395,7 +400,7 @@ async function enqueueNetDriveAuthorization(
   await authz?.enqueueMany(netdriveFileTuples({ fileId, userId: ownerId, orgId }, operation));
 }
 
-async function enqueueNetDriveCommitAuthorization(
+export async function enqueueNetDriveCommitAuthorization(
   authz: AuthzService | undefined,
   commit: NetDriveCommitResult,
   ownerId: string,

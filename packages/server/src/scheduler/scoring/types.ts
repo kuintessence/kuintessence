@@ -24,6 +24,7 @@ export interface PlacementContext {
   dataSites: string[];
   /** Per-cluster price (cost per CPU-hour). Index by clusterName. */
   costRates: Record<string, number>;
+  agentCostRates?: Record<string, number>;
   /** Job's expected CPU-hour requirement. */
   expectedCpuHours: number;
   /** Job's expected wallclock duration in seconds (for queue-wait scoring). */

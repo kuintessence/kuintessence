@@ -100,6 +100,7 @@ export function testCompletionStorage(reserveBytes = "10000") {
       return [
         {
           volumeId: reserveId,
+          forecast: null,
           name: "Isolated database",
           component: "postgres-data",
           modes: ["bilateral_direct", "bilateral_attested", "ledger_coordinated"],

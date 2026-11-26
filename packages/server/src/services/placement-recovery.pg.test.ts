@@ -464,14 +464,10 @@ test("lease loss during material preparation prevents late install delivery and 
   ).toMatchObject({ id: operationId, status: "queued" });
   expect(f.sent).toHaveLength(0);
   f.installInterrupt(undefined);
-  const deadline = Date.now() + 7000;
-  while (f.sent.length === 0) {
-    if (Date.now() > deadline) throw new Error("Saved delivery deadline was not retried");
-    await Bun.sleep(100);
-    expect(await f.operations.requestInstallForJob(installationRequest(f, next))).toMatchObject({
-      id: operationId,
-    });
-  }
+  await dueAgain(operationId);
+  expect(await f.operations.requestInstallForJob(installationRequest(f, next))).toMatchObject({
+    id: operationId,
+  });
   expect(f.sent).toHaveLength(1);
   await next.release();
 });

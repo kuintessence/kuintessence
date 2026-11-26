@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 import { GenericContainer, Wait } from "testcontainers";
 import {
+  CONTAINER_WORK_DIR,
   type SlurmCluster,
   startSlurmCluster,
 } from "../../../packages/agent/test/fixtures/slurm-cluster";
@@ -132,7 +133,7 @@ export async function startStack(options: StartStackOptions = {}): Promise<Stack
       SERVER_PORT: String(serverPort),
       SERVER_GRPC_PORT: String(serverGrpcPort),
       LOG_LEVEL: "warn",
-      WORKFLOW_RUN_BASE: "/var/tmp/kq-workflows",
+      WORKFLOW_RUN_BASE: join(CONTAINER_WORK_DIR, "workflows"),
     };
     if (netdrive) {
       Object.assign(serverEnv, {

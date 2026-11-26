@@ -260,4 +260,17 @@ describe("Dashboard audit-log gating", () => {
   });
 });
 
-vi.mock("../function-maps/FunctionMaps", () => ({ FunctionMaps: () => null }));
+vi.mock("../function-maps/FunctionMaps", () => ({
+  FunctionMaps: ({
+    dashboard,
+    common,
+  }: {
+    dashboard?: import("react").ReactNode;
+    common?: import("react").ReactNode;
+  }) => (
+    <>
+      {common}
+      {dashboard}
+    </>
+  ),
+}));

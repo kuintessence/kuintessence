@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   auditLog,
+  federationOutbound,
   federationWorkflowInputExports,
   type PgTransaction,
   workflowExecutionDelegations,
@@ -11,6 +12,7 @@ import {
   type FederationDelegation,
   FederationError,
   FederationInputFilesSchema,
+  type FederationInputSelection,
   FederationInputSelectionSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
@@ -22,6 +24,54 @@ import { type FederationActor, requireFederationCapability } from "./permissions
 import { assertWorkflowDelegationOwner } from "./workflow-delegations";
 
 type Export = typeof federationWorkflowInputExports.$inferSelect;
+
+export async function pinLocalInputFiles(
+  tx: PgTransaction,
+  actor: FederationActor,
+  selection: FederationInputSelection,
+) {
+  const members = selection.flatMap((input) => input.files);
+  if (members.length > 256) throw new FederationError("INVALID_MESSAGE");
+  const files = await ownedNetdriveFiles(
+    tx,
+    members.map((file) => file.fileId),
+    actor.userId,
+    true,
+  );
+  const bindings = selection.flatMap((input) =>
+    input.files.map((member) => {
+      const file = files.find((file) => file.id === member.fileId);
+      if (!file?.storageVersionId || file.storageVersionId === "null" || !file.storageKey)
+        throw new FederationError("DATA_WAITING");
+      return {
+        descriptor: input.descriptor,
+        path: member.path,
+        fileId: file.id,
+        storageKey: file.storageKey,
+        versionId: file.storageVersionId,
+        sha256: file.sha256,
+        sizeBytes: file.size,
+      };
+    }),
+  );
+  const portable = FederationInputFilesSchema.safeParse({
+    protocolVersion: 1,
+    kind: "workflow-input-files",
+    inputs: selection.map((input) => ({
+      descriptor: input.descriptor,
+      type: input.type,
+      files: bindings
+        .filter((file) => file.descriptor === input.descriptor)
+        .map(({ path, sha256, sizeBytes }) => ({ path, sha256, sizeBytes })),
+    })),
+  });
+  if (!portable.success) throw new FederationError("INVALID_MESSAGE");
+  const manifest = portable.data;
+  const manifestDigest = federationMaterialDigest(manifest);
+  return { bindings, manifest, manifestDigest };
+}
+
+type LocalSnapshot = NonNullable<typeof federationOutbound.$inferSelect.localInputSnapshot>;
 
 /** Source preparation only. Peer disclosure must additionally authorize an accepted delegation. */
 export class FederationWorkflowInputExports {
@@ -46,8 +96,6 @@ export class FederationWorkflowInputExports {
     const parsed = FederationInputSelectionSchema.safeParse(input);
     if (!parsed.success) throw new FederationError("INVALID_MESSAGE");
     const selection = parsed.data;
-    const members = selection.flatMap((input) => input.files);
-    if (members.length > 256) throw new FederationError("INVALID_MESSAGE");
     const intentDigest = federationMaterialDigest(selection);
     const pathHash = createHash("sha256").update(path).digest("hex");
     return lease.transaction(async (tx) => {
@@ -73,42 +121,7 @@ export class FederationWorkflowInputExports {
         throw new WorkflowExecutionInterrupted("Workflow invocation changed its file inputs", {
           retryable: false,
         });
-      const files = await ownedNetdriveFiles(
-        tx,
-        members.map((file) => file.fileId),
-        actor.userId,
-        true,
-      );
-      const bindings = selection.flatMap((input) =>
-        input.files.map((member) => {
-          const file = files.find((file) => file.id === member.fileId);
-          if (!file?.storageVersionId || file.storageVersionId === "null" || !file.storageKey)
-            throw new FederationError("DATA_WAITING");
-          return {
-            descriptor: input.descriptor,
-            path: member.path,
-            fileId: file.id,
-            storageKey: file.storageKey,
-            versionId: file.storageVersionId,
-            sha256: file.sha256,
-            sizeBytes: file.size,
-          };
-        }),
-      );
-      const portable = FederationInputFilesSchema.safeParse({
-        protocolVersion: 1,
-        kind: "workflow-input-files",
-        inputs: selection.map((input) => ({
-          descriptor: input.descriptor,
-          type: input.type,
-          files: bindings
-            .filter((file) => file.descriptor === input.descriptor)
-            .map(({ path, sha256, sizeBytes }) => ({ path, sha256, sizeBytes })),
-        })),
-      });
-      if (!portable.success) throw new FederationError("INVALID_MESSAGE");
-      const manifest = portable.data;
-      const manifestDigest = federationMaterialDigest(manifest);
+      const { bindings, manifest, manifestDigest } = await pinLocalInputFiles(tx, actor, selection);
       if (existing) {
         if (
           federationCanonicalJson(existing.bindings) !== federationCanonicalJson(bindings) ||
@@ -227,6 +240,7 @@ export class FederationWorkflowInputExports {
     actor: FederationActor,
     request: FederationDelegation,
     terms: FederationAgreement,
+    localSnapshot?: LocalSnapshot,
   ) {
     if (!request.inputFilesDigest) return undefined;
     if (!terms.inputPolicy) throw new FederationError("POLICY_DENIED");
@@ -239,22 +253,54 @@ export class FederationWorkflowInputExports {
           eq(workflowExecutionDelegations.operationId, request.operationId),
         ),
       );
-    if (!binding || federationCanonicalJson(binding.request) !== federationCanonicalJson(request))
-      throw new FederationError("POLICY_DENIED");
-    const [snapshot] = await tx
-      .select({ id: federationWorkflowInputExports.id })
-      .from(federationWorkflowInputExports)
-      .where(
-        and(
-          eq(federationWorkflowInputExports.runId, binding.runId),
-          eq(federationWorkflowInputExports.pathHash, binding.pathHash),
-          eq(federationWorkflowInputExports.path, binding.path),
-          eq(federationWorkflowInputExports.nodeId, binding.nodeId),
-          eq(federationWorkflowInputExports.manifestDigest, request.inputFilesDigest),
-        ),
-      );
-    if (!snapshot) throw new FederationError("POLICY_DENIED");
-    const saved = await this.resolve(tx, actor, binding.runId, snapshot.id);
+    let saved: Pick<Export, "manifest" | "bindings" | "manifestDigest">;
+    if (binding) {
+      if (localSnapshot) throw new FederationError("OPERATION_CONFLICT");
+      if (federationCanonicalJson(binding.request) !== federationCanonicalJson(request))
+        throw new FederationError("POLICY_DENIED");
+      const [snapshot] = await tx
+        .select({ id: federationWorkflowInputExports.id })
+        .from(federationWorkflowInputExports)
+        .where(
+          and(
+            eq(federationWorkflowInputExports.runId, binding.runId),
+            eq(federationWorkflowInputExports.pathHash, binding.pathHash),
+            eq(federationWorkflowInputExports.path, binding.path),
+            eq(federationWorkflowInputExports.nodeId, binding.nodeId),
+            eq(federationWorkflowInputExports.manifestDigest, request.inputFilesDigest),
+          ),
+        );
+      if (!snapshot) throw new FederationError("POLICY_DENIED");
+      saved = await this.resolve(tx, actor, binding.runId, snapshot.id);
+    } else {
+      if (!localSnapshot) {
+        const [outbound] = await tx
+          .select()
+          .from(federationOutbound)
+          .where(
+            and(
+              eq(federationOutbound.localSiteId, request.senderSiteId),
+              eq(federationOutbound.operationId, request.operationId),
+              eq(federationOutbound.localOrgId, actor.orgId),
+              eq(federationOutbound.submittedBy, actor.userId),
+            ),
+          )
+          .for("share");
+        if (
+          !outbound?.localInputSnapshot ||
+          federationCanonicalJson(outbound.request) !== federationCanonicalJson(request)
+        )
+          throw new FederationError("POLICY_DENIED");
+        localSnapshot = outbound.localInputSnapshot;
+      }
+      const snapshot = await pinLocalInputFiles(tx, actor, localSnapshot.selection);
+      if (
+        snapshot.manifestDigest !== request.inputFilesDigest ||
+        federationMaterialDigest(snapshot.bindings) !== localSnapshot.bindingsDigest
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      saved = snapshot;
+    }
     const files = saved.manifest.inputs.flatMap((input) => input.files);
     if (
       files.length > terms.inputPolicy.maxFiles ||

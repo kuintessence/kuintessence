@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import {
   createPgDb,
   netdriveFiles,
+  netdriveReplicas,
   netdriveTransferLog,
   orgs,
   type PgDb,
@@ -24,7 +25,8 @@ const FILE_OTHER = "00000000-0000-0000-0000-0000000dc3c0";
 describe("deriveDataSites", () => {
   test("short-circuits to empty for no file ids (DB-free)", async () => {
     const db = createPgDb(PG_URL);
-    expect(await deriveDataSites(db, [])).toEqual([]);
+    expect(await deriveDataSites(db, [], USER_ID, ORG_ID)).toEqual([]);
+    expect(await deriveDataSites(db, ["unregistered-input"], USER_ID, ORG_ID)).toEqual([]);
   });
 });
 
@@ -58,20 +60,25 @@ describe("deriveDataSites (PG-backed)", () => {
     await cleanup(db);
   });
 
-  test("returns distinct mirror sites for the requested NetDrive files", async () => {
-    await db
-      .insert(netdriveTransferLog)
-      .values([
-        transferRow(FILE_A, "mirror", "site-alpha"),
-        transferRow(FILE_A, "mirror", "site-alpha"),
-        transferRow(FILE_B, "mirror", "site-beta"),
-        transferRow(FILE_A, "upload", "site-upload-ignored"),
-        transferRow(FILE_B, "mirror", null),
-        transferRow(FILE_OTHER, "mirror", "site-other-ignored"),
-      ]);
-
-    const sites = await deriveDataSites(db, [FILE_A, FILE_B]);
-    expect(sites.sort()).toEqual(["site-alpha", "site-beta"]);
+  test("only returns the owner's live, current and matching copies", async () => {
+    const now = new Date();
+    const row = { fileId: FILE_A, size: 1, sha256: "a".repeat(64), lastSeenAt: now };
+    await db.insert(netdriveTransferLog).values(transferRow(FILE_A, "mirror", "history-only"));
+    await db.insert(netdriveReplicas).values([
+      { ...row, siteId: "alpha" },
+      { ...row, siteId: "alpha", fileId: FILE_B },
+      { ...row, siteId: "failed", status: "failed" },
+      { ...row, siteId: "syncing", status: "syncing" },
+      { ...row, siteId: "expired", lastSeenAt: new Date(now.getTime() - 86_400_000) },
+      { ...row, siteId: "future", lastSeenAt: new Date(now.getTime() + 1000) },
+      { ...row, siteId: "bad-digest", sha256: "b".repeat(64) },
+      { ...row, siteId: "bad-size", size: 2 },
+      { ...row, siteId: "other-file", fileId: FILE_OTHER },
+    ]);
+    expect(await deriveDataSites(db, [FILE_A, FILE_B], USER_ID, ORG_ID, now)).toEqual(["alpha"]);
+    expect(await deriveDataSites(db, [FILE_A], ORG_ID, ORG_ID, now)).toEqual([]);
+    await db.update(netdriveFiles).set({ deletedAt: now }).where(eq(netdriveFiles.id, FILE_A));
+    expect(await deriveDataSites(db, [FILE_A], USER_ID, ORG_ID, now)).toEqual([]);
   });
 });
 

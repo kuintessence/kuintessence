@@ -1,8 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSqliteDb } from "@kuintessence/db";
+import { DownloadPartials } from "./download-partials";
 import { downloadToFile } from "./download-to-file";
 
 const directories: string[] = [];
@@ -318,4 +320,127 @@ test("an origin ignoring Range must pass full-size admission after truncation", 
     }),
   ).rejects.toThrow("STORAGE_CAPACITY_BYTES");
   expect(requests).toEqual([0, 3, 6]);
+});
+
+test("a user download pins the approved directory through publication", async () => {
+  const { options } = await setup();
+  const root = await mkdtemp(join(tmpdir(), "kq-transfer-pin-"));
+  directories.push(root);
+  const ordinary = join(root, "visible"),
+    reserved = join(root, ".kq-replicas");
+  await mkdir(ordinary, { mode: 0o700 });
+  await mkdir(reserved, { mode: 0o700 });
+  const source = fetcher(async () => {
+    await rename(ordinary, join(root, "original"));
+    await symlink(reserved, ordinary);
+    return new Response("abcdef");
+  });
+  const targetPath = join(ordinary, "download");
+  await downloadToFile({
+    ...options,
+    targetPath,
+    userTransfer: true,
+    sha256: createHash("sha256").update("abcdef").digest("hex"),
+    size: 6,
+    fetch: source,
+  });
+  expect(await readFile(join(root, "original/download"), "utf8")).toBe("abcdef");
+  expect(await Bun.file(join(reserved, "download")).exists()).toBe(false);
+  await expect(
+    downloadToFile({ ...options, targetPath, userTransfer: true, fetch: source }),
+  ).rejects.toThrow("private");
+});
+
+test("after restart only expired, unchanged download partials created by the Agent are removed", async () => {
+  let now = 0;
+  const { options, partial } = await setup();
+  const dbPath = `${options.targetPath}.sqlite`;
+  const db = createSqliteDb(dbPath);
+  const partials = new DownloadPartials(db, () => now);
+  const interrupt = async (targetPath: string) => {
+    await expect(
+      downloadToFile({
+        ...options,
+        partials,
+        userTransfer: true,
+        targetPath,
+        fetch: fetcher(() => new Response("abc")),
+      }),
+    ).rejects.toThrow("truncated");
+  };
+  const suffix = partial.slice(options.targetPath.length);
+  for (const end of ["", "-replaced", "-edited", "-existing"]) {
+    if (end === "-existing")
+      await writeFile(options.targetPath + end + suffix, "a", { mode: 0o600 });
+    await interrupt(options.targetPath + end);
+  }
+  const replacement = `${options.targetPath}-replaced${suffix}`;
+  await rename(replacement, `${replacement}.old`);
+  await writeFile(replacement, "user file", { mode: 0o600 });
+  const edited = `${options.targetPath}-edited${suffix}`;
+  await writeFile(edited, "changed by user");
+  db.$client.close();
+  const reopened = createSqliteDb(dbPath);
+  try {
+    const gc = new DownloadPartials(reopened, () => now);
+    now = 6 * 86400_000;
+    await gc.sweep();
+    expect(await readFile(partial, "utf8")).toBe("abc");
+    now += 86400_000;
+    await gc.sweep();
+    await expect(stat(partial)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(replacement, "utf8")).toBe("user file");
+    expect(await readFile(edited, "utf8")).toBe("changed by user");
+    expect(await readFile(`${options.targetPath}-existing${suffix}`, "utf8")).toBe("abc");
+    await downloadToFile({
+      ...options,
+      partials: gc,
+      userTransfer: true,
+      fetch: fetcher((_url, init) => {
+        expect(new Headers(init.headers).has("range")).toBe(false);
+        return new Response("abcdef");
+      }),
+    });
+    expect(await readFile(options.targetPath, "utf8")).toBe("abcdef");
+  } finally {
+    reopened.$client.close();
+  }
+});
+
+test("a running download keeps its partial during a sweep and can resume after interruption", async () => {
+  const { options, partial } = await setup();
+  const db = createSqliteDb(":memory:");
+  let now = 0;
+  const partials = new DownloadPartials(db, () => now);
+  try {
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<Response>();
+    const active = downloadToFile({
+      ...options,
+      partials,
+      fetch: fetcher(() => {
+        entered.resolve();
+        return finish.promise;
+      }),
+    });
+    await entered.promise;
+    now += 8 * 86400_000;
+    await partials.sweep();
+    expect((await stat(partial)).isFile()).toBe(true);
+    finish.resolve(new Response("abc"));
+    await expect(active).rejects.toThrow("truncated");
+    await downloadToFile({
+      ...options,
+      partials,
+      fetch: fetcher((_url, init) => {
+        expect(new Headers(init.headers).get("range")).toBe("bytes=3-");
+        return new Response("def", { status: 206, headers: { "Content-Range": "bytes 3-5/6" } });
+      }),
+    });
+    now += 8 * 86400_000;
+    await partials.sweep();
+    expect(await readFile(options.targetPath, "utf8")).toBe("abcdef");
+  } finally {
+    db.$client.close();
+  }
 });

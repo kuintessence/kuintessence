@@ -17,7 +17,7 @@ COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
 COPY contracts/fabric/commercial/package.json ./contracts/fabric/commercial/
 COPY contracts/fabric/market/package.json ./contracts/fabric/market/
 
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc bun install --frozen-lockfile --ignore-scripts
 
 COPY packages/shared ./packages/shared
 COPY packages/proto ./packages/proto

@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, rename } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { type FileHandle, lstat, mkdir, open, rename } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import { readSiteTransport, siteFetch } from "@kuintessence/shared/site-transport";
 import { assertStorageCapacity, normalizeStorageCapacityError } from "../storage-capacity";
+import type { DownloadPartials } from "./download-partials";
 import { rewriteUrlWithConnectTo } from "./multipart-upload-from-file";
+import { openTransferDirectory } from "./transfer-path";
 
 interface DownloadOptions {
+  userTransfer?: boolean;
+  partials?: DownloadPartials;
   url: string;
   targetPath: string;
   size: number;
@@ -44,7 +48,6 @@ export async function downloadToFile(options: DownloadOptions): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(digest) || !Number.isSafeInteger(options.size) || options.size < 0)
     throw new Error("Invalid download content binding");
   const targetPath = resolve(options.targetPath);
-  const partial = `${targetPath}.kq-sha256-${digest}.part`;
   const previous = writers.get(targetPath) ?? Promise.resolve();
   let release: () => void = () => {};
   const writer = new Promise<void>((resolve) => {
@@ -58,7 +61,21 @@ export async function downloadToFile(options: DownloadOptions): Promise<void> {
   try {
     await abortable(previous, options.signal);
     options.signal.throwIfAborted();
-    await download({ ...options, targetPath, sha256: digest }, partial);
+    if (options.userTransfer && resolve(targetPath).split("/").includes(".kq-replicas"))
+      throw new Error("Managed replicas are private");
+    const directory = options.userTransfer
+      ? await openTransferDirectory(dirname(targetPath))
+      : undefined;
+    try {
+      const dest = directory ? `/proc/self/fd/${directory.fd}/${basename(targetPath)}` : targetPath;
+      await download(
+        { ...options, targetPath: dest, sha256: digest },
+        `${dest}.kq-sha256-${digest}.part`,
+        directory,
+      );
+    } finally {
+      await directory?.close();
+    }
   } catch (error) {
     throw normalizeStorageCapacityError(error);
   } finally {
@@ -66,14 +83,18 @@ export async function downloadToFile(options: DownloadOptions): Promise<void> {
   }
 }
 
-async function download(options: DownloadOptions, partial: string): Promise<void> {
+async function download(
+  options: DownloadOptions,
+  partial: string,
+  pinned?: FileHandle,
+): Promise<void> {
   await (options.capacity ?? assertStorageCapacity)({
     path: dirname(partial),
     additionalBytes: 0,
     additionalInodes: 2,
   });
-  await mkdir(dirname(partial), { recursive: true, mode: 0o700 });
-  const parent = await lstat(dirname(partial));
+  if (!pinned) await mkdir(dirname(partial), { recursive: true, mode: 0o700 });
+  const parent = await (pinned?.stat() ?? lstat(dirname(partial)));
   if (
     !parent.isDirectory() ||
     parent.isSymbolicLink() ||
@@ -83,15 +104,21 @@ async function download(options: DownloadOptions, partial: string): Promise<void
     throw new Error(
       "Download staging directory must be Agent-owned and not writable by other accounts",
     );
-  const file = await open(
-    partial,
-    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    0o600,
+  const flags = constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  let created = true;
+  const file = await open(partial, flags | constants.O_CREAT | constants.O_EXCL, 0o600).catch(
+    (err: NodeJS.ErrnoException) => {
+      if (err.code !== "EEXIST") throw err;
+      created = false;
+      return open(partial, flags);
+    },
   );
+  let tracked: Awaited<ReturnType<DownloadPartials["track"]>>;
   try {
     const info = await file.stat();
     if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink !== 1 || info.mode & 0o077)
       throw new Error("Download partial file must be private and Agent-owned");
+    tracked = await options.partials?.track(partial, file, created);
     if (info.size > options.size) await file.truncate(0);
     const attempts = Math.max(1, options.maxAttempts ?? 3);
     for (let attempt = 0; attempt < attempts; attempt++) {
@@ -248,7 +275,7 @@ async function download(options: DownloadOptions, partial: string): Promise<void
     const [current, opened, directoryInfo] = await Promise.all([
       lstat(partial),
       file.stat(),
-      lstat(dirname(partial)),
+      pinned?.stat() ?? lstat(dirname(partial)),
     ]);
     if (
       current.isSymbolicLink() ||
@@ -263,6 +290,8 @@ async function download(options: DownloadOptions, partial: string): Promise<void
     )
       throw new Error("Download staging path changed during verification");
     await rename(partial, options.targetPath);
+    if (tracked) options.partials?.forget(tracked);
+    tracked = undefined;
     const directory = await open(dirname(partial), constants.O_RDONLY | constants.O_DIRECTORY);
     try {
       await directory.sync();
@@ -272,6 +301,7 @@ async function download(options: DownloadOptions, partial: string): Promise<void
   } finally {
     try {
       await file.sync();
+      if (tracked) await options.partials?.retain(tracked, file);
     } finally {
       await file.close();
     }

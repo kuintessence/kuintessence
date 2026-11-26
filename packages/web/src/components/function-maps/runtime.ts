@@ -88,8 +88,8 @@ export function infrastructureRuntime(input: {
     edges: [],
     observations,
     notice: text(
-      `仅显示当前获准范围内前 ${shown.length} / ${agents.length} 个 Agent。沿用清单 30 秒、概览 15 秒刷新；健康与任务进度未接入。`,
-      `Showing the first ${shown.length} of ${agents.length} authorized Agents. List refresh: 30s; overview: 15s. Health and task progress are not connected.`,
+      `仅显示当前获准范围内前 ${shown.length} / ${agents.length} 个 Agent。`,
+      `Showing the first ${shown.length} of ${agents.length} authorized Agents.`,
     ),
   };
 }
@@ -187,9 +187,6 @@ export function authorizationRuntime(input: {
         "AuthzAdminPanel.refresh / existing recovery forms",
       ),
     ],
-    notice: text(
-      "复用授权页手动刷新。接口未返回观测时间，下面只记录页面获取时间；无自动过期判定，不据此宣称完整数字孪生。",
-      "Uses the authorization page's manual refresh. APIs do not return observation time; only fetch time is recorded. No automatic expiry rule or complete digital-twin claim.",
-    ),
+    notice: text("", ""),
   };
 }

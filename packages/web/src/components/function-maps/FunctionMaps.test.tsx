@@ -6,12 +6,14 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ACTIVE_ORGANIZATION_STORAGE_KEY } from "../../lib/active-organization";
 import { clearAuth, setAuth } from "../../lib/auth";
 import { setLang } from "../../lib/i18n";
 import { FunctionMaps } from "./FunctionMaps";
 import type { MapNode } from "./model";
+import { DEFAULT_MAP_PREFERENCES } from "./preferences";
 
 const orgA = "00000000-0000-4000-8000-000000000001";
 const orgB = "00000000-0000-4000-8000-000000000002";
@@ -64,13 +66,20 @@ afterEach(() => {
   clearAuth();
   vi.unstubAllGlobals();
 });
-function mount(ids: string[], onOpen?: (node: MapNode) => boolean) {
+function mount(
+  ids: string[],
+  onOpen?: (node: MapNode) => boolean,
+  entry = "/?projectId=p&region=east",
+  dashboard?: ReactNode,
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   clients.push(client);
-  const root = createRootRoute({ component: () => <FunctionMaps ids={ids} onOpen={onOpen} /> });
+  const root = createRootRoute({
+    component: () => <FunctionMaps ids={ids} onOpen={onOpen} dashboard={dashboard} />,
+  });
   const router = createRouter({
     routeTree: root,
-    history: createMemoryHistory({ initialEntries: ["/?projectId=p&region=east"] }),
+    history: createMemoryHistory({ initialEntries: [entry] }),
   });
   render(
     <QueryClientProvider client={client}>
@@ -80,13 +89,9 @@ function mount(ids: string[], onOpen?: (node: MapNode) => boolean) {
   return { client, router };
 }
 async function expandMap() {
-  const summary = await waitFor(() => {
-    const element = document.querySelector<HTMLDetailsElement>("details.function-map");
-    expect(element).toBeTruthy();
-    expect(element?.open).toBe(false);
-    return element?.querySelector("summary") as HTMLElement;
-  });
-  fireEvent.click(summary);
+  const toggle = await screen.findByRole("button", { name: "展开" });
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(toggle);
 }
 test("explains nodes before navigation and retains project/region scope", async () => {
   const { router } = mount(["D01"]);
@@ -149,4 +154,32 @@ test("removes revoked nodes and their explanation after a permission refresh fai
   });
   await waitFor(() => expect(screen.queryByRole("heading", { name: "取回云盘" })).toBeNull());
   expect(screen.queryByRole("button", { name: /取回云盘/ })).toBeNull();
+});
+
+const preferenceKey = "kq.function-maps.v1:member%40example.test";
+test("an authorized node target overrides URL and fixed defaults without rewriting them", async () => {
+  const stored = { ...DEFAULT_MAP_PREFERENCES, dual: { mode: "fixed", fixed: "data" } };
+  localStorage.setItem(preferenceKey, JSON.stringify(stored));
+  mount(["D01"], undefined, "/?mapNode=d01.n1&mapView=data", <p>已有数据概览</p>);
+  expect(await screen.findByRole("dialog")).toBeTruthy();
+  expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(
+    "资源关系",
+  );
+  expect(localStorage.getItem(preferenceKey)).toBe(JSON.stringify(stored));
+});
+test.each([
+  "missing-node",
+  "g21.n4",
+])("invalid or unauthorized target %s does not force the diagram", async (mapNode) => {
+  grants = ["delegation.read"];
+  const stored = { ...DEFAULT_MAP_PREFERENCES, pages: { G21: { last: "data" } } };
+  localStorage.setItem(preferenceKey, JSON.stringify(stored));
+  mount(["G21"], undefined, `/?mapNode=${mapNode}&mapView=data`, <p>已有数据概览</p>);
+  await waitFor(() =>
+    expect(screen.getByRole("tab", { name: "数据概览" }).getAttribute("aria-selected")).toBe(
+      "true",
+    ),
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(localStorage.getItem(preferenceKey)).toBe(JSON.stringify(stored));
 });

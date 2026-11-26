@@ -19,10 +19,6 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("./ProviderOrganizationSelector", () => ({
-  ProviderOrganizationSelector: () => <div data-testid="provider-organization-selector" />,
-}));
-
 vi.mock("../../lib/platform-capabilities", () => ({
   usePlatformCapability: () => capabilityAccess,
 }));

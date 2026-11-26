@@ -34,6 +34,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { RefreshButton } from "../ui/refresh-button";
 import { AgreementFact } from "./AgreementTerms";
 import { CommercialAdjustmentTerms } from "./CommercialAdjustmentTerms";
 import { CommercialArbitrationPanel } from "./CommercialArbitrationPanel";
@@ -143,13 +144,12 @@ function Disputes(props: Props) {
   return (
     <section className="space-y-4">
       <div className="flex justify-end">
-        <Button
+        <RefreshButton
           variant="outline"
           disabled={list.isFetching || props.busy}
           onClick={() => void list.refetch()}
-        >
-          {t("federation.refresh")}
-        </Button>
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
       {list.isError ? (
         <p role="alert">{t("federation.loadFailed")}</p>
@@ -513,13 +513,12 @@ function DisputeDetail({
         <Button variant="ghost" disabled={mutation.isPending} onClick={onBack}>
           {t(`${prefix}.back`)}
         </Button>
-        <Button
+        <RefreshButton
           variant="outline"
           disabled={mutation.isPending || resolution.isFetching || execution.isFetching}
           onClick={() => void refresh()}
-        >
-          {t("federation.refresh")}
-        </Button>
+          label={t("federation.refresh")}
+        ></RefreshButton>
       </div>
       <div className="space-y-2">
         <h3 className="break-words text-base font-semibold">{dispute.reason}</h3>

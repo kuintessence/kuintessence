@@ -39,16 +39,68 @@ export async function readMediaExportDatasetSource(
   )
     throw new FederationError("POLICY_DENIED");
   if (await isFederationDataset(tx, data.asset.id)) throw new FederationError("POLICY_DENIED");
+  const authorizationExpiresAt = await disclosureExpiry(
+    tx,
+    actor,
+    data.asset.id,
+    input.versionId,
+    now,
+  );
+  if (authorizationExpiresAt === null) throw new FederationError("POLICY_DENIED");
+  const [storage] = await tx
+    .select({ location: dataLocations, root: clusterFileRoots, agent: agents })
+    .from(dataLocations)
+    .innerJoin(clusterFileRoots, eq(clusterFileRoots.id, dataLocations.managedRootId))
+    .innerJoin(agents, eq(agents.agentId, dataLocations.agentId))
+    .where(
+      and(
+        eq(dataLocations.id, input.locationId),
+        eq(dataLocations.dataAssetVersionId, input.versionId),
+      ),
+    )
+    .for("share", { of: [dataLocations, clusterFileRoots, agents] });
+  if (
+    !storage ||
+    storage.location.kind !== "cp-local" ||
+    storage.location.status !== "available" ||
+    !storage.location.relativePath ||
+    !storage.root.enabled ||
+    storage.root.providerOrgId !== actor.orgId ||
+    storage.agent.providerOrgId !== actor.orgId ||
+    storage.root.agentId !== storage.agent.agentId
+  )
+    throw new FederationError("POLICY_DENIED");
+  return {
+    asset: data.asset,
+    version: data.version,
+    agentName: storage.agent.siteName,
+    rootLabel: storage.root.label,
+    source: {
+      agentId: storage.agent.agentId,
+      managedRootId: storage.root.id,
+      relativePath: storage.location.relativePath,
+    },
+    authorizationExpiresAt,
+  };
+}
+
+export async function disclosureExpiry(
+  tx: PgTransaction,
+  actor: { userId: string; orgId: string },
+  assetId: string,
+  versionId: string,
+  now: Date,
+) {
   const policies = await tx
     .select()
     .from(dataAccessPolicies)
     .where(
       and(
-        eq(dataAccessPolicies.dataAssetId, data.asset.id),
+        eq(dataAccessPolicies.dataAssetId, assetId),
         eq(dataAccessPolicies.status, "active"),
         or(
           isNull(dataAccessPolicies.dataAssetVersionId),
-          eq(dataAccessPolicies.dataAssetVersionId, input.versionId),
+          eq(dataAccessPolicies.dataAssetVersionId, versionId),
         ),
         or(
           and(
@@ -84,7 +136,7 @@ export async function readMediaExportDatasetSource(
         policy.crossCenterReplicationPolicy !== "allow",
     )
   )
-    throw new FederationError("POLICY_DENIED");
+    return null;
   const permits = relevant.filter(
     (policy) =>
       policy.effect === "allow" &&
@@ -92,44 +144,10 @@ export async function readMediaExportDatasetSource(
         (capability) => capability === "download" || capability === "export",
       ),
   );
-  if (!permits.length) throw new FederationError("POLICY_DENIED");
-  const [storage] = await tx
-    .select({ location: dataLocations, root: clusterFileRoots, agent: agents })
-    .from(dataLocations)
-    .innerJoin(clusterFileRoots, eq(clusterFileRoots.id, dataLocations.managedRootId))
-    .innerJoin(agents, eq(agents.agentId, dataLocations.agentId))
-    .where(
-      and(
-        eq(dataLocations.id, input.locationId),
-        eq(dataLocations.dataAssetVersionId, input.versionId),
-      ),
-    )
-    .for("share", { of: [dataLocations, clusterFileRoots, agents] });
-  if (
-    !storage ||
-    storage.location.kind !== "cp-local" ||
-    storage.location.status !== "available" ||
-    !storage.location.relativePath ||
-    !storage.root.enabled ||
-    storage.root.providerOrgId !== actor.orgId ||
-    storage.agent.providerOrgId !== actor.orgId ||
-    storage.root.agentId !== storage.agent.agentId
-  )
-    throw new FederationError("POLICY_DENIED");
-  return {
-    asset: data.asset,
-    version: data.version,
-    agentName: storage.agent.siteName,
-    rootLabel: storage.root.label,
-    source: {
-      agentId: storage.agent.agentId,
-      managedRootId: storage.root.id,
-      relativePath: storage.location.relativePath,
-    },
-    authorizationExpiresAt: Math.max(
-      ...permits.map((policy) => policy.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
-    ),
-  };
+  if (!permits.length) return null;
+  return Math.max(
+    ...permits.map((policy) => policy.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
+  );
 }
 
 export async function readMediaExportDataset(

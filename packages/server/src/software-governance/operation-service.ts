@@ -905,7 +905,50 @@ export class SoftwareOperationService {
     return row ? rowToView(row) : null;
   }
 
+  async estimateInstallation(input: {
+    agentId: string;
+    spec: string;
+    cpus: number;
+    minutes?: number;
+    rate: number | null;
+  }) {
+    const samples = await this.db
+      .select({
+        seconds:
+          sql<number>`extract(epoch from (${softwareOperations.finishedAt} - ${softwareOperations.startedAt}))`.mapWith(
+            Number,
+          ),
+      })
+      .from(softwareOperations)
+      .where(
+        and(
+          eq(softwareOperations.agentId, input.agentId),
+          eq(softwareOperations.spec, input.spec),
+          eq(softwareOperations.action, "install"),
+          eq(softwareOperations.status, "succeeded"),
+          sql`${softwareOperations.finishedAt} > ${softwareOperations.startedAt}`,
+          sql`coalesce(${softwareOperations.idempotencyKey}, '') not like 'source-audit:%'`,
+        ),
+      )
+      .orderBy(desc(softwareOperations.finishedAt), desc(softwareOperations.id))
+      .limit(20);
+    const durations = samples.map((sample) => sample.seconds).sort((a, b) => a - b);
+    const lower = durations[Math.floor((durations.length - 1) / 2)];
+    const upper = durations[Math.floor(durations.length / 2)];
+    const median = lower === undefined || upper === undefined ? null : (lower + upper) / 2;
+    const seconds = input.minutes === undefined ? median : input.minutes * 60;
+    const cpuHours = seconds === null ? null : (input.cpus * seconds) / 3600;
+    return {
+      samples: durations.length,
+      seconds,
+      cpuHours,
+      rate: input.rate,
+      cost: cpuHours === null || input.rate === null ? null : cpuHours * input.rate,
+    };
+  }
+
   async listOperations(input: {
+    recipe?: { repositoryId: string; commit: string };
     scope: CpScope;
     agentId?: string;
     action?: SoftwareOperationAction;
@@ -923,6 +966,13 @@ export class SoftwareOperationService {
       }
     }
     let where = inArray(softwareOperations.agentId, agentIds);
+    if (input.recipe)
+      where =
+        and(
+          where,
+          sql`${softwareOperations.recipeSnapshots} @> ${JSON.stringify([input.recipe])}::jsonb`,
+          sql`coalesce(${softwareOperations.idempotencyKey},'') not like 'source-audit:%'`,
+        ) ?? where;
     if (input.action) {
       where = and(where, eq(softwareOperations.action, input.action)) ?? where;
     }
@@ -1269,7 +1319,10 @@ export async function resolveEffectiveSpackPolicy(db: PgDb, agentId: string): Pr
       overlay.clusterId === clusterId,
   );
   const agentOverlay = overlays.find(
-    (overlay) => overlay.scope === "agent" && overlay.agentId === agentId,
+    (overlay) =>
+      overlay.scope === "agent" &&
+      overlay.providerOrgId === agent.providerOrgId &&
+      overlay.agentId === agentId,
   );
   const legacy = legacyPolicies.find((policy) => policy.scope === "agent");
   return mergeEffectiveSpackPolicyLayers({ provider, cluster, legacy, agentOverlay });

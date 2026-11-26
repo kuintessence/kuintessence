@@ -29,6 +29,7 @@ describe("loadAgentConfig", () => {
     const cfg = loadAgentConfig(baseEnv);
     expect(cfg.AGENT_ID).toBe("agent-test");
     expect(cfg.AGENT_DB_PATH).toBe("./agent.db");
+    expect(cfg.AGENT_SQLITE_JOURNAL_MODE).toBe("wal");
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_QUEUE_INVENTORY_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_SCHEDULER_METRICS_INTERVAL_SEC).toBe(120);
@@ -42,6 +43,14 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_FILE_TRANSFER_CONNECT_TO).toBe("localhost:9000:host.docker.internal:9000");
     expect(cfg.AGENT_CONTAINER_FILE_TRANSFER_CONNECT_TO).toBeUndefined();
     expect(cfg.AGENT_K8S_DEFAULT_IMAGE).toBe("busybox:latest");
+  });
+  test("allows shared-home rollback journals and rejects unsafe journal modes", () => {
+    expect(
+      loadAgentConfig({ ...baseEnv, AGENT_SQLITE_JOURNAL_MODE: "delete" })
+        .AGENT_SQLITE_JOURNAL_MODE,
+    ).toBe("delete");
+    for (const mode of ["off", "memory", "delete; PRAGMA synchronous=OFF"])
+      expect(() => loadAgentConfig({ ...baseEnv, AGENT_SQLITE_JOURNAL_MODE: mode })).toThrow();
   });
   test("allows explicit retained Slurm status without pretending accounting exists", () => {
     expect(

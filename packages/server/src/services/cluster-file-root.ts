@@ -1,4 +1,15 @@
-import { agents, clusterFileRoots, type PgDb } from "@kuintessence/db";
+import {
+  agents,
+  auditLog,
+  clusterFileRoots,
+  dataAssetImports,
+  dataLocations,
+  fileTransfers,
+  type PgDb,
+  storageQuotaGrants,
+  storageQuotaPolicies,
+  storageQuotaRequests,
+} from "@kuintessence/db";
 import {
   AppError,
   type ClusterFileRootCreate,
@@ -8,7 +19,8 @@ import {
   hasRole,
   type RoleName,
 } from "@kuintessence/shared";
-import { eq, or } from "drizzle-orm";
+import { and, eq, exists, ne, or, sql } from "drizzle-orm";
+import { insertAuthzOutboxRows } from "../authz/enqueue";
 import {
   clusterFileRootPlatformTuple,
   clusterFileRootProviderTuple,
@@ -185,6 +197,119 @@ export class ClusterFileRootService {
       ...clusterFileRootTuples(updated, "create"),
     ]);
     return toView(updated);
+  }
+
+  async remove(id: string, ctx: ClusterFileRootAccessContext): Promise<void> {
+    await this.getAdmin(id, ctx);
+    await this.db
+      .transaction(async (tx) => {
+        // Deleting the final row would restore the static root allowlist.
+        await tx.execute(sql`LOCK TABLE ${clusterFileRoots} IN SHARE ROW EXCLUSIVE MODE`);
+        const [root] = await tx
+          .select()
+          .from(clusterFileRoots)
+          .where(eq(clusterFileRoots.id, id))
+          .for("update");
+        if (!root) throw new AppError(ErrorCode.NOT_FOUND, "Cluster file root not found", 404);
+        const [other] = await tx
+          .select({ id: clusterFileRoots.id })
+          .from(clusterFileRoots)
+          .where(ne(clusterFileRoots.id, id))
+          .limit(1);
+        if (!other)
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Disable the last configured root instead",
+            409,
+            { reason: "LAST_CONFIGURED_ROOT" },
+          );
+
+        const linked = or(
+          exists(
+            tx
+              .select({ id: fileTransfers.id })
+              .from(fileTransfers)
+              .where(eq(fileTransfers.clusterRootId, id)),
+          ),
+          exists(
+            tx
+              .select({ id: dataLocations.id })
+              .from(dataLocations)
+              .where(eq(dataLocations.managedRootId, id)),
+          ),
+          exists(
+            tx
+              .select({ id: dataAssetImports.id })
+              .from(dataAssetImports)
+              .where(eq(dataAssetImports.sourceManagedRootId, id)),
+          ),
+          exists(
+            tx
+              .select({ id: storageQuotaPolicies.id })
+              .from(storageQuotaPolicies)
+              .where(
+                and(
+                  eq(storageQuotaPolicies.scope, "cluster_root"),
+                  eq(storageQuotaPolicies.scopeId, id),
+                ),
+              ),
+          ),
+          exists(
+            tx
+              .select({ id: storageQuotaRequests.id })
+              .from(storageQuotaRequests)
+              .where(
+                and(
+                  eq(storageQuotaRequests.scope, "cluster_root"),
+                  eq(storageQuotaRequests.scopeId, id),
+                ),
+              ),
+          ),
+          exists(
+            tx
+              .select({ id: storageQuotaGrants.id })
+              .from(storageQuotaGrants)
+              .where(
+                and(
+                  eq(storageQuotaGrants.scope, "cluster_root"),
+                  eq(storageQuotaGrants.scopeId, id),
+                ),
+              ),
+          ),
+        );
+        const [reference] = await tx
+          .select({ id: clusterFileRoots.id })
+          .from(clusterFileRoots)
+          .where(and(eq(clusterFileRoots.id, id), linked));
+        if (reference)
+          throw new AppError(ErrorCode.VALIDATION_ERROR, "Cluster file root is in use", 409, {
+            reason: "ROOT_IN_USE",
+          });
+        await tx.delete(clusterFileRoots).where(eq(clusterFileRoots.id, id));
+        if (this.authz && this.authz.mode !== "off")
+          await insertAuthzOutboxRows(tx, clusterFileRootTuples(root, "delete"));
+        if (ctx.userId)
+          await tx.insert(auditLog).values({
+            actor: ctx.userId,
+            orgId: root.providerOrgId,
+            target: id,
+            action: "cluster_file_root.delete",
+          });
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          error.cause &&
+          typeof error.cause === "object" &&
+          "code" in error.cause &&
+          error.cause.code === "23503"
+        ) {
+          throw new AppError(ErrorCode.VALIDATION_ERROR, "Cluster file root is in use", 409, {
+            reason: "ROOT_IN_USE",
+          });
+        }
+        throw error;
+      });
   }
 
   async resolveAllowedRootPaths(

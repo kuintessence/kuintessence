@@ -14,7 +14,7 @@ COPY packages/web/package.json ./packages/web/
 COPY contracts/fabric/commercial/package.json ./contracts/fabric/commercial/
 COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
 COPY contracts/fabric/market/package.json ./contracts/fabric/market/
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc bun install --frozen-lockfile --ignore-scripts
 
 FROM deps AS build
 COPY packages/shared ./packages/shared
@@ -26,7 +26,7 @@ RUN cd contracts/fabric/commercial && bun run build
 RUN cd contracts/fabric/market && bun run build
 
 FROM deps AS runtime-deps
-RUN rm -rf node_modules packages/*/node_modules contracts/fabric/*/node_modules \
+RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc rm -rf node_modules packages/*/node_modules contracts/fabric/*/node_modules \
     && bun install --production --frozen-lockfile --ignore-scripts --filter '@kuintessence/fabric-*'
 
 FROM node:22.23.3-bookworm-slim AS runtime

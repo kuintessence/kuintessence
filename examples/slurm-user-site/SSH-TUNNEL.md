@@ -63,7 +63,7 @@ mv -f "$kq_ca_tmp" "$KQ_TLS_CA_FILE"
 unset kq_ca_tmp
 ```
 
-状态盘必须持久且本地。共享 HOME 放材料、软件、作业；SQLite/WAL 放 `KQ_LOCAL`。只读预检拒绝 HOME 或 `KQ_SHARED` 子树，以及 `/tmp`、`/var/tmp`、`/run`、`/dev/shm`；不会因另一个目录与 HOME 位于同一挂载就拒绝整块盘。挂载必须是可写 ext4/xfs/btrfs/zfs；网络、临时、只读与未知文件系统拒绝。挂载类型不能证明保留期限，目录仍须由站点确认不会被定期清理，不靠填写标志绕过。
+默认 `KQ_STATE_STORAGE=local` 要求持久本地状态盘。共享 HOME 放材料、软件、作业；SQLite/WAL 放 `KQ_LOCAL`。默认模式拒绝 HOME 或 `KQ_SHARED` 子树，以及 `/tmp`、`/var/tmp`、`/run`、`/dev/shm`；不会因另一个目录与 HOME 位于同一挂载就拒绝整块盘。挂载必须是可写 ext4/xfs/btrfs/zfs。仅有共享 HOME、采用 tmux 的站点可改用[共享 HOME 模式](SHARED-HOME.md)，它需要新版回滚日志 Agent、专用发行与单节点绑定，不是放宽 WAL 的存储检查。挂载类型不能证明保留期限。
 
 ## 2. HTTP 正向代理模式
 
@@ -92,7 +92,7 @@ bash -l bootstrap.sh "$PWD/site.env" doctor
 - module 可用时实际加载 Python；check 在子 shell 探测 Apptainer module 与版本，不污染父 shell。Spack关闭时 Apptainer失败不阻止基础接入，报告明确显示 failed/not-tested；启用Spack时要求实际可用。没有 module 的自带Python模式仍可检查，但不虚报 module通过。
 - `check` 同时只读查询 user-systemd 和 linger，缺失显示 unavailable/not-tested；不会启动服务、修改 linger 或将未知常驻条件算通过。持久保留策略、退出登录及重启后的监管效果仍需现场确认。
 - `doctor` 拉取已签名的 CLI，自动使用本地 Agent 证书证明申请短期探针，检查 HTTPS、注册身份、独立 mTLS HTTP/2 双向流、材料 HTTP GET、对象 GET/PUT 与分片。它不替换已有 Agent 控制流。缺身份或端点时报告 `not-tested`、返回非零，不能算通过；真正 Slurm/Spack 安装另行验收。报告保存在 `$KQ_LOCAL/doctor.json`，不包含凭据或下载 URL。
-- `install` 从平台获取签名清单，验证 Ed25519 签名、平台 revision、版本序号、架构、glibc/CPU 与各文件 SHA-256。下载中断保留 `.part`，重跑可续传。
+- `install` 从平台获取签名清单，验证 Ed25519 签名、Server 协议兼容性、版本序号、架构、glibc/CPU 与各文件 SHA-256。有签名 `serverProtocolRange` 时允许不同 Server commit，只要求实时 `siteProtocolVersion` 落在范围内；历史清单无范围时仍要求精确 revision。缺协议或范围不兼容不会消费注册 token。下载中断保留 `.part`，重跑可续传。
 - 首次注册默认在终端隐藏输入一次性 token，经 CLI stdin 提交，不进入命令行 argv。也可在配置里设置 `KQ_REGISTRATION_TOKEN_FILE=/本机私密路径/token`（权限 `0600`），或设置为 `-` 并使用 `bash -l bootstrap.sh "$PWD/site.env" install < /本机私密路径/token`。不要把 token 正文写进配置或命令。已有身份会检查配置完整性、证书及私钥配对，再决定复用。注册成功后自动生成 `$KQ_SHARED/helpers/modules-smoke.sh` 并执行分通道诊断；无需再上传小作业脚本。
 - 若注册中途进程崩溃且 token 消耗结果未知，会保留 `registration/pending` 并停止；先在平台对账 Agent 身份和证书，不自动申请第二个身份。已有 `agent.env` 为空、截断或证书不完整时同样停止，不能删除 pending 后盲目重注册。
 
@@ -136,6 +136,8 @@ site profile 的 storeRoot、OS 摘要、externals 和 target 必须真实匹配
 构建 staging 中的 `slurm.json` 保存唯一 job name、scheduler ID 和输入绑定。激活前逐个核对当前用户队列中没有相同 job ID/name；所有 Slurm 查询限时 5 秒，失败或不确定时保留当前版本。新版 `noRequeue:true` 的持久终态记录在队列为空时可作为已结束证明，不依赖永久保留 accounting。其余记录须有精确 ID 的 accounting 终态；旧格式还须 controller 返回相同 JobId、终态和 `Requeue=0`，仅本地终态或 PREEMPTED 不足以放行。结果不确定时先查 `squeue/sacct`，禁止直接删除 writer lock。新版 `kq site recover-spack` 在确认旧进程、作业终态和绑定后追加恢复记录，再允许正常重试；命令见[Slurm 恢复手册](../../docs/offline-slurm-recovery.md)。
 
 ## 6. 更新与回滚
+
+新版启动器支持通过独立 site 开关启用启动检查与远程安全更新，平台和所属算力中心可在界面请求指定发行。首次迁移、权限、状态和失败回退详见 [Agent 更新](AGENT-UPDATES.md)。以下保留人工维护流程。
 
 用户服务安装一个每六小时、最多随机延迟三十分钟的更新 timer，只暂存，不自动替换运行版本。若手动操作已持有 bootstrap 锁，定时任务以 75 跳过本次，用户服务将其视为正常结束；不覆盖正在运行操作的状态，下轮继续检查。
 

@@ -349,12 +349,18 @@ OCI 和共享 principal middleware 的拒绝使用 Distribution v2 envelope，�
 | `REGISTRY_MAX_ACTIVE_UPLOADS_PER_REPOSITORY` | 10 |
 | `REGISTRY_MAX_INCOMPLETE_UPLOAD_BYTES` | 40 GiB |
 
-生产设置持久化 `BLOB_STORE_DIR`，未设置时使用开发用内存 BlobStore。
+Registry 将 OCI 数据写入 `BLOB_STORE_DIR`，默认为 `/var/lib/kuintessence/registry/blobs`。该目录应由 Registry 用户持有并挂载持久卷。
 清理后分别核对 catalog/index、DB metadata 和 blob 引用，不删除其他资源共用内容。
 CLI 跨域访问须设置可信 `KQ_REGISTRY_URL`；它会转发 Bearer token，非 loopback 地址必须用 HTTPS。
 
 <a id="agent"></a>
 ## Agent 注册与证书
+
+### Agent 证书撤销查询
+
+`GET /api/agent-pki/crl` 返回当前 CA 签名的 DER 撤销列表。`/api/agent-pki/ocsp` 支持 DER 请求的 POST，以及附加 Base64 请求的 GET。响应区分有效、已撤销和未知序列号，支持 SHA-1、SHA-256 CertID 和 nonce。快照每 30 秒刷新，签名状态有效期为 60 秒。连接时的 mTLS 校验直接查询证书账本。
+
+设置 `AGENT_PKI_PUBLIC_ORIGIN`（例如 `https://kq.example.org`）后，Server 签发的 Agent 证书包含 CRL 分发点和 OCSP 地址。已有证书可显式指定查询端点。
 
 ### HTTP/2 与 mTLS 边界
 
@@ -474,7 +480,7 @@ POST revoke 的 `reason` 进入 audit diff；兼容 DELETE 撤销接口不携带
 ### 通路与授权
 
 Web terminal、`kq ssh <agentId>` 和 TUI 共用 `/api/ssh/sessions/:agentId`，经 Server 和 Agent `ssh2` relay 接入登录节点 PTY。
-Web 主链路用 cookie；CLI 用 Authorization header，构造 WebSocket 失败时仍有 query token fallback。
+Web 主链路用 cookie，CLI 通过 Authorization header 认证。
 常规代理应支持 Authorization header，不记录含 token 的 URL。
 客户端支持 resize 控制帧；CLI 的 `--no-tty` 或管道输入不转发终端尺寸。
 
@@ -507,8 +513,7 @@ Settings 提供 vault 管理界面；写入记录连接 metadata 和是否设置
 管理 API 在 `enforce` 下按资源授权，路径中的 `admin` 不限定调用者必须具有平台角色。
 credential 的写入和删除检查目标 Agent 的管理权限，而非 credential 自身的 `manage`。
 
-生产只使用 vault。非生产直接使用 env mock resolver，不查询 vault；
-`SSH_CRED_<AGENT_ID>` 的 ID 转大写、连字符改下划线，值为 JSON。
+本地开发和部署环境均按目标 Agent 从加密保管库读取登录凭据。
 
 ### Host-key Pin 与连接加固
 
@@ -516,6 +521,8 @@ credential 的写入和删除检查目标 Agent 的管理权限，而非 credent
 也不检查后续变化；系统没有 TOFU 机制。
 通过可信带外渠道取得公钥，将其字节的 SHA-256 标准 Base64 存入 `hostKeySha256`。
 该字段使用公钥字节的摘要，不使用 certificate fingerprint，也不带 `SHA256:` 前缀。
+
+管理员可在目的 Agent 的 SSH 凭据中按连接顺序填写 `jumpAgentIds`。最多四跳，每跳使用同一提供方内独立保存的凭据，并为各跳和目的主机设置 `hostKeySha256`。打开 SSH 或 SFTP 会话时，Server 逐跳复查调用者权限并读取当前凭据。Agent 验证每一跳的主机公钥，仅在目的主机打开 PTY 或 SFTP 子系统。
 
 使用网络 `ssh-keyscan` 取得的公钥前，必须通过可信带外渠道核验。
 pin 必须对应服务端实际协商的 host-key 类型；变更算法或轮换密钥也可能造成不匹配。
@@ -579,4 +586,45 @@ Settings 可浏览、回放和删除录屏；presigned URL 本身是临时访问
 | `SSH_SESSION_RECORDING` | Server | `false`；输出录屏，依赖 NetDrive |
 | `SSH_RECORDING_RETENTION_DAYS` | Server | `0`；录屏自动留存天数 |
 | `SSO_SECRET_KEY` | Server | 未设置时以 `JWT_SECRET` 作为 vault wrapping key |
-| `SSH_CRED_<AGENT_ID>` | Server | 仅开发 env mock，生产禁用 |
+
+### SAML 与 LDAP 单点登录
+
+在平台设置的单点登录中选择 SAML 或 LDAP，签发者 URL 填写站点 Dex 的 HTTPS issuer。将 KQ 登记为 Dex 的 OIDC client，并登记界面显示的回调地址。Web 和 CLI 均走原授权码与 PKCE 流程。平台请求对应的 `connector_id` 和 `federated:id` scope，校验 ID token 中的 `federated_claims.connector_id` 后才映射用户和组。首次部署可用 `SSO_BOOTSTRAP_PROVIDER_TYPE=saml` 或 `ldap` 设置同一选项。
+
+在 Dex 的 `connectors` 中配置对应的上游，ID 与平台选项一致。以下为需要按站点替换的连接器字段示例。SAML 身份源需登记 Dex 的回调地址，提供签名验证证书并释放邮箱及组属性。LDAP 使用目录的 TLS 根证书，绑定密码由 Dex 环境注入。
+
+```yaml
+connectors:
+  - type: saml
+    id: saml
+    name: Institutional SAML
+    config:
+      ssoURL: https://saml.example.org/sso
+      ca: /etc/dex/trust/idp-signing.pem
+      redirectURI: https://login.example.org/dex/callback
+      entityIssuer: https://login.example.org/dex/callback
+      usernameAttr: displayName
+      emailAttr: mail
+      groupsAttr: groups
+  - type: ldap
+    id: ldap
+    name: Institutional directory
+    config:
+      host: ldap.example.org:636
+      rootCA: /etc/dex/trust/directory.pem
+      bindDN: cn=reader,ou=services,dc=example,dc=org
+      bindPW: $LDAP_BIND_PASSWORD
+      userSearch:
+        baseDN: ou=people,dc=example,dc=org
+        filter: "(objectClass=inetOrgPerson)"
+        username: uid
+        idAttr: DN
+        emailAttr: mail
+        nameAttr: cn
+      groupSearch:
+        baseDN: ou=groups,dc=example,dc=org
+        filter: "(objectClass=groupOfNames)"
+        userMatchers:
+          - {userAttr: DN, groupAttr: member}
+        nameAttr: cn
+```

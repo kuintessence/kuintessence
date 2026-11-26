@@ -16,6 +16,7 @@ const sandboxClient = vi.hoisted(() => ({
   runSandboxScriptTest: vi.fn(),
 }));
 const publishingAccess = vi.hoisted(() => ({ canPublish: true, ready: true }));
+const loadSandboxCodeEditor = vi.hoisted(() => vi.fn());
 
 vi.mock("../../lib/sandbox-client", () => sandboxClient);
 vi.mock("../../lib/software-publishing-access", () => ({
@@ -35,9 +36,11 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("./SandboxCodeEditor", () => ({
-  SandboxCodeEditor: ({ value }: { value: string }) => <textarea readOnly value={value} />,
-}));
+vi.mock("./loadSandboxCodeEditor", () => ({ loadSandboxCodeEditor }));
+
+function MockSandboxCodeEditor({ value }: { value: string }) {
+  return <textarea aria-label="Script code" readOnly value={value} />;
+}
 
 const scriptId = "00000000-0000-4000-8000-000000000001";
 const runtimeProfileId = "00000000-0000-4000-8000-000000000010";
@@ -62,6 +65,7 @@ const revision = {
 };
 
 function setupMocks() {
+  loadSandboxCodeEditor.mockResolvedValue(MockSandboxCodeEditor);
   const detail = {
     asset: {
       id: scriptId,
@@ -130,6 +134,52 @@ afterEach(() => {
 });
 
 describe("SandboxScriptStudio", () => {
+  test("keeps the draft editable through editor failures and passes it to the recovered editor", async () => {
+    setupMocks();
+    const firstLoad = Promise.withResolvers<typeof MockSandboxCodeEditor>();
+    const secondLoad = Promise.withResolvers<typeof MockSandboxCodeEditor>();
+    loadSandboxCodeEditor
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockReturnValueOnce(secondLoad.promise);
+    renderStudio(null);
+
+    expect(screen.getByText("common.loading")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Script code" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "main.py" })).toBeNull();
+    fireEvent.change(nativeControl(screen.getByLabelText("sandbox.studio.name")), {
+      target: { value: "Unsaved script" },
+    });
+    await waitFor(() => expect(loadSandboxCodeEditor).toHaveBeenCalledTimes(1));
+
+    firstLoad.reject(new Error("Editor chunk unavailable"));
+    expect((await screen.findByRole("alert")).textContent).toContain("common.error");
+    expect(screen.getByDisplayValue("Unsaved script")).toBeTruthy();
+    const fallback = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "main.py" });
+    fireEvent.change(fallback, { target: { value: "print('draft')" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+    const retrying = await screen.findByRole<HTMLButtonElement>("button", {
+      name: "common.loading",
+    });
+    expect(retrying.disabled).toBe(true);
+    expect(screen.getByRole("textbox", { name: "main.py" })).toBe(fallback);
+    expect(fallback.value).toBe("print('draft')");
+    const updatedContent = "print('edited during retry')";
+    fireEvent.change(fallback, { target: { value: updatedContent } });
+    secondLoad.reject(new Error("Editor chunk still unavailable"));
+
+    const retry = await screen.findByRole("button", { name: "common.retry" });
+    expect(screen.getByRole("textbox", { name: "main.py" })).toBe(fallback);
+    expect(fallback.value).toBe(updatedContent);
+    fireEvent.click(retry);
+
+    const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Script code" });
+    expect(editor.value).toBe(updatedContent);
+    expect(screen.queryByRole("textbox", { name: "main.py" })).toBeNull();
+    expect(screen.getByDisplayValue("Unsaved script")).toBeTruthy();
+    expect(loadSandboxCodeEditor).toHaveBeenCalledTimes(3);
+  });
+
   test("seeds the created asset detail before navigating to its IDE", async () => {
     const detail = setupMocks();
     sandboxClient.createSandboxScript.mockResolvedValue({
@@ -161,6 +211,8 @@ describe("SandboxScriptStudio", () => {
     setupMocks();
     renderStudio();
 
+    const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Script code" });
+    expect(editor.value).toBe(revision.payload.content);
     const nameInput = await screen.findByDisplayValue("Original name");
     fireEvent.change(nativeControl(nameInput), { target: { value: "Renamed script" } });
     fireEvent.click(screen.getByRole("button", { name: "sandbox.studio.newRevision" }));

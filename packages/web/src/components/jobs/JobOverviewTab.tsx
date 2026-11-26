@@ -1,13 +1,16 @@
+import type { PlacementTrace } from "@kuintessence/shared/browser";
 import { Link } from "@tanstack/react-router";
 import { CircleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { relativeFromNow } from "../../lib/format";
 import { toUserFacingExecutionFailure } from "../../lib/user-facing-error";
+import { JobResourceMap } from "./JobResourceMap";
 import type { JobDetail } from "./types";
 
 interface JobOverviewTabProps {
   job: JobDetail | undefined;
   loading: boolean;
+  placement?: PlacementTrace;
 }
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -35,7 +38,7 @@ function CommandValue({ value }: { value: string }) {
   );
 }
 
-export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
+export function JobOverviewTab({ job, loading, placement }: JobOverviewTabProps) {
   const { t, i18n } = useTranslation();
   const language = i18n?.resolvedLanguage ?? i18n?.language;
   if (loading || !job) {
@@ -51,6 +54,7 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
     : null;
   return (
     <div className="space-y-3" data-testid="job-overview-tab">
+      <JobResourceMap job={job} placement={placement} />
       {job.federationRunId ? (
         <Link
           to="/workflows/$runId"

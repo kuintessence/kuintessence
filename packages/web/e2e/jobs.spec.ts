@@ -79,12 +79,12 @@ test.describe("Jobs page", () => {
         return;
       }
 
-      // /api/jobs/:id/logs → not implemented
+      // A terminal job whose retained log is unavailable.
       if (path.endsWith("/logs")) {
         await route.fulfill({
-          status: 404,
+          status: 410,
           contentType: "application/json",
-          body: JSON.stringify({ error: { code: "NOT_FOUND", message: "no logs" } }),
+          body: JSON.stringify({ error: { code: "JOB_LOG_UNAVAILABLE", message: "no logs" } }),
         });
         return;
       }

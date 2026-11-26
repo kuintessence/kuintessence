@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import {
   type PgDb,
+  type PgTransaction,
   sandboxRuntimeProfiles,
   scriptAttestations,
   softwareAssetGrants,
@@ -11,6 +13,8 @@ import {
   ErrorCode,
   hasRole,
   type RoleName,
+  SandboxGitSourceSchema,
+  SandboxScriptDefinitionSchema,
   SoftwareAssetPayloadSchema,
   workflowDsl,
 } from "@kuintessence/shared";
@@ -29,16 +33,28 @@ import { writeAudit } from "../services/audit-log-writer";
 import { hashSandboxScript, renderSandboxPrompt } from "../services/sandbox-script";
 import { registerWorkflowAuthorization } from "../services/workflow-authorization";
 
-const ScriptBodySchema = z.strictObject({
-  name: z.string().min(1).max(255),
-  version: z.string().min(1).max(100).default("0.1.0"),
-  language: workflowDsl.SandboxLanguageSchema,
-  runtimeProfileId: z.string().uuid(),
-  entrypoint: z.string().regex(/^[a-zA-Z0-9._-]+$/),
+const ScriptBodySchema = SandboxScriptDefinitionSchema.extend({
   content: z.string().max(1_000_000),
-  inputs: z.record(z.string().min(1), workflowDsl.ScriptInputSpecSchema).default({}),
-  outputs: z.record(z.string().min(1), workflowDsl.ScriptOutputSpecSchema).default({}),
+  gitSource: SandboxGitSourceSchema.optional(),
 });
+
+function scriptProvenance(body: z.infer<typeof ScriptBodySchema>) {
+  if (!body.gitSource) return { source: "inline" };
+  const bytes = Buffer.from(body.content, "utf8");
+  const hash = createHash(body.gitSource.blob.length === 40 ? "sha1" : "sha256");
+  if (
+    bytes.length > 1_000_000 ||
+    bytes.includes(0) ||
+    hash.update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== body.gitSource.blob
+  ) {
+    throw new AppError(
+      ErrorCode.VALIDATION_ERROR,
+      "Script bytes do not match the declared Git blob",
+      400,
+    );
+  }
+  return { source: "git", ...body.gitSource };
+}
 
 const RevisionBodySchema = ScriptBodySchema.extend({
   changelog: z.string().max(5_000).optional(),
@@ -215,7 +231,7 @@ async function assertView(
   await deps.authz.requirePermission(check, isPlatform(value));
 }
 
-async function loadRuntime(db: PgDb, runtimeProfileId: string) {
+async function loadRuntime(db: PgDb | PgTransaction, runtimeProfileId: string) {
   const [runtime] = await db
     .select()
     .from(sandboxRuntimeProfiles)
@@ -223,6 +239,13 @@ async function loadRuntime(db: PgDb, runtimeProfileId: string) {
     .limit(1);
   if (!runtime) throw new AppError(ErrorCode.NOT_FOUND, "Runtime profile not found", 404);
   return runtime;
+}
+
+async function requireScriptRuntime(db: PgTransaction, body: z.infer<typeof ScriptBodySchema>) {
+  const runtime = await loadRuntime(db, body.runtimeProfileId);
+  if (runtime.lifecycle !== "active" || runtime.language !== body.language) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, "Runtime is not active for this language", 400);
+  }
 }
 
 function payload(
@@ -324,16 +347,10 @@ export function createSandboxScriptRoutes(deps: SandboxScriptRoutesDeps): Hono {
   r.post("/sandbox/scripts", async (c) => {
     const value = principal(c);
     const body = ScriptBodySchema.parse(await c.req.json());
-    const runtime = await loadRuntime(db, body.runtimeProfileId);
-    if (runtime.lifecycle !== "active" || runtime.language !== body.language) {
-      throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        "Runtime is not active for this language",
-        400,
-      );
-    }
     const revisionPayload = payload(body);
+    const provenance = scriptProvenance(body);
     const result = await db.transaction(async (tx) => {
+      await requireScriptRuntime(tx, body);
       const [asset] = await tx
         .insert(softwareAssets)
         .values({
@@ -346,7 +363,7 @@ export function createSandboxScriptRoutes(deps: SandboxScriptRoutesDeps): Hono {
           ownerUserId: value.userId,
           ownerOrgId: value.orgId,
           payload: revisionPayload,
-          provenance: { source: "inline", frozenAt: new Date().toISOString() },
+          provenance: { ...provenance, frozenAt: new Date().toISOString() },
           createdBy: value.userId,
         })
         .returning();
@@ -357,7 +374,7 @@ export function createSandboxScriptRoutes(deps: SandboxScriptRoutesDeps): Hono {
           assetId: asset.id,
           revision: 1,
           payload: revisionPayload,
-          provenance: { source: "inline" },
+          provenance,
           contentSha256: revisionPayload.sha256,
           createdBy: value.userId,
         })
@@ -412,19 +429,20 @@ export function createSandboxScriptRoutes(deps: SandboxScriptRoutesDeps): Hono {
 
   r.post("/sandbox/scripts/:id/revisions", async (c) => {
     const value = principal(c);
-    const asset = await loadScript(db, c.req.param("id"));
-    if (!canEdit(asset, value)) throw new AppError(ErrorCode.FORBIDDEN, "Script edit denied", 403);
+    const assetId = c.req.param("id");
     const body = RevisionBodySchema.parse(await c.req.json());
-    const runtime = await loadRuntime(db, body.runtimeProfileId);
-    if (runtime.lifecycle !== "active" || runtime.language !== body.language) {
-      throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        "Runtime is not active for this language",
-        400,
-      );
-    }
     const revisionPayload = payload(body);
-    const revision = await db.transaction(async (tx) => {
+    const provenance = scriptProvenance(body);
+    const { asset, revision } = await db.transaction(async (tx) => {
+      const [asset] = await tx
+        .select()
+        .from(softwareAssets)
+        .where(and(eq(softwareAssets.id, assetId), eq(softwareAssets.kind, "sandbox-script")))
+        .for("update");
+      if (!asset) throw new AppError(ErrorCode.NOT_FOUND, "Sandbox script not found", 404);
+      if (!canEdit(asset, value))
+        throw new AppError(ErrorCode.FORBIDDEN, "Script edit denied", 403);
+      await requireScriptRuntime(tx, body);
       const [latest] = await tx
         .select()
         .from(softwareAssetRevisions)
@@ -437,7 +455,7 @@ export function createSandboxScriptRoutes(deps: SandboxScriptRoutesDeps): Hono {
           assetId: asset.id,
           revision: (latest?.revision ?? 0) + 1,
           payload: revisionPayload,
-          provenance: { source: "inline", changelog: body.changelog },
+          provenance: { ...provenance, changelog: body.changelog },
           contentSha256: revisionPayload.sha256,
           createdBy: value.userId,
         })
@@ -452,12 +470,13 @@ export function createSandboxScriptRoutes(deps: SandboxScriptRoutesDeps): Hono {
           payload: revisionPayload,
           version: body.version,
           lifecycle: "draft",
+          provenance: { ...provenance, frozenAt: new Date().toISOString() },
           visibility: "private",
           trustedForGlobalUse: false,
           updatedAt: sql`now()`,
         })
         .where(eq(softwareAssets.id, asset.id));
-      return created;
+      return { asset, revision: created };
     });
     await writeAudit(db, {
       actor: value.userId,

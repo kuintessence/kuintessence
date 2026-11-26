@@ -259,3 +259,34 @@ test("server dialog delegates queries, sorting and pagination without filtering 
   fireEvent.click(screen.getByRole("button", { name: "common.pagination.next" }));
   expect(paginate).toHaveBeenCalledTimes(1);
 });
+
+test.each(["dialog", "sheet"])("nested search retains focus in a parent %s", async (kind) => {
+  const { Dialog, DialogContent, DialogTitle } = await import("./dialog");
+  const { Sheet, SheetContent, SheetTitle } = await import("./sheet");
+  const picker = (
+    <ResourceSelect label="Nested queue" options={options} value="" onValueChange={() => {}} />
+  );
+  render(
+    kind === "dialog" ? (
+      <Dialog open>
+        <DialogContent aria-describedby={undefined}>
+          <DialogTitle>Parent</DialogTitle>
+          {picker}
+        </DialogContent>
+      </Dialog>
+    ) : (
+      <Sheet open>
+        <SheetContent aria-describedby={undefined}>
+          <SheetTitle>Parent</SheetTitle>
+          {picker}
+        </SheetContent>
+      </Sheet>
+    ),
+  );
+  fireEvent.click(screen.getByRole("combobox", { name: "Nested queue" }));
+  const search = await screen.findByRole("combobox", { name: "ui.search" });
+  search.focus();
+  expect(document.activeElement).toBe(search);
+  fireEvent.change(search, { target: { value: "West" } });
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+});

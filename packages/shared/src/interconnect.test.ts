@@ -141,3 +141,49 @@ describe("interconnect contracts", () => {
     );
   });
 });
+
+test("high-speed links support a zone LAN or two distinct clusters without claiming live telemetry", () => {
+  const link = {
+    fromCenterId: centerId,
+    toCenterId: centerId,
+    metadata: {
+      name: "Zone LAN",
+      networkType: "high-speed",
+      configuredBandwidthMbps: 10000,
+      status: "unknown",
+      bandwidthMbps: null,
+      throughputMbps: null,
+      latencyMs: null,
+      packetLossPercent: null,
+      observedAt: null,
+      source: "",
+    },
+  };
+  expect(LinkInputSchema.safeParse(link).success).toBe(true);
+  expect(
+    LinkInputSchema.safeParse({
+      ...link,
+      metadata: { ...link.metadata, fromClusterId: centerId, toClusterId: otherId },
+    }).success,
+  ).toBe(true);
+  expect(
+    LinkInputSchema.safeParse({
+      ...link,
+      metadata: { ...link.metadata, fromClusterId: otherId, toClusterId: otherId },
+    }).success,
+  ).toBe(false);
+  expect(
+    LinkInputSchema.safeParse({ ...link, metadata: { ...link.metadata, fromClusterId: otherId } })
+      .success,
+  ).toBe(false);
+  expect(
+    LinkInputSchema.safeParse({
+      ...link,
+      metadata: { ...link.metadata, configuredBandwidthMbps: -1 },
+    }).success,
+  ).toBe(false);
+  expect(
+    LinkInputSchema.safeParse({ ...link, metadata: { ...link.metadata, status: "operational" } })
+      .success,
+  ).toBe(false);
+});

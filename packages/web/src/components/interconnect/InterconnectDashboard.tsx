@@ -19,7 +19,11 @@ import { FunctionMaps } from "../function-maps/FunctionMaps";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader } from "../ui/page";
+import { PaginationControls } from "../ui/pagination-controls";
+import { RefreshButton } from "../ui/refresh-button";
 import { ResourceSelectField } from "../ui/resource-select-field";
 import {
   TableBody,
@@ -36,6 +40,7 @@ import {
   filterClusters,
   formatCapacity as formatBytes,
   getStatusLabels,
+  type InterconnectResource,
   type ResourceFilter,
   STATUS_COLORS,
 } from "./model";
@@ -52,7 +57,7 @@ function Table({
   const { t } = useTranslation();
   return (
     <div className="overflow-x-auto">
-      <UiTable className="w-full text-left text-sm">
+      <UiTable className="w-full min-w-[48rem] text-left text-sm">
         <TableHeader className="border-b border-border ">
           <TableRow>
             {headers.map((h) => (
@@ -150,8 +155,7 @@ function Distribution({
               },
             }}
           />
-          <details className="text-xs text-muted-foreground">
-            <summary className="cursor-pointer">{t("interconnect.showValues")}</summary>
+          <div className="sr-only focus-within:not-sr-only text-xs text-muted-foreground">
             <div className="mt-2 max-h-48 overflow-auto">
               {items.map((i) => (
                 <button
@@ -171,7 +175,7 @@ function Distribution({
                 </button>
               ))}
             </div>
-          </details>
+          </div>
         </>
       ) : (
         <p className="py-12 text-center text-sm text-muted-foreground">{t("interconnect.empty")}</p>
@@ -180,7 +184,15 @@ function Distribution({
   );
 }
 
-export function InterconnectDashboard({ mode }: { mode: "provider" | "operator" }) {
+export function InterconnectDashboard({
+  mode,
+  organizationId,
+  resource,
+}: {
+  mode: "provider" | "operator";
+  organizationId?: string;
+  resource?: InterconnectResource;
+}) {
   const { t } = useTranslation();
   const orgId = useActiveOrganizationId();
   const access = usePlatformCapability(
@@ -197,18 +209,24 @@ export function InterconnectDashboard({ mode }: { mode: "provider" | "operator" 
   if (!access.allowed) return <p>{t("interconnect.denied")}</p>;
   return (
     <DashboardContent
-      key={`${mode}:${orgId}:${getAuthState().revision}`}
+      key={`${mode}:${orgId}:${organizationId}:${resource}:${getAuthState().revision}`}
       mode={mode}
       orgId={orgId}
+      organizationId={organizationId}
+      resource={resource}
     />
   );
 }
 function DashboardContent({
   mode,
   orgId,
+  organizationId,
+  resource,
 }: {
   mode: "provider" | "operator";
   orgId: string | null;
+  organizationId?: string;
+  resource?: InterconnectResource;
 }) {
   const { t, i18n } = useTranslation();
   const statusLabels = getStatusLabels(t);
@@ -232,7 +250,17 @@ function DashboardContent({
   });
   const [view, setView] = useState<MapView>(DEFAULT_MAP_VIEW);
   const [viewLoaded, setViewLoaded] = useState(false);
-  const [filter, setFilter] = useState<ResourceFilter>({ kind: "centers" });
+  const [filter, updateFilter] = useState<ResourceFilter>({ kind: resource ?? "centers" });
+  const [search, setSearch] = useState("");
+  const [filterOrganization, setFilterOrganization] = useState("");
+  const [networkType, setNetworkType] = useState("");
+  const [page, setPage] = useState(1);
+  const setFilter = (value: ResourceFilter) => {
+    updateFilter(value);
+    setPage(1);
+  };
+  const title = t(resource ? `interconnect.${resource}` : "workspace.nav.interconnect");
+  const resourceHash = resource === "centers" ? "availability-zones" : resource;
   const [groupBy, setGroupBy] = useState<"center" | "cluster">("center");
   const [editor, setEditor] = useState<EditTarget | null>(null);
   const [selection, setSelection] = useState<{ kind: "cluster" | "link"; id: string } | null>(null);
@@ -252,31 +280,111 @@ function DashboardContent({
     },
     onError: (e) => toast.error(toUserFacingError(e)),
   });
-  if (query.isPending) return <p>{t("interconnect.loadingResources")}</p>;
-  if (query.error || !query.data)
-    return (
-      <div role="alert" className=" border-border p-4">
+  if (query.isPending || query.error || !query.data) {
+    const status = query.isPending ? (
+      <p role="status">{t("interconnect.loadingResources")}</p>
+    ) : (
+      <div role="alert" className="border-border p-4">
         {toUserFacingError(query.error, t("interconnect.loadFailed"))}{" "}
         <Button variant="outline" onClick={() => void query.refetch()}>
           {t("interconnect.retry")}
         </Button>
       </div>
     );
-  const data = query.data;
+    return (
+      <div className="space-y-5" data-testid="interconnect-dashboard">
+        <PageHeader title={title} />
+        {!resource && mode === "operator" ? (
+          <FunctionMaps ids={["D03", "G11"]} dashboard={status} />
+        ) : (
+          status
+        )}
+      </div>
+    );
+  }
+  const snapshot = query.data;
+  const scopedCenters = snapshot.centers.filter((center) => center.orgId === organizationId);
+  const centerIds = new Set(scopedCenters.map((center) => center.id));
+  const data = organizationId
+    ? {
+        ...snapshot,
+        organizations: snapshot.organizations.filter((org) => org.id === organizationId),
+        centers: scopedCenters,
+        clusters: snapshot.clusters.filter((cluster) => centerIds.has(cluster.centerId)),
+        agents: snapshot.agents.filter((agent) => agent.orgId === organizationId),
+        links: snapshot.links.filter(
+          (link) => centerIds.has(link.fromCenterId) && centerIds.has(link.toCenterId),
+        ),
+      }
+    : snapshot;
   const summary = summarizeInterconnect(data.centers, data.clusters);
   const centerName = (id: string) => data.centers.find((c) => c.id === id)?.metadata.name ?? id;
   const clusterName = (id: string) => data.clusters.find((c) => c.id === id)?.metadata.name ?? id;
-  const clusters = filterClusters(data.clusters, filter);
-  const centers = data.centers.filter(
+  const organizationName = (id: string) =>
+    data.organizations.find((org) => org.id === id)?.name ?? id;
+  const matchesSearch = (...values: string[]) =>
+    values
+      .join(" ")
+      .toLocaleLowerCase(i18n.language)
+      .includes(search.trim().toLocaleLowerCase(i18n.language));
+  const availableCenters = data.centers.filter(
+    (center) => !filterOrganization || center.orgId === filterOrganization,
+  );
+  const availableCenterIds = new Set(availableCenters.map((center) => center.id));
+  const clusters = filterClusters(data.clusters, filter).filter(
+    (cluster) =>
+      availableCenterIds.has(cluster.centerId) &&
+      matchesSearch(
+        cluster.id,
+        cluster.metadata.name,
+        centerName(cluster.centerId),
+        ...cluster.metadata.computeTypes,
+      ),
+  );
+  const centers = availableCenters.filter(
     (c) =>
       (!filter.centerId || c.id === filter.centerId) &&
       (!filter.centerIds || filter.centerIds.includes(c.id)) &&
-      (!filter.status || c.metadata.status === filter.status),
+      (!filter.status || c.metadata.status === filter.status) &&
+      matchesSearch(
+        c.id,
+        c.metadata.name,
+        c.metadata.country,
+        c.metadata.province,
+        c.metadata.city,
+        organizationName(c.orgId),
+      ),
   );
   const links = data.links.filter(
-    (l) =>
-      !filter.centerId || l.fromCenterId === filter.centerId || l.toCenterId === filter.centerId,
+    (link) =>
+      (!filterOrganization ||
+        availableCenterIds.has(link.fromCenterId) ||
+        availableCenterIds.has(link.toCenterId)) &&
+      (!filter.centerId ||
+        link.fromCenterId === filter.centerId ||
+        link.toCenterId === filter.centerId) &&
+      (!filter.status ||
+        (isObservationStale(link.metadata.observedAt) ? "unknown" : link.metadata.status) ===
+          filter.status) &&
+      (!networkType || (link.metadata.networkType ?? "standard") === networkType) &&
+      matchesSearch(
+        link.id,
+        link.metadata.name,
+        centerName(link.fromCenterId),
+        centerName(link.toCenterId),
+      ),
   );
+  const total =
+    filter.kind === "centers"
+      ? centers.length
+      : filter.kind === "links"
+        ? links.length
+        : clusters.length;
+  const pageSize = 25;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(page, pages);
+  const pageRows = <T,>(items: T[]): T[] =>
+    resource ? items.slice((currentPage - 1) * pageSize, currentPage * pageSize) : items;
   const applications = clusters.flatMap((c) =>
     c.software
       .filter((s) => !filter.application || s.name === filter.application)
@@ -376,44 +484,8 @@ function DashboardContent({
         filter: { kind: "applications" },
       },
     ];
-  return (
-    <div className="space-y-5" data-testid="interconnect-dashboard">
-      <PageHeader title={t("workspace.nav.interconnect")} />
-      {mode === "operator" ? <FunctionMaps ids={["D03", "G11"]} /> : null}
-      <div className="kq-fill-row text-sm">
-        <span className="mr-auto text-muted-foreground">
-          {mode === "operator"
-            ? t("interconnect.platformScope")
-            : t("interconnect.organizationScope")}{" "}
-          · {t("interconnect.updated", { time: time(data.generatedAt) })}
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={query.isFetching}
-          onClick={() => void query.refetch()}
-        >
-          {t("interconnect.refresh")}
-        </Button>
-        {data.canManage &&
-          (
-            [
-              ["centers", t("interconnect.addCenter")],
-              ["clusters", t("interconnect.addCluster")],
-              ["links", t("interconnect.addLink")],
-            ] as const
-          ).map(([kind, label]) => (
-            <Button
-              key={kind}
-              variant="outline"
-              size="sm"
-              disabled={kind !== "centers" && data.centers.length < (kind === "links" ? 2 : 1)}
-              onClick={() => setEditor({ kind })}
-            >
-              {label}
-            </Button>
-          ))}
-      </div>
+  const overview = (
+    <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-6">
         {metricCards.map((card) => (
           <button
@@ -562,33 +634,165 @@ function DashboardContent({
           onClick={(id) => chooseGroup(id, { kind: "applications" })}
         />
       </div>
-      <section className=" border-border " aria-label={t("interconnect.details")}>
-        <div className="kq-fill-row border-b border-border p-4">
-          <h2 className="mr-auto font-semibold">{t("interconnect.details")}</h2>
-          {(
+    </div>
+  );
+  return (
+    <div className="space-y-5" data-testid="interconnect-dashboard">
+      <PageHeader
+        title={title}
+        meta={
+          organizationId ? (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span>{data.organizations[0]?.name ?? organizationId}</span>
+              <a
+                className="text-brand underline underline-offset-4"
+                href={`${mode === "operator" ? "/interconnect" : "/cp/interconnect"}${resourceHash ? `#${resourceHash}` : ""}`}
+              >
+                {t("interconnect.allOrganizations")}
+              </a>
+            </div>
+          ) : undefined
+        }
+      />
+      <div
+        className={resource ? "flex flex-wrap items-center gap-2 text-sm" : "kq-fill-row text-sm"}
+      >
+        <span className="mr-auto text-muted-foreground">
+          {data.organizations.length === 1
+            ? data.organizations[0]?.name
+            : t("interconnect.platformScope")}
+        </span>
+        <RefreshButton
+          variant="outline"
+          disabled={query.isFetching}
+          onClick={() => void query.refetch()}
+          label={t("interconnect.refresh")}
+        ></RefreshButton>
+        {data.canManage &&
+          (
             [
-              ["centers", t("interconnect.centers")],
-              ["clusters", t("interconnect.clusters")],
-              ["applications", t("interconnect.applications")],
-              ["links", t("interconnect.link")],
+              ["centers", t("interconnect.addCenter")],
+              ["clusters", t("interconnect.addCluster")],
+              ["links", t("interconnect.addLink")],
             ] as const
-          ).map(([kind, label]) => (
-            <Button
-              key={kind}
-              size="sm"
-              variant={filter.kind === kind ? "default" : "outline"}
-              onClick={() => setFilter({ kind })}
-            >
-              {label}
-            </Button>
-          ))}
-        </div>
-        <div className="kq-fill-row border-b border-border p-4 text-sm">
-          <span>{t("interconnect.filter")}</span>
+          )
+            .filter(([kind]) => !resource || kind === resource)
+            .map(([kind, label]) => (
+              <Button
+                key={kind}
+                variant="outline"
+                size="sm"
+                disabled={kind !== "centers" && data.centers.length < 1}
+                onClick={() => setEditor({ kind })}
+              >
+                {label}
+              </Button>
+            ))}
+      </div>
+      {!resource &&
+        (mode === "operator" ? (
+          <FunctionMaps ids={["D03", "G11"]} dashboard={overview} />
+        ) : (
+          overview
+        ))}
+      <section className=" border-border " aria-label={t("interconnect.details")}>
+        {!resource && (
+          <div className="kq-fill-row border-b border-border p-4">
+            <h2 className="mr-auto font-semibold">{t("interconnect.details")}</h2>
+            {(
+              [
+                ["centers", t("interconnect.centers")],
+                ["clusters", t("interconnect.clusters")],
+                ["applications", t("interconnect.applications")],
+                ["links", t("interconnect.link")],
+              ] as const
+            ).map(([kind, label]) => (
+              <Button
+                key={kind}
+                size="sm"
+                variant={filter.kind === kind ? "default" : "outline"}
+                onClick={() => setFilter({ kind })}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+        )}
+        <div
+          className={
+            resource
+              ? "flex flex-wrap items-center gap-2 border-b border-border p-4 text-sm"
+              : "kq-fill-row border-b border-border p-4 text-sm"
+          }
+        >
+          {resource && (
+            <>
+              <Input
+                type="search"
+                className="w-full sm:w-48"
+                aria-label={t("interconnect.searchResources")}
+                placeholder={t("interconnect.searchResources")}
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setPage(1);
+                }}
+              />
+              {!organizationId && data.organizations.length > 1 && (
+                <ResourceSelectField
+                  resourceType="organizations"
+                  className="w-full sm:w-36"
+                  aria-label={t("interconnect.organization")}
+                  value={filterOrganization}
+                  onChange={(event) => {
+                    setFilterOrganization(event.target.value);
+                    setFilter({ kind: filter.kind, status: filter.status });
+                  }}
+                >
+                  <option value="">{t("interconnect.allOrganizations")}</option>
+                  {data.organizations.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))}
+                </ResourceSelectField>
+              )}
+              <NativeSelect
+                aria-label={t("interconnect.statusLabel")}
+                value={filter.status ?? ""}
+                onChange={(event) =>
+                  setFilter({ ...filter, status: event.target.value || undefined })
+                }
+              >
+                <option value="">{t("interconnect.allStatuses")}</option>
+                {Object.entries(statusLabels).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </NativeSelect>
+              {resource === "links" && (
+                <NativeSelect
+                  aria-label={t("interconnect.connectionType")}
+                  value={networkType}
+                  onChange={(event) => {
+                    setNetworkType(event.target.value);
+                    setPage(1);
+                  }}
+                >
+                  <option value="">{t("interconnect.allNetworkTypes")}</option>
+                  <option value="standard">{t("interconnect.standard")}</option>
+                  <option value="high-speed">{t("interconnect.highSpeed")}</option>
+                  <option value="dedicated">{t("interconnect.dedicated")}</option>
+                </NativeSelect>
+              )}
+            </>
+          )}
+          {!resource && <span>{t("interconnect.filter")}</span>}
           <ResourceSelectField
             resourceType="compute-centers"
             aria-label={t("interconnect.filterCenter")}
-            className="max-w-full p-1.5"
+            className="w-full max-w-full sm:w-36"
             value={filter.centerId ?? ""}
             onChange={(e) =>
               setFilter({
@@ -600,7 +804,7 @@ function DashboardContent({
             }
           >
             <option value="">{t("interconnect.allCenters")}</option>
-            {data.centers.map((c) => (
+            {availableCenters.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.metadata.name}
               </option>
@@ -630,7 +834,16 @@ function DashboardContent({
                 {label}
               </span>
             ))}
-          <Button size="sm" variant="ghost" onClick={() => setFilter({ kind: filter.kind })}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setFilter({ kind: filter.kind });
+              setSearch("");
+              setFilterOrganization("");
+              setNetworkType("");
+            }}
+          >
             {t("interconnect.clearFilters")}
           </Button>
         </div>
@@ -668,28 +881,34 @@ function DashboardContent({
           <Table
             headers={[
               t("interconnect.centers"),
+              t("interconnect.organization"),
               t("interconnect.location"),
               t("interconnect.statusLabel"),
               t("interconnect.clusters"),
               t("interconnect.cpu"),
               t("interconnect.storageShort"),
-              t("interconnect.actions"),
+              ...(data.canManage ? [t("interconnect.actions")] : []),
             ]}
             empty={!centers.length}
           >
-            {centers.map((c) => {
+            {pageRows(centers).map((c) => {
               const children = data.clusters.filter((x) => x.centerId === c.id);
               return (
                 <TableRow key={c.id}>
                   <TableCell>
                     <button
-                      className="text-brand underline-offset-4 hover:underline"
+                      className="text-left text-brand underline-offset-4 hover:underline"
                       type="button"
-                      onClick={() => setFilter({ kind: "clusters", centerId: c.id })}
+                      onClick={() =>
+                        resource
+                          ? setFilter({ kind: "centers", centerId: c.id })
+                          : setFilter({ kind: "clusters", centerId: c.id })
+                      }
                     >
                       {c.metadata.name}
                     </button>
                   </TableCell>
+                  <TableCell>{organizationName(c.orgId)}</TableCell>
                   <TableCell>
                     {[c.metadata.country, c.metadata.province, c.metadata.city]
                       .filter(Boolean)
@@ -711,8 +930,8 @@ function DashboardContent({
                         : null,
                     )}
                   </TableCell>
-                  <TableCell>
-                    {data.canManage && (
+                  {data.canManage && (
+                    <TableCell>
                       <Button
                         size="sm"
                         variant="ghost"
@@ -720,8 +939,8 @@ function DashboardContent({
                       >
                         {t("interconnect.edit")}
                       </Button>
-                    )}
-                  </TableCell>
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             })}
@@ -744,10 +963,11 @@ function DashboardContent({
                   ? [t("interconnect.agentsHealthy")]
                   : []),
               t("interconnect.updatedAt"),
+              ...(data.canManage ? [t("interconnect.actions")] : []),
             ]}
             empty={!clusters.length}
           >
-            {clusters.map((c) => (
+            {pageRows(clusters).map((c) => (
               <TableRow key={c.id}>
                 <TableCell>
                   <button
@@ -775,7 +995,11 @@ function DashboardContent({
                   <button
                     type="button"
                     className="text-brand"
-                    onClick={() => setFilter({ ...filter, kind: "applications", clusterId: c.id })}
+                    onClick={() =>
+                      resource
+                        ? setSelection({ kind: "cluster", id: c.id })
+                        : setFilter({ ...filter, kind: "applications", clusterId: c.id })
+                    }
                   >
                     {c.software.length}
                   </button>
@@ -796,6 +1020,17 @@ function DashboardContent({
                   </TableCell>
                 )}
                 <TableCell className="whitespace-nowrap text-xs">{time(c.updatedAt)}</TableCell>
+                {data.canManage && (
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditor({ kind: "clusters", id: c.id })}
+                    >
+                      {t("interconnect.edit")}
+                    </Button>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </Table>
@@ -862,10 +1097,11 @@ function DashboardContent({
               t("interconnect.to"),
               t("interconnect.statusLabel"),
               t("interconnect.observedAt"),
+              ...(data.canManage ? [t("interconnect.actions")] : []),
             ]}
             empty={!links.length}
           >
-            {links.map((l) => (
+            {pageRows(links).map((l) => (
               <TableRow key={l.id}>
                 <TableCell>
                   <button
@@ -875,9 +1111,29 @@ function DashboardContent({
                   >
                     {l.metadata.name}
                   </button>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      l.metadata.networkType === "high-speed"
+                        ? "interconnect.highSpeed"
+                        : l.metadata.networkType === "dedicated"
+                          ? "interconnect.dedicated"
+                          : "interconnect.standard",
+                    )}
+                  </p>
+                  {l.metadata.configuredBandwidthMbps != null && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("interconnect.configuredBandwidth")}: {l.metadata.configuredBandwidthMbps}
+                    </p>
+                  )}
                 </TableCell>
-                <TableCell>{centerName(l.fromCenterId)}</TableCell>
-                <TableCell>{centerName(l.toCenterId)}</TableCell>
+                <TableCell>
+                  {centerName(l.fromCenterId)}
+                  {l.metadata.fromClusterId ? ` / ${clusterName(l.metadata.fromClusterId)}` : ""}
+                </TableCell>
+                <TableCell>
+                  {centerName(l.toCenterId)}
+                  {l.metadata.toClusterId ? ` / ${clusterName(l.metadata.toClusterId)}` : ""}
+                </TableCell>
                 <TableCell>
                   {status(
                     isObservationStale(l.metadata.observedAt) ? "unknown" : l.metadata.status,
@@ -889,15 +1145,37 @@ function DashboardContent({
                   )}
                 </TableCell>
                 <TableCell>{time(l.metadata.observedAt)}</TableCell>
+                {data.canManage && (
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditor({ kind: "links", id: l.id })}
+                    >
+                      {t("interconnect.edit")}
+                    </Button>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </Table>
         )}
+        {resource && (
+          <PaginationControls
+            className="justify-end border-t border-border px-4 py-3 [&>button]:flex-none [&>span]:mr-auto"
+            previous={{ disabled: currentPage <= 1, onClick: () => setPage(currentPage - 1) }}
+            next={{ disabled: currentPage >= pages, onClick: () => setPage(currentPage + 1) }}
+          >
+            <span>{t("interconnect.pageSummary", { total, page: currentPage, pages })}</span>
+          </PaginationControls>
+        )}
       </section>
-      <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer">{t("interconnect.counting")}</summary>
-        <p className="mt-2 leading-6">{t("interconnect.countingRules")}</p>
-      </details>
+      {!resource && (
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">{t("interconnect.counting")}</summary>
+          <p className="mt-2 leading-6">{t("interconnect.countingRules")}</p>
+        </details>
+      )}
       {selection && (selectedCluster || selectedLink) && (
         <Dialog
           open
@@ -1004,6 +1282,32 @@ function DashboardContent({
                       })}
                   </p>
                   <dl className="grid grid-cols-2 gap-3">
+                    <dt>{t("interconnect.connectionType")}</dt>
+                    <dd>
+                      {t(
+                        selectedLink.metadata.networkType === "high-speed"
+                          ? "interconnect.highSpeed"
+                          : selectedLink.metadata.networkType === "dedicated"
+                            ? "interconnect.dedicated"
+                            : "interconnect.standard",
+                      )}
+                    </dd>
+                    <dt>{t("interconnect.configuredBandwidth")}</dt>
+                    <dd>
+                      {selectedLink.metadata.configuredBandwidthMbps ?? t("interconnect.missing")}
+                    </dd>
+                    <dt>{t("interconnect.fromCluster")}</dt>
+                    <dd>
+                      {selectedLink.metadata.fromClusterId
+                        ? clusterName(selectedLink.metadata.fromClusterId)
+                        : t("interconnect.allZoneClusters")}
+                    </dd>
+                    <dt>{t("interconnect.toCluster")}</dt>
+                    <dd>
+                      {selectedLink.metadata.toClusterId
+                        ? clusterName(selectedLink.metadata.toClusterId)
+                        : t("interconnect.allZoneClusters")}
+                    </dd>
                     {(
                       [
                         ["bandwidthMbps", t("interconnect.bandwidth"), "Mbps"],

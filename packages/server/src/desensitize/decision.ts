@@ -15,11 +15,6 @@
  *   default deployment posture remains "no desensitization at all". This is
  *   PRD F22.14: "全局开关默认关闭".
  *
- * Out of scope (TODO):
- *   - viewer-role-based exemption (e.g. always-passthrough for super_admin):
- *     route handlers can compose this on top by inspecting role first.
- *   - per-resource owner exemption (e.g. show your own job command unredacted).
- *     Route handlers do this by passing through to bypass for owner.
  */
 import type { DesensitizeAction } from "@kuintessence/shared";
 import { isDesensitizeAction } from "@kuintessence/shared";
@@ -83,12 +78,13 @@ function pickStricter(a: DesensitizeAction, b: DesensitizeAction): DesensitizeAc
 }
 
 function lookupField(rules: readonly FieldRule[], field: string): DesensitizeAction | null {
-  for (const r of rules) {
-    if (r.field === field && isDesensitizeAction(r.action)) {
-      return r.action;
-    }
+  const leaf = field.slice(field.lastIndexOf(".") + 1);
+  let action: DesensitizeAction | null = null;
+  for (const rule of rules) {
+    if ((rule.field === field || rule.field === leaf) && isDesensitizeAction(rule.action))
+      action = action === null ? rule.action : pickStricter(action, rule.action);
   }
-  return null;
+  return action;
 }
 
 /**

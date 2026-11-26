@@ -291,6 +291,17 @@ test("market HTTP requires human organization context and only projects public o
   });
   expect(submitted.status).toBe(202);
   expect(submitted.headers.get("cache-control")).toBe("no-store");
+  const successor = {
+    ...f.input,
+    demand: { ...f.input.demand, demandId: randomUUID(), reopens: { demandId: f.id, version: 3 } },
+  };
+  const postSuccessor = () =>
+    app.request(base, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(successor),
+    });
+  expect((await postSuccessor()).status).toBeGreaterThanOrEqual(400);
   await f.service.advanceNext();
   const response = await app.request(`${base}/${f.id}`);
   expect(response.status).toBe(200);
@@ -308,6 +319,11 @@ test("market HTTP requires human organization context and only projects public o
       })
     ).status,
   ).toBe(400);
+  await db.update(submissions).set({ state: "committed" }).where(eq(submissions.id, f.id));
+  expect((await postSuccessor()).status).toBe(202);
+  expect((await f.service.get(f.actor, successor.demand.demandId)).operation.input).toMatchObject({
+    demand: { reopens: { demandId: f.id, version: 3 } },
+  });
 });
 
 test("market commits status with the transaction result atomically and rejects an unrelated transaction response", async () => {

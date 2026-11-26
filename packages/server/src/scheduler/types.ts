@@ -1,5 +1,10 @@
 import type { agents } from "@kuintessence/db";
-import type { JobSubmit, PreferenceSpec, RoleName } from "@kuintessence/shared";
+import type {
+  JobSubmit,
+  PlacementAgentSummary,
+  PreferenceSpec,
+  RoleName,
+} from "@kuintessence/shared";
 import type { QueueSelection } from "../services/queue-registry";
 
 export type AgentRow = typeof agents.$inferSelect;
@@ -8,6 +13,7 @@ export interface PlacementContext {
   job: JobSubmit;
   /** Resolved preferences (already merged global -> org -> user). */
   preferences: PreferenceSpec;
+  agentCostRates?: Record<string, number>;
   /** Submitting user's role (RBAC). */
   userRole: RoleName;
   /** Submitting user's id. */
@@ -33,7 +39,9 @@ export interface ScoredAgent {
   score: number;
 }
 
-export type StageResult = { kind: "pass" } | { kind: "reject"; reason: string };
+export type StageResult =
+  | { kind: "pass"; scoreBreakdown?: PlacementAgentSummary["scoreBreakdown"] }
+  | { kind: "reject"; reason: string };
 
 export interface FilterStage {
   readonly name: string;

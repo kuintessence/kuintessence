@@ -104,7 +104,7 @@ export function NodePalette({
   if (collapsed) {
     return (
       <aside
-        className="flex h-10 w-full shrink-0 items-center gap-2 border-b border-border px-2 lg:h-full lg:w-10 lg:flex-col lg:border-b-0 lg:py-2"
+        className="flex h-10 w-full shrink-0 items-center gap-2 border-b border-border bg-muted/20 px-2 lg:h-full lg:w-10 lg:flex-col lg:border-b-0 lg:border-r lg:py-2"
         data-testid="rf-palette-collapsed"
       >
         <Button
@@ -124,7 +124,7 @@ export function NodePalette({
   }
   return (
     <aside
-      className="flex max-h-72 w-full shrink-0 flex-col gap-3 overflow-y-auto border-b border-border p-3 lg:h-full lg:max-h-none lg:border-b-0"
+      className="flex max-h-72 w-full shrink-0 flex-col gap-3 overflow-y-auto border-b border-border bg-muted/20 p-3 lg:h-full lg:max-h-none lg:border-b-0"
       data-testid="rf-palette"
     >
       <div className="flex items-center justify-between">
@@ -162,7 +162,7 @@ export function NodePalette({
               </span>
               <span className="text-[10px] text-muted-foreground">{t(item.hintKey)}</span>
               {connectionDropKind === item.kind ? (
-                <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-3 text-center font-medium text-brand backdrop-blur-sm">
+                <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-background/75 px-3 text-center font-medium text-brand backdrop-blur-sm">
                   {t("workflow.editor.palette.releaseToAdd", { name: t(item.labelKey) })}
                 </span>
               ) : null}

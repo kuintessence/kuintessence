@@ -1,6 +1,7 @@
-import type { CloudObject } from "@kuintessence/shared/browser";
+import type { NetDriveListItem } from "@kuintessence/shared/browser";
 import {
   ArrowUp,
+  Check,
   Download,
   EllipsisVertical,
   File,
@@ -13,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { relativeFromNow } from "../../lib/format";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/native-select";
@@ -22,7 +24,7 @@ import { buildCloudBrowserRows, fmtBytes, parentCloudPrefix } from "./path-picke
 
 type SortKey = "name" | "size" | "modified";
 
-export type CloudPaneEntry = CloudObject;
+export type CloudPaneEntry = NetDriveListItem;
 
 export interface CloudPaneProps {
   title: string;
@@ -37,7 +39,7 @@ export interface CloudPaneProps {
   uploading?: boolean;
   uploadStatus?: string;
   onPrefixChange?: (next: string) => void;
-  onDownload?: (obj: CloudObject) => void;
+  onDownload?: (obj: NetDriveListItem) => void;
   onDelete?: (obj: CloudPaneEntry) => void;
   deletingId?: string | null;
 }
@@ -84,8 +86,8 @@ export function CloudPane({
         return rightSize - leftSize;
       }
       if (sortKey === "modified") {
-        const leftModified = left.kind === "dir" ? left.latestModifiedAt : left.obj.modifiedAt;
-        const rightModified = right.kind === "dir" ? right.latestModifiedAt : right.obj.modifiedAt;
+        const leftModified = left.kind === "dir" ? left.latestModifiedAt : left.obj.mtime;
+        const rightModified = right.kind === "dir" ? right.latestModifiedAt : right.obj.mtime;
         return new Date(rightModified).getTime() - new Date(leftModified).getTime();
       }
       const leftName = left.kind === "dir" ? left.name : left.displayName;
@@ -151,7 +153,7 @@ export function CloudPane({
         if (!uploading && event.dataTransfer.files.length > 0) onUpload(event.dataTransfer.files);
       }}
     >
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border px-3">
+      <div className="flex min-h-11 items-center justify-between gap-2 border-b border-border px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {canGoUp ? (
             <Button
@@ -165,12 +167,12 @@ export function CloudPane({
               <ArrowUp />
             </Button>
           ) : null}
-          <span
-            className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
-            title={prefix}
-          >
-            {title} · {prefix || "/"}
-          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-medium">{title}</div>
+            <div className="truncate font-mono text-xs text-brand" title={prefix}>
+              {prefix || "/"}
+            </div>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {onUpload ? (
@@ -275,7 +277,7 @@ export function CloudPane({
                   {t("files.table.modified")}
                 </TableHead>
                 <TableHead
-                  className="w-[92px] px-1 py-2 font-medium sm:w-[72px]"
+                  className="w-28 px-1 py-2 font-medium sm:w-24"
                   aria-label={t("files.table.actions")}
                 />
               </TableRow>
@@ -299,14 +301,15 @@ export function CloudPane({
                           kind: "dir",
                         });
                       }}
-                      className="cursor-pointer border-border "
+                      className="kq-file-row cursor-pointer"
+                      data-context-active={contextTarget?.path === r.fullPath || undefined}
                     >
                       <TableCell className="min-w-0 px-3 py-2 font-medium">
                         <div className="flex min-w-0 items-center gap-2">
-                          <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <Folder className="h-3.5 w-3.5 shrink-0 text-brand" />
                           <button
                             type="button"
-                            className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
+                            className="kq-name-fade flex-1 text-left text-sm focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${r.name}/`}
                             onClick={(event) => {
                               event.stopPropagation();
@@ -368,24 +371,29 @@ export function CloudPane({
                         x: event.clientX,
                         y: event.clientY,
                         label: r.displayName,
-                        path: r.obj.key,
+                        path: r.obj.path,
                         kind: "file",
                         resourceId: r.obj.id,
                       });
                     }}
-                    className={
-                      (newEntryIds.has(r.obj.id) ? "kq-motion kq-motion--item " : "") +
-                      "cursor-pointer border-border " +
-                      (isSelected ? "bg-brand-soft text-brand" : "")
-                    }
+                    className={cn(
+                      "kq-file-row cursor-pointer",
+                      newEntryIds.has(r.obj.id) && "kq-motion kq-motion--item",
+                    )}
+                    data-selected={isSelected || undefined}
+                    data-context-active={contextTarget?.resourceId === r.obj.id || undefined}
                     data-state={newEntryIds.has(r.obj.id) ? "open" : undefined}
                   >
                     <TableCell className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
-                        <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        {isSelected ? (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-brand" />
+                        ) : (
+                          <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        )}
                         <button
                           type="button"
-                          className="min-w-0 break-words text-left text-sm [overflow-wrap:anywhere] aria-pressed:font-semibold aria-pressed:underline aria-pressed:underline-offset-4 focus-visible:outline-2 focus-visible:outline-brand"
+                          className="kq-name-fade flex-1 text-left text-sm aria-pressed:font-semibold aria-pressed:underline aria-pressed:underline-offset-4 focus-visible:outline-2 focus-visible:outline-brand"
                           title={r.displayName}
                           aria-pressed={isSelected}
                           onClick={(event) => {
@@ -402,9 +410,9 @@ export function CloudPane({
                     </TableCell>
                     <TableCell
                       className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
-                      title={r.obj.modifiedAt}
+                      title={r.obj.mtime}
                     >
-                      {relativeFromNow(r.obj.modifiedAt, undefined, language)}
+                      {relativeFromNow(r.obj.mtime, undefined, language)}
                     </TableCell>
                     <TableCell className="px-1 py-0 text-right">
                       <div className="flex items-center justify-end">
@@ -425,7 +433,7 @@ export function CloudPane({
                         ) : null}
                         {!canUse ? (
                           <span
-                            className="px-2 text-[10px] text-muted-foreground"
+                            className="shrink-0 whitespace-nowrap px-2 text-[10px] text-muted-foreground"
                             title={t("files.useUnavailable")}
                             data-testid={`files-cloud-view-only-${r.obj.id}`}
                           >
@@ -444,7 +452,7 @@ export function CloudPane({
                             openContextMenu(
                               {
                                 label: r.displayName,
-                                path: r.obj.key,
+                                path: r.obj.path,
                                 kind: "file",
                                 resourceId: r.obj.id,
                               },

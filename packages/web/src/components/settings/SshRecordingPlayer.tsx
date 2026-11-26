@@ -43,9 +43,12 @@ export function parseCast(text: string): ParsedCast {
   };
 }
 
-interface RecordingRow {
+interface RecordingIdentity {
   agentId: string;
   sessionId: string;
+}
+
+interface RecordingRow extends RecordingIdentity {
   user: string;
   startedAt: string;
   endedAt: string;
@@ -67,20 +70,27 @@ function fmtBytes(n: number): string {
 
 type Status = "idle" | "loading" | "playing" | "error";
 
+function sameRecording(left: RecordingIdentity, right: RecordingIdentity) {
+  return left.agentId === right.agentId && left.sessionId === right.sessionId;
+}
+
 export function SshRecordingPlayer() {
   const { t } = useTranslation();
   const [agentId, setAgentId] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [played, setPlayed] = useState<{ agentId: string; sessionId: string } | null>(null);
+  const [played, setPlayed] = useState<RecordingIdentity | null>(null);
   const [list, setList] = useState<RecordingRow[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(true);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const termRef = useRef<Terminal | null>(null);
+  const termRef = useRef<{ recording: RecordingIdentity; terminal: Terminal } | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const playbackRef = useRef<{ recording: RecordingIdentity; controller: AbortController } | null>(
+    null,
+  );
 
   const refreshList = useCallback(async () => {
     try {
@@ -109,14 +119,19 @@ export function SshRecordingPlayer() {
   // cleanup time (refs are stable, so this mount-once effect needs no deps).
   useEffect(() => {
     return () => {
+      playbackRef.current?.controller.abort();
       for (const id of timersRef.current) clearTimeout(id);
-      termRef.current?.dispose();
+      termRef.current?.terminal.dispose();
       termRef.current = null;
     };
   }, []);
 
   async function play(a: string, s: string) {
     if (!a || !s) return;
+    playbackRef.current?.controller.abort();
+    const recording = { agentId: a, sessionId: s };
+    const playback = new AbortController();
+    playbackRef.current = { recording, controller: playback };
     setAgentId(a);
     setSessionId(s);
     setStatus("loading");
@@ -125,12 +140,17 @@ export function SshRecordingPlayer() {
     try {
       const { url } = await api.get<{ url: string }>(
         `/admin/ssh-recordings/${encodeURIComponent(a)}/${encodeURIComponent(s)}`,
+        undefined,
+        playback.signal,
       );
-      const res = await fetch(url);
+      if (playback.signal.aborted) return;
+      const res = await fetch(url, { signal: playback.signal });
       if (!res.ok) throw new Error("recording download failed");
-      const cast = parseCast(await res.text());
+      const text = await res.text();
+      if (playback.signal.aborted) return;
+      const cast = parseCast(text);
 
-      termRef.current?.dispose();
+      termRef.current?.terminal.dispose();
       const term = new Terminal({
         convertEol: true,
         scrollback: 10_000,
@@ -140,15 +160,16 @@ export function SshRecordingPlayer() {
         rows: cast.height,
       });
       if (containerRef.current) term.open(containerRef.current);
-      termRef.current = term;
+      termRef.current = { recording, terminal: term };
 
       // Replay each output chunk at its recorded offset.
       for (const ev of cast.events) {
         timersRef.current.push(setTimeout(() => term.write(ev.data), Math.max(0, ev.tSec * 1000)));
       }
       setStatus("playing");
-      setPlayed({ agentId: a, sessionId: s });
+      setPlayed(recording);
     } catch (err) {
+      if (playback.signal.aborted) return;
       setError(
         toUserFacingError(
           err,
@@ -167,16 +188,27 @@ export function SshRecordingPlayer() {
   }
 
   async function onDelete() {
-    if (!played) return;
+    if (!played || status === "loading") return;
     try {
       await api.delete(
         `/admin/ssh-recordings/${encodeURIComponent(played.agentId)}/${encodeURIComponent(played.sessionId)}`,
       );
-      clearTimers();
-      termRef.current?.dispose();
-      termRef.current = null;
-      setPlayed(null);
-      setStatus("idle");
+      const displayed = termRef.current;
+      if (displayed && sameRecording(displayed.recording, played)) {
+        clearTimers();
+        displayed.terminal.dispose();
+        termRef.current = null;
+        setPlayed(null);
+      }
+      const playback = playbackRef.current;
+      if (
+        playback &&
+        sameRecording(playback.recording, played) &&
+        !playback.controller.signal.aborted
+      ) {
+        playback.controller.abort();
+        setStatus("idle");
+      }
       await refreshList();
       toast.success(t("settings.sshRec.deleted", { defaultValue: "Recording deleted" }));
     } catch (err) {
@@ -290,7 +322,7 @@ export function SshRecordingPlayer() {
                 size="sm"
                 data-testid="ssh-rec-delete"
                 onClick={onDelete}
-                disabled={listError !== null}
+                disabled={listError !== null || status === "loading"}
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 {t("settings.sshRec.delete", { defaultValue: "Delete recording" })}

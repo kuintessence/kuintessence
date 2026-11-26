@@ -4,6 +4,8 @@ import {
   agents,
   createPgDb,
   jobs,
+  netdriveFiles,
+  netdriveReplicas,
   orgs,
   type PgDb,
   schedulerQueues,
@@ -229,6 +231,7 @@ describe("PlacementOrchestrator", () => {
 
     const r = await orchestrator.placeAndDispatch({
       jobId: job.id,
+      forEachGroup: "d".repeat(64),
       job: { name: job.name, command: job.command, resources: { cpus: 1, memoryMb: 1024 } },
       userId,
       userRole: "user",
@@ -238,7 +241,10 @@ describe("PlacementOrchestrator", () => {
     expect(r.selectedAgentId).toBe("po-agent-1");
     expect(r.dispatched).toBe(true);
     expect(ch.messages).toHaveLength(1);
-    expect(ch.messages[0]?.payload.case).toBe("dispatchJob");
+    expect(ch.messages[0]?.payload).toMatchObject({
+      case: "dispatchJob",
+      value: { forEachGroup: "d".repeat(64) },
+    });
 
     const updated = await jobService.getById(job.id);
     expect(updated?.agentId).toBe("po-agent-1");
@@ -897,51 +903,79 @@ describe("PlacementOrchestrator", () => {
     dispatcher.unregister("po-agent-2");
   });
 
-  test("malformed inputStaging fileMetadataId does not block placement (locality best-effort)", async () => {
+  test("preview and dispatch score the same live NetDrive copy and respect an explicit override", async () => {
     await agentManager.register({
       agentId: "po-agent-1",
       siteName: "po-site",
       schedulerType: "slurm",
       schedulerVersion: "23.02.7",
     });
-    const ch = mockChannel();
-    dispatcher.register("po-agent-1", ch);
-
-    // An orchestrator WITH db actually runs deriveDataSites. A non-UUID
-    // fileMetadataId makes its uuid-column query throw; placement must swallow
-    // it and still place the job (locality is a soft hint, never a gate).
-    const orchestratorWithDb = new PlacementOrchestrator({
+    dispatcher.register("po-agent-1", mockChannel());
+    const placement = new PlacementOrchestrator({
       agentManager,
       jobService,
       preferenceService,
       dispatcher,
       db,
     });
-
-    const job = await jobService.submit(
-      { name: "po-test-bad-staging", command: "echo", resources: { cpus: 1, memoryMb: 1024 } },
-      userId,
-    );
-    cleanupJobIds.push(job.id);
-
-    const r = await orchestratorWithDb.placeAndDispatch({
-      jobId: job.id,
-      job: {
-        name: job.name,
-        command: job.command,
-        resources: { cpus: 1, memoryMb: 1024 },
-        workingDir: "/work",
-        inputStaging: [{ fileMetadataId: "not-a-uuid", stagePath: "in.dat" }],
-      },
-      userId,
-      userRole: "user",
-      orgId,
-    });
-
-    expect(r.selectedAgentId).toBe("po-agent-1");
-    expect(r.dispatched).toBe(true);
-
-    dispatcher.unregister("po-agent-1");
+    const fileId = crypto.randomUUID();
+    const sha256 = "a".repeat(64);
+    await db
+      .insert(netdriveFiles)
+      .values({ id: fileId, ownerId: userId, path: "x", size: 4, sha256, storageKey: "input" });
+    await db
+      .insert(netdriveReplicas)
+      .values({ fileId, sha256, size: 4, siteId: "po-site", lastSeenAt: new Date() });
+    const job = {
+      name: "po-test-local-input",
+      command: "echo",
+      resources: { cpus: 1, memoryMb: 1024 },
+      workingDir: "/work",
+      inputStaging: [
+        { fileMetadataId: "not-a-uuid", stagePath: "other" },
+        { fileMetadataId: fileId, stagePath: "in.dat" },
+      ],
+    };
+    const principal = { userId, orgId, userRole: "user" as const };
+    const score = (trace: Awaited<ReturnType<typeof placement.runWithTrace>> | undefined) =>
+      trace?.stages
+        .find((stage) => stage.name === "auto")
+        ?.passed[0]?.scoreBreakdown?.contributions.find((item) => item.name === "locality")?.raw;
+    try {
+      expect(score(await placement.runWithTrace({ ...principal, job, preview: true }))).toBe(100);
+      expect(
+        score(
+          await placement.runWithTrace({
+            ...principal,
+            preview: true,
+            job: {
+              ...job,
+              inputStaging: [],
+              dataInputs: {
+                input: { source: "netdrive", fileMetadataId: fileId, fileMetadataName: "x" },
+              },
+            },
+          }),
+        ),
+      ).toBe(100);
+      expect(
+        score(
+          await placement.runWithTrace({
+            ...principal,
+            job: { ...job, requires: { locality: { dataSites: [] } } },
+            preview: true,
+          }),
+        ),
+      ).toBe(50);
+      const saved = await jobService.submit(job, userId);
+      cleanupJobIds.push(saved.id);
+      const result = await placement.placeAndDispatch({ ...principal, jobId: saved.id, job });
+      expect(result.dispatched).toBe(true);
+      expect(score(result.trace)).toBe(100);
+    } finally {
+      dispatcher.unregister("po-agent-1");
+      await db.delete(netdriveFiles).where(eq(netdriveFiles.id, fileId));
+    }
   });
 
   test("retains the authorized dispatch when the Agent channel drops after placement", async () => {

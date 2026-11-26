@@ -11,6 +11,7 @@ import {
   JobSubmitSchema,
   type JobUsecaseSubmit,
   JobUsecaseSubmitSchema,
+  type ResolvedPackage,
   usecase,
 } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
@@ -34,14 +35,15 @@ import { createPgDataSelectionValidator } from "../services/data-selection-valid
 import type { JobLogAccessAuditor, JobLogAccessScope } from "../services/job-log-access-auditor";
 import { type JobLogsService, JobLogsUnavailableError } from "../services/job-logs-service";
 import type { JobListOptions, JobService } from "../services/job-service";
-import type {
-  LicensePolicySnapshot,
-  LicenseRuntimeGovernanceService,
-} from "../services/license-runtime-governance";
+import type { LicenseRuntimeGovernanceService } from "../services/license-runtime-governance";
 import type { PlacementOrchestrator } from "../services/placement-orchestrator";
 import { SelectableDatasetService } from "../services/selectable-datasets";
+import { releaseBoundSoftwareKind } from "../services/site-runtime";
 import { assertUsecasePackageExecutionAccess } from "../services/usecase-execution-authorizer";
+import { createDbPackageStore } from "../workflow/db-package-store";
+import { PgWorkflowNamedReferenceRepository } from "../workflow/named-reference-resolver";
 import type { PublicationSummary } from "../workflow/output-publication";
+import { createPackageResolver } from "../workflow/package-resolver";
 
 const JobListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -106,9 +108,15 @@ type JobLogsTarget = {
  * selected) dispatches the job over gRPC. The placement result is included in the 201
  * response so callers can inspect which agent won or which stages rejected the job.
  */
+type JobPlacement = Pick<
+  PlacementOrchestrator,
+  "runWithTrace" | "placeAndDispatch" | "validateSchedulingIntent" | "cancelJob"
+>;
+
 export interface JobRouteOptions {
   /** Stable salt for the `alias` action on job command/env. */
   aliasSalt?: string;
+  trustedReleaseKeys?: Readonly<Record<string, string>>;
   federationClusters?: FederationClusterQueueService;
   federationJobs?: FederationJobService;
   authz?: AuthzService;
@@ -123,7 +131,7 @@ export interface JobRouteOptions {
 export function createJobRoutes(
   jobService: JobService,
   db: PgDb,
-  orchestrator: PlacementOrchestrator,
+  orchestrator: JobPlacement,
   opts: JobRouteOptions = {},
 ) {
   const routes = new Hono();
@@ -272,6 +280,7 @@ export function createJobRoutes(
         body,
         requireCanonicalJobActor(c),
         opts.governance,
+        opts.trustedReleaseKeys,
       );
       return c.json({ job });
     },
@@ -283,7 +292,13 @@ export function createJobRoutes(
     async (c) => {
       const body = c.req.valid("json");
       const submitter = requireCanonicalJobActor(c);
-      const job = await materializeUsecaseJob(db, body, submitter, opts.governance);
+      const job = await materializeUsecaseJob(
+        db,
+        body,
+        submitter,
+        opts.governance,
+        opts.trustedReleaseKeys,
+      );
       await assertRawSoftwareRequirements(db, job, submitter, opts.governance);
       if (submitter.orgId && opts.federationClusters) {
         const remote = await opts.federationClusters.previewJob(
@@ -317,7 +332,13 @@ export function createJobRoutes(
     async (c) => {
       const body = c.req.valid("json");
       const submitter = requireCanonicalJobActor(c);
-      const data = await materializeUsecaseJob(db, body, submitter, opts.governance);
+      const data = await materializeUsecaseJob(
+        db,
+        body,
+        submitter,
+        opts.governance,
+        opts.trustedReleaseKeys,
+      );
       const { job, placementResult } = await submitJobSpec({
         c,
         opts,
@@ -651,7 +672,7 @@ async function submitJobSpec(input: {
   opts: JobRouteOptions;
   db: PgDb;
   jobService: JobService;
-  orchestrator: PlacementOrchestrator;
+  orchestrator: JobPlacement;
   data: JobSubmit;
   submitter: {
     userId: string;
@@ -745,7 +766,7 @@ async function assertRawSoftwareRequirements(
   const subjectIds = [submitter.userId, ...(submitter.orgId ? [submitter.orgId] : [])];
   for (const requirement of requirements) {
     const conditions = [
-      eq(softwareAssets.kind, "spack-package"),
+      eq(softwareAssets.kind, requirement.siteRuntimeRevisionId ? "site-runtime" : "spack-package"),
       eq(softwareAssets.name, requirement.name),
       eq(softwareAssets.lifecycle, "published"),
     ];
@@ -790,7 +811,7 @@ async function assertRawSoftwareRequirements(
 async function validateJobSubmitIntent(input: {
   c: ContextLike;
   opts: JobRouteOptions;
-  orchestrator: PlacementOrchestrator;
+  orchestrator: JobPlacement;
   data: JobSubmit;
   submitter: {
     userId: string;
@@ -828,6 +849,7 @@ async function materializeUsecaseJob(
   body: JobUsecaseSubmit,
   submitter: { userId: string; orgId: string | null; subject: string | null },
   governance?: LicenseRuntimeGovernanceService,
+  trustedReleaseKeys?: Readonly<Record<string, string>>,
 ): Promise<JobSubmit> {
   const [row] = await db
     .select({
@@ -845,7 +867,7 @@ async function materializeUsecaseJob(
   await assertUsecasePackageExecutionAccess(db, row.id, submitter);
   try {
     const pkg = usecase.UsecasePackageSchema.parse(row.spec);
-    await assertUsecaseLicenseRequirements(
+    const asset = await assertUsecaseLicenseRequirements(
       db,
       pkg,
       body.installMissingSoftware,
@@ -853,6 +875,24 @@ async function materializeUsecaseJob(
       governance,
     );
     const isGoverned = "softwareRef" in pkg;
+    let boundPackage: ResolvedPackage | undefined;
+    if (isGoverned && !asset)
+      throw new AppError(ErrorCode.FORBIDDEN, "Software governance is unavailable", 403);
+    const signedKind = asset && releaseBoundSoftwareKind(asset.kind, asset.name, asset.payload);
+    if (asset && signedKind) {
+      if (signedKind === "site-runtime" && body.installMissingSoftware)
+        throw new Error("Site runtimes require a preinstalled file");
+      const repository = new PgWorkflowNamedReferenceRepository(db, trustedReleaseKeys);
+      const revision = await repository.findLatestRevision(asset, signedKind);
+      if (!revision) throw new Error("Usecase requires an active signed software revision");
+      boundPackage = await createPackageResolver(
+        {
+          ...createDbPackageStore(db, trustedReleaseKeys),
+          getById: async () => ({ spec: pkg, usecasePackageId: row.id }),
+        },
+        async () => body.installMissingSoftware,
+      )(row.id, revision.id);
+    }
     const dataAccess = new PgDataPrerequisiteRepository(db);
     await Promise.all(
       Object.values(body.dataInputs ?? {}).map(async (input) => {
@@ -895,7 +935,7 @@ async function materializeUsecaseJob(
     );
     const task = usecase.materialize({
       usecase: pkg.usecase,
-      software: pkg.software,
+      software: boundPackage?.software ?? pkg.software,
       arguments: pkg.arguments,
       environments: pkg.environments,
       filesomeInputs: pkg.filesomeInputs,
@@ -908,18 +948,20 @@ async function materializeUsecaseJob(
         : [],
       inputs: body.inputs,
     });
+    const siteJob = boundPackage?.siteRuntime
+      ? usecase.wrapSiteRuntime(task, boundPackage.siteRuntime)
+      : undefined;
     return {
       name: body.name,
-      command: usecase.wrapCommand(task),
+      command: siteJob?.command ?? usecase.wrapCommand(task),
       resources: body.resources,
       ...(body.schedulingStrategy ? { schedulingStrategy: body.schedulingStrategy } : {}),
       ...(body.workingDir ? { workingDir: body.workingDir } : {}),
       ...(body.tags ? { tags: body.tags } : {}),
-      envVars: task.envVars,
-      softwareRequirements: softwareRequirementsFromUsecase(
-        pkg.software,
-        body.installMissingSoftware,
-      ),
+      envVars: siteJob?.envVars ?? task.envVars,
+      softwareRequirements:
+        boundPackage?.softwareRequirements ??
+        softwareRequirementsFromUsecase(pkg.software, body.installMissingSoftware),
       appTemplateKey: `${row.name}@${row.version}`,
       usecasePackageId: row.id,
       usecasePackageName: row.name,
@@ -944,13 +986,13 @@ async function materializeUsecaseJob(
   }
 }
 
-async function assertUsecaseLicenseRequirements(
+export async function assertUsecaseLicenseRequirements(
   db: PgDb,
   pkg: usecase.UsecasePackage,
   installRequested: boolean,
   submitter: { userId: string; orgId: string | null },
   governance?: LicenseRuntimeGovernanceService,
-): Promise<void> {
+) {
   if (!governance) return;
   if (!("softwareRef" in pkg)) {
     throw new AppError(
@@ -959,7 +1001,12 @@ async function assertUsecaseLicenseRequirements(
       403,
     );
   }
-  const source = await loadSourceLicensePolicy(db, governance, pkg.softwareRef);
+  const source = await loadSourceLicensePolicy(
+    db,
+    governance,
+    pkg.softwareRef,
+    pkg.software.kind === "Spack" ? "spack-package" : "site-runtime",
+  );
   const sourcePolicy = source.policy;
   const providerOrgId = pkg.softwareRef.providerOrgId ?? null;
   const subjectIds = [submitter.userId, ...(submitter.orgId ? [submitter.orgId] : [])];
@@ -968,7 +1015,7 @@ async function assertUsecaseLicenseRequirements(
       pkg.licenseRequirements.map((requirement) =>
         governance.evaluateLicense({
           assetKey: sourcePolicy.identifiers?.[0] ?? requirement.identifier,
-          assetId: source.assetId,
+          assetId: source.asset.id,
           policy: {
             classification: sourcePolicy.classification,
             identifiers: sourcePolicy.identifiers,
@@ -1002,15 +1049,17 @@ async function assertUsecaseLicenseRequirements(
       403,
     );
   }
+  return source.asset;
 }
 
 async function loadSourceLicensePolicy(
   db: PgDb,
   governance: LicenseRuntimeGovernanceService,
   ref: { source: string; name: string; version: string; providerOrgId?: string },
-): Promise<{ assetId: string; policy: LicensePolicySnapshot }> {
+  kind: "spack-package" | "site-runtime",
+) {
   const conditions = [
-    eq(softwareAssets.kind, "spack-package"),
+    eq(softwareAssets.kind, kind),
     eq(softwareAssets.source, ref.source),
     eq(softwareAssets.name, ref.name),
     eq(softwareAssets.version, ref.version),
@@ -1037,7 +1086,7 @@ async function loadSourceLicensePolicy(
       403,
     );
   }
-  return { assetId: rows[0].id, policy };
+  return { asset: rows[0], policy };
 }
 
 function softwareRequirementsFromUsecase(

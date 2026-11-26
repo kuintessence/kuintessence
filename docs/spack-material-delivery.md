@@ -10,7 +10,7 @@ Registry 持久保存源码材料、recipe 快照和原生依赖锁，Server 按
 
 升级已有材料系统前使用[Rollout 屏障](spack-material-rollout.md)对账历史绑定并设置统一 epoch。[材料可见策略](spack-material-visibility.md)在原有 namespace 和 recipe 权限基础上进一步限制用户与组织；安装准备和旧票据下载均重新判断。
 
-受限厂商安装包、buildcache 发布、材料物理删除与垃圾回收不由此入口管理。材料下载支持 open-ended Range，发布上传不支持恢复未完成的上传会话。每个科学任务需另行准备匹配目标的材料闭包、运行输入和软件许可。
+材料下载支持 open-ended Range，材料导入可按已收齐的文件恢复。此处发布的源码材料须具备再分发许可。每个科学任务需另行准备匹配目标的材料闭包、运行输入和软件许可。
 
 ## 存储与边界
 
@@ -84,7 +84,7 @@ rollout journal 必须 append-only，删除历史可能不安全地重置 observ
 平台与算力中心的材料面板已接入精确 binding 生命周期查询、原因与 revision 确认、
 下架/恢复和分页审计。普通目录仍隐藏下架项，恢复通过管理查询进行；
 网络响应丢失显示结果待确认，不自动重试状态变更。
-生命周期 API 不提供在线绑定退役或物理回收。额外的读取限制通过独立的材料可见策略管理，使用自己的 revision 与审计。
+物理清除使用下文的[维护接口](#运维-api)。额外的读取限制通过材料可见策略管理，使用独立的 revision 与审计。
 
 ## 初始化与本地批量导入
 
@@ -206,41 +206,37 @@ HTTP API 不接受服务器本地路径，此入口仅由管理员环境配置�
 2. 选择上述格式的材料 JSON 清单；浏览器只读取最多 2 MiB 的清单，不执行内容。
 3. 二选一：平铺路径的材料可多选文件；有子目录时选择 **清单所在的材料包目录**，
    保留 `files[].path` 的相对层级。目录选择只移除顶层目录名，不通过 basename 猜测文件。
-   所选目录可以包含清单本身，不得包含额外文件、重复路径或缺件；再次选择替换此前选择。
+   所选目录可包含清单本身。额外文件、重复路径或大小不符会阻止导入。通常再次选择会替换此前选择。按页面提示补选缺件时，已选的有效文件会保留；更换清单会清空选择。
 4. 核对表格中的 namespace、spec、target，并确认材料允许再分发，再开始导入。
-   整包的文件路径、声明大小及待发布 namespace 权限先通过预检，之后顺序上传。
+   浏览器先核对所选文件的路径、大小及待发布 namespace 权限。只选择部分文件时，按各仓库的回执查齐本批缺件，再顺序上传。
    文件扩展名不代替内容鉴定；浏览器不扫描本地 symlink/hardlink 或 POSIX 权限，
    Registry 对实际收到的字节做大小/SHA-256 校验。该边界与服务器本地初始化读取不同。
 5. 查看逐 release 结果。成功项可复制 binding，或直接打开固定清单查看 recipe commit/roots、
    lock 摘要和分页的源码 mirror 路径、digest、大小。原有发布也可手动输入 binding 查询。
 
-浏览器将源码作为原始 `File` 请求体逐个发送，不在 JavaScript 中整块读取源码或解包、
-不访问上游、不调用 Spack。所有请求固定经过同源 `/software/api/spack/material-repositories`
-网关；禁止跟随重定向。单次运行在同 namespace 内复用已验证 receipt，不跨 namespace
-借用授权。上传进度是已收到校验回执的文件数，不是网络发送字节百分比。
+浏览器逐个上传文件。8 MiB 以内的文件一次发送，更大的文件通过 `File.slice` 每次发送最多 8 MiB。所有请求固定经过同源 `/software/api/spack/material-repositories`
+网关。每个 release 开始前，Registry 按仓库核对已有的文件回执，浏览器只上传缺件。
+进度按已确认的文件数显示。
 
 清单不合格或缺件时不发送材料；单项上传或明确拒绝发布时显示失败，后续项继续。
 401/403、注销、切换组织/会话或失去发布能力时停止后续请求；切换上下文会清空本页的
 文件句柄和私有结果，并中止在途请求。服务器始终独立核验当前身份及权限。
-关闭页面、刷新或导航后，本次浏览器队列不保留，不将材料或凭据写入 localStorage。
+关闭页面后上传停止。用同一账户重新选择原 JSON 清单、确认再分发并开始导入，即可查询回执。仓库仍缺文件时，页面列出需要选择的相对路径；重新选择这些文件并确认后即可继续。仓库已经收齐文件时，只需清单即可发布或找回已有发布结果。
+Registry 按账户、仓库和完整 release 声明查找发布回执，重新检查当前发布权限、recipe 和下架状态。
+已发布项显示原 binding。重选中断的大文件后，Registry 根据账户、仓库、预期 SHA-256 和总大小返回已落盘的偏移，浏览器从该处继续。最后一段写完后，Registry 读取完整文件并核对大小和 SHA-256，校验成功才发文件回执。浏览器仅在当前页面持有文件句柄。
 
-点击“停止导入”不等于回滚。发布请求已经发出但响应丢失、超时或被取消时，
-显示 **发布结果待确认**；服务端可能已经提交不可变 release。修复环境后显式点击
-“重试未完成项”，会跳过本页已确认成功项，重新上传校验其余项，再复用不可变发布语义。
-同一清单下重选文件保留已有成功 binding，并重新要求再分发确认；
-此前的“待确认”不会被重试中的上传失败覆盖，只有确认发布成功后才解除。
-重试不是断点续传；较大的文件会重新上传。重新打开页面后需重新选择完整材料包。
+发布响应丢失、超时或被取消时，页面显示 **发布结果待确认**。点击“重试未完成项”
+会重新查询 Registry。Registry 核对了回执对应的不可变 manifest 后才返回已发布。
 
 成功导入仍不自动修改 `SPACK_MATERIAL_RELEASES`、激活 recipe、部署软件或执行 recipe。
 可随后使用[安装绑定管理](spack-install-bindings.md)设置平台默认或组织精确 spec 映射。
 启动配置只初始化尚不存在的平台默认，后续改绑以持久化的 Web/API revision 为准。
-持久化导入任务、物理删除和引用回收尚未实现；可见范围通过独立策略管理。
-不要直接删持久化卷上的 blob/receipt/manifest 来代替维护 API。
+材料清理由维护 API 执行。先释放不再使用的上传回执，再由超级管理员按需回收无引用文件。
+已发布材料还需下架、确认 revision 并清除 manifest，见[材料下架与恢复](spack-material-lifecycle.md)。
 
 ### 材料目录
 
-目录从已原子发布的持久化 manifest 读取，不新增数据库或可变索引；
-初始化、API 和 Web 导入的既有 release 在刷新后均可发现，Registry 重启后无需重建索引。
+目录从已原子发布的 manifest 读取内容和权限。初始化、API 和 Web 导入的已有 release 都可被发现。
 每条摘要只含 binding、repository、spec、Spack 版本、target、再分发声明、源码文件数
 和材料总字节数。总字节数对同一 release 的 recipe archive、lock 和源码按 digest 去重，
 不是整个材料卷的磁盘占用，也不是源码解包大小。
@@ -250,18 +246,15 @@ super admin 等权限规则不变；platform admin 身份本身不授予所有�
 无权限或引用 recipe 已不存在的条目不展示，不返回隐藏条目数量。精确筛选无权限仓库
 和不存在的仓库都返回空列表。读取失败或损坏不会伪装成成功的部分列表。
 
-一次查询最多扫描 10,000 个目录项、读取 32 MiB manifest 元数据、返回 200 个可读 release；
-忽略的临时文件也计入扫描项预算，每个 Registry 实例最多同时进行 2 次查询，
-使用 10 秒协作式时间预算。取消/超时在文件与 recipe I/O 边界检查，
-已经发出的 I/O 须等待其结束才释放并发槽位，不保证硬实时中断。
-超过扫描、字节、时间或响应数量上限时返回 `503 MATERIAL_CATALOG_LIMIT`，没有部分结果；
-可按完整仓库名称缩小查询。并发超限返回 `429`。
-单个仓库仍超限时应继续按 binding 查阅；服务端游标分页和大规模索引尚未提供。
+Web 每次向 Registry 请求 20 个可读 release。前后翻页都会重新核验当前权限，刷新或更改仓库筛选后从第一页开始。分页按 repository ID 和 manifest digest 升序遍历。Registry 确认还有一个可读 release 时，会返回本页最后一项的 `nextCursor`。下次请求传入相同筛选条件、`limit` 和 `after=nextCursor`。最后一页省略 `nextCursor`。
 
-Web 每页显示 20 项，按仓库、spec、target、digest 稳定排序，不承诺发布时间顺序。
-筛选、刷新失败或开始新请求时不保留旧列表；切换身份/组织/能力上下文时清空结果、
-取消请求并忽略晚到响应。目录响应设置 `Cache-Control: private, no-store`。
-并发发布期间目录是尽力一致的视图，不是事务快照；新条目通过刷新发现。
+游标只表示位置。Registry 重启或该位置的 release 被清除后仍可继续。并发发布时，排序位置在游标之前的新条目可通过刷新发现。隐藏或已下架的条目不会产生续页提示。筛选、刷新失败或开始新请求时清空旧列表，切换身份或组织时取消在途读取。目录响应设置 `Cache-Control: private, no-store`。
+
+单仓库超过 512 个目录项时，首次读取会在材料卷的 `catalog-index/` 中原子生成按 digest 排序的索引。普通目录和管理目录共用它。每块包含最多 256 个摘要，翻页按游标二分定位并校验所读块。重启或切换到挂载同一材料卷的 Registry 后可复用有效索引。发布或清除 manifest 前会使该仓库的索引失效，下次读取时重建。下架、恢复和成员权限按请求核验。若索引块校验失败，本次读取返回 503，Registry 移除损坏的索引，重试时从 manifest 重建。
+
+单次建索引最多枚举 250,000 个原始目录项（含临时文件），建索引期间持有材料卷排他锁。遇到并发写入或维护而无法取得锁时返回 503，可重试。普通查询每次最多检查 10,000 个目录项或候选，读取 32 MiB manifest 元数据，使用 10 秒协作式时间预算，每实例允许两个并发查询。超出扫描预算返回 `503 MATERIAL_CATALOG_LIMIT`，可按仓库筛选；超过单仓库建索引预算时可按已知 binding 查阅。并发查询超限返回 `429`。
+调用方也可省略 `limit` 读取按仓库名、spec、target、digest 排列的完整列表，此时超过 200 个可读 release 会返回 `503 MATERIAL_CATALOG_LIMIT`。
+
 目录仅供发现和查阅，不证明材料已经安装、recipe 可信或目标 Linux 可运行。
 
 ## 运维 API
@@ -272,14 +265,19 @@ Web 每页显示 20 项，按仓库、spec、target、digest 稳定排序，不�
 
 | 方法与路径 | 用途 |
 |---|---|
-| `GET /spack/material-repositories?repository=...` | 权限过滤的材料目录；可省略 repository，或传入一个完整仓库名精确筛选 |
+| `GET /spack/material-repositories?repository=...` | 权限过滤的材料目录，可按完整仓库名筛选；用 `limit=1…200` 分页，后续页传入 `after` |
 | `POST /spack/material-repositories/blobs?repository=...&digest=sha256:...` | 原始二进制上传，流式校验 digest |
+| `POST /spack/material-repositories/blob-uploads?repository=...&digest=sha256:...&size=...` | 空请求体查询进度；携带 `Upload-Offset` 和 `application/octet-stream` 发送下一段。每段 8 MiB，最后一段发送剩余字节。返回下一段的 `offset` 或完整文件的 `{digest, size}` 回执。 |
+| `POST /spack/material-repositories/imports/status` | 提交与发布相同的请求体，返回 pending 和缺件 digest，或 published 和原 binding |
+| `DELETE /spack/material-repositories/blobs?repository=…&digest=…` | 有发布权限的用户释放本仓库上传回执 |
+| `DELETE /spack/material-repositories/:id/releases/:digest?revision=…` | 超级管理员清除指定 revision 的已下架且无活动引用的 manifest |
+| `POST /spack/material-repositories/collect` | 超级管理员清理无引用 blob、失去 manifest 的导入回执及七天未推进的上传残片，返回删除的 blob 数量 |
 | `POST /spack/material-repositories/lock-preflight` | 使用 release 请求体检查 lock，返回静态报告，不生成 archive 或发布 release |
 | `POST /spack/material-repositories/releases` | 发布固定材料清单，返回 `repositoryId`、`manifestDigest` |
 | `GET /spack/material-repositories/:id/releases/:digest` | 读取固定 manifest |
 | `GET /spack/material-repositories/:id/releases/:manifestDigest/blobs/:digest` | 读取该 release 明确列出的 blob |
 
-文件逐个上传，可用运维脚本循环上传批次。失败文件重新上传；成功 receipt 保留。
+文件逐个上传，可用运维脚本循环上传批次。整文件请求失败时可重新发送；分段请求中断时可查询偏移继续。
 API 不接受上游 URL、本地服务端路径或客户端上传的 recipe tar；recipe tar 由 Registry
 从已导入 Git 快照生成。上传 recipe 的步骤见 [Recipe 仓库](spack-recipe-repositories.md)。
 
@@ -721,7 +719,7 @@ Agent 的软件请求从执行到 inventory 发布串行处理，避免较旧成
 
 初始化和 Web 上传只保存材料。运行任务仍需完整 recipe、真实依赖锁、全部源码与补丁、输入数据以及许可。可用的轻量操作入口见[受管安装案例](../deploy/pr-test/README.md#实验性受管安装案例)，其固定软件与单节点范围不能替代其他科学任务的运行要求。
 
-受控上游代理见[上游导入](spack-upstream-import.md)，额外读取范围见[材料可见策略](spack-material-visibility.md)。受限厂商包授权与材料物理回收不在这些入口的支持范围内。
+受控上游代理见[上游导入](spack-upstream-import.md)，额外读取范围见[材料可见策略](spack-material-visibility.md)。材料物理回收使用[维护接口](#运维-api)，受限厂商包需单独取得授权。
 
 ### 安装中断与持久写锁
 

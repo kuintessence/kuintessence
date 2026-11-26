@@ -26,7 +26,7 @@ export interface JobDetail extends JobRow {
   completedAt?: string | null;
   exitCode?: number | null;
   errorMessage?: string | null;
-  resources?: { cpus?: number; memoryMb?: number } | null;
+  resources?: { cpus?: number; memoryMb?: number; gpus?: number; wallTimeSec?: number } | null;
   appTemplateKey?: string | null;
   softwareRequirements?: Array<{ name: string; version?: string; installable?: boolean }> | null;
   usecasePackageId?: string | null;

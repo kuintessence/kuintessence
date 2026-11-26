@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
-      if (key === "agents.countHint") return `${opts?.online} online · ${opts?.total} total`;
+      if (key === "agents.countHint") return `${opts?.online}/${opts?.total} online`;
       return key;
     },
   }),
@@ -97,6 +97,33 @@ afterEach(() => {
 });
 
 describe("AgentsPage", () => {
+  test("keeps name sorting, pagination and search in the card grid", async () => {
+    vi.mocked(api.get).mockImplementation(async (path) => {
+      if (path !== "/agents") return { supported: false, requests: [] };
+      return {
+        agents: Array.from({ length: 11 }, (_, index) => {
+          const number = String(11 - index).padStart(2, "0");
+          return { ...agent, agentId: `site-${number}`, siteName: `Cluster ${number}` };
+        }),
+      };
+    });
+    render(<AgentsPage />, { wrapper: makeClientWrapper().wrapper });
+
+    const grid = within(await screen.findByTestId("agents-grid"));
+    expect(grid.getAllByRole("article")).toHaveLength(10);
+    fireEvent.click(screen.getByRole("button", { name: "ui.name" }));
+    expect(grid.getAllByRole("article")[0]?.getAttribute("data-testid")).toBe("agent-card-site-01");
+    fireEvent.click(screen.getByRole("button", { name: "common.pagination.next" }));
+    expect(grid.getAllByRole("article")).toHaveLength(1);
+    expect(grid.getByTestId("agent-card-site-11")).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "ui.search" }), {
+      target: { value: "site-03" },
+    });
+    await grid.findByTestId("agent-card-site-03");
+    expect(grid.getAllByRole("article")).toHaveLength(1);
+  });
+
   test("surfaces agent list errors without rendering an empty inventory", async () => {
     vi.mocked(api.get).mockRejectedValueOnce(new Error("agents denied"));
 
@@ -106,7 +133,7 @@ describe("AgentsPage", () => {
     expect(screen.getByTestId("agents-list-error").textContent).not.toContain("agents denied");
     expect(screen.queryByTestId("agents-empty")).toBeNull();
     expect(screen.queryByTestId("agents-grid")).toBeNull();
-    expect(screen.getByTestId("agents-count").textContent).toBe("0 online · 0 total");
+    expect(screen.getByTestId("agents-count").textContent).toBe("—/— online");
   });
 
   test("clears stale SSH entrypoints after a list refetch error", async () => {
@@ -135,7 +162,7 @@ describe("AgentsPage", () => {
     expect(screen.getByTestId("agents-list-error").textContent).not.toContain("agents denied");
     expect(screen.queryByTestId("agent-card-agent-1")).toBeNull();
     expect(screen.queryByTestId("agent-open-ssh-agent-1")).toBeNull();
-    expect(screen.getByTestId("agents-count").textContent).toBe("0 online · 0 total");
+    expect(screen.getByTestId("agents-count").textContent).toBe("—/— online");
   });
 
   test("hides SSH entrypoints without the terminal capability", async () => {
@@ -163,6 +190,40 @@ describe("AgentsPage", () => {
     );
   });
 
+  test("keeps full cluster identifiers and update notices accessible from details", async () => {
+    const longName = "Scientific computing cluster ".repeat(6).trim();
+    const longId = "scientific-computing-cluster-".repeat(6);
+    vi.mocked(api.get).mockImplementation(async (path) => {
+      if (path === "/agents") {
+        return { agents: [{ ...agent, agentId: longId, siteName: longName }] };
+      }
+      return {
+        supported: true,
+        requests: [
+          {
+            requestId: crypto.randomUUID(),
+            kind: "notice",
+            release: "a".repeat(64),
+            message: "Update recommended",
+            state: "requested",
+            createdAt: "2026-11-19T00:00:00.000Z",
+          },
+        ],
+      };
+    });
+    render(<AgentsPage />, { wrapper: makeClientWrapper().wrapper });
+
+    const details = await screen.findByTitle("agents.updater.notice");
+    fireEvent.click(details);
+
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByRole("heading", { name: longName })).toBeTruthy();
+    expect(dialog.getByText(longId)).toBeTruthy();
+    expect(dialog.getByText("agents.operations.notReported")).toBeTruthy();
+    fireEvent.click(dialog.getByText(/agents\.updater\.title/));
+    expect(await dialog.findByText("Update recommended")).toBeTruthy();
+  });
+
   test("shows local Agent status and queue without a remote SSH entrypoint", async () => {
     mocks.isLocalMode.mockReturnValue(true);
     vi.mocked(api.get).mockResolvedValueOnce({ agents: [{ ...agent, queueDepth: 3 }] });
@@ -170,7 +231,7 @@ describe("AgentsPage", () => {
     render(<AgentsPage />, { wrapper: makeClientWrapper().wrapper });
 
     await screen.findByTestId("agent-card-agent-1");
-    expect(screen.getByTestId("agents-count").textContent).toBe("1 online · 1 total");
+    expect(screen.getByTestId("agents-count").textContent).toBe("1/1 online");
     expect(screen.getByTestId("agent-queue-depth-agent-1").textContent).toContain("3");
     expect(screen.queryByTestId("agent-open-ssh-agent-1")).toBeNull();
   });

@@ -1,5 +1,5 @@
 export const clickableCardClass =
-  "group relative cursor-pointer transition-[border-color,box-shadow,transform] hover:border-brand/70 hover:shadow-md active:translate-y-px";
+  "group relative cursor-pointer rounded-md border border-border bg-card transition-colors hover:border-brand/70";
 
 export const cardSurfaceLinkClass =
   "absolute inset-0 z-0 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]";

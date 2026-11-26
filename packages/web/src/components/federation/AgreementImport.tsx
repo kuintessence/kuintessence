@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
+import { AgreementFields, type Draft, newAgreementDraft } from "./AgreementFields";
 import { AgreementTerms } from "./AgreementTerms";
 
 export function AgreementImport({
@@ -28,8 +29,11 @@ export function AgreementImport({
 }) {
   const { t } = useTranslation();
   const fieldId = useId();
+  const form = useRef<HTMLElement>(null);
   const fileSequence = useRef(0);
   const [json, setJson] = useState("");
+  const savedDraft = useRef<Draft | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
   const [terms, setTerms] = useState<FederationAgreement | null>(null);
   const [invalid, setInvalid] = useState<string | null>(null);
   const [executionUserId, setExecutionUserId] = useState("");
@@ -63,6 +67,13 @@ export function AgreementImport({
       }
       const parsed = FederationAgreementSchema.safeParse(JSON.parse(json));
       if (!parsed.success) {
+        const path = parsed.error.issues[0]?.path.join(".");
+        if (draft && path) {
+          const input = Array.from(
+            form.current?.querySelectorAll<HTMLInputElement>("[name]") ?? [],
+          ).find((field) => field.name === path);
+          input?.focus();
+        }
         setInvalid(
           t("federation.agreements.invalidTerms", {
             fields: parsed.error.issues
@@ -87,53 +98,95 @@ export function AgreementImport({
   const supported = terms && supportedModes.includes(terms.mode);
   const expired = terms && Date.parse(terms.validUntil) <= Date.now();
   return (
-    <section className="space-y-5">
+    <section ref={form} className="space-y-5">
       <h3 className="text-base font-semibold">{t("federation.agreements.importTerms")}</h3>
       {!terms ? (
         <div className="space-y-4">
-          <label htmlFor={`${fieldId}-file`} className="block text-sm">
-            {t("federation.agreements.termsFile")}
-          </label>
-          <Input
-            id={`${fieldId}-file`}
-            type="file"
-            accept="application/json,.json"
+          <Button
+            type="button"
+            variant="outline"
             disabled={disabled}
-            onChange={async (event) => {
-              const sequence = ++fileSequence.current;
-              const file = event.target.files?.[0];
-              if (!file) return;
-              if (file.size > 550000) {
-                setInvalid(t("federation.agreements.tooLarge"));
+            onClick={() => {
+              fileSequence.current++;
+              setInvalid(null);
+              if (draft) {
+                savedDraft.current = draft;
+                setDraft(null);
                 return;
               }
               try {
-                const value = await file.text();
-                if (sequence === fileSequence.current) {
-                  setJson(value);
-                  setInvalid(null);
-                }
+                let next = savedDraft.current;
+                if (!next || json !== JSON.stringify(next, null, 2))
+                  next = json.trim()
+                    ? FederationAgreementSchema.parse(JSON.parse(json))
+                    : newAgreementDraft(localSiteId);
+                setDraft(next);
+                setJson(JSON.stringify(next, null, 2));
               } catch {
-                if (sequence === fileSequence.current)
-                  setInvalid(t("federation.agreements.readFailed"));
+                setInvalid(t("federation.agreements.correctJson"));
               }
             }}
-          />
-          <label htmlFor={`${fieldId}-json`} className="block text-sm">
-            {t("federation.agreements.termsJson")}
-          </label>
-          <Textarea
-            id={`${fieldId}-json`}
-            value={json}
-            maxLength={550000}
-            rows={12}
-            disabled={disabled}
-            className="font-mono text-xs"
-            onChange={(event) => {
-              fileSequence.current++;
-              setJson(event.target.value);
-            }}
-          />
+          >
+            {t(draft ? "federation.agreements.termsJson" : "federation.agreements.editFields")}
+          </Button>
+          {draft ? (
+            <AgreementFields
+              draft={draft}
+              disabled={disabled}
+              supportedModes={supportedModes}
+              onChange={(next) => {
+                setDraft(next);
+                setJson(JSON.stringify(next, null, 2));
+                setInvalid(null);
+              }}
+            />
+          ) : (
+            <>
+              <label htmlFor={`${fieldId}-file`} className="block text-sm">
+                {t("federation.agreements.termsFile")}
+              </label>
+              <Input
+                id={`${fieldId}-file`}
+                type="file"
+                accept="application/json,.json"
+                disabled={disabled}
+                onChange={async (event) => {
+                  const sequence = ++fileSequence.current;
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  if (file.size > 550000) {
+                    setInvalid(t("federation.agreements.tooLarge"));
+                    return;
+                  }
+                  try {
+                    const value = await file.text();
+                    if (sequence === fileSequence.current) {
+                      setJson(value);
+                      setInvalid(null);
+                    }
+                  } catch {
+                    if (sequence === fileSequence.current)
+                      setInvalid(t("federation.agreements.readFailed"));
+                  }
+                }}
+              />
+              <label htmlFor={`${fieldId}-json`} className="block text-sm">
+                {t("federation.agreements.termsJson")}
+              </label>
+              <Textarea
+                id={`${fieldId}-json`}
+                value={json}
+                maxLength={550000}
+                rows={12}
+                disabled={disabled}
+                className="font-mono text-xs"
+                onChange={(event) => {
+                  fileSequence.current++;
+                  setJson(event.target.value);
+                }}
+              />
+            </>
+          )}
           {invalid ? (
             <p role="alert" className="text-sm text-status-failed">
               {invalid}
