@@ -1,6 +1,6 @@
 import { type SandboxComputeResources, SandboxComputeResourcesSchema } from "@kuintessence/shared";
 import { z } from "zod";
-import { shellQuote } from "../adapters/base";
+import { shellQuote } from "../shell-quote";
 
 export const SandboxCgroupCheckSchema = z.object({
   path: z

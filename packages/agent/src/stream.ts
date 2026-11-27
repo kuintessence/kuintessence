@@ -3591,6 +3591,36 @@ export class AgentStream {
     }
   }
 
+  private dispatchInputRejection(dj: DispatchJob): string | undefined {
+    if (
+      dj.inputStaging.some((input) => input.localDataSource) &&
+      (!dj.federationExecution ||
+        !dj.restrictedNoEgress ||
+        !dj.sandboxExecution ||
+        dj.inputStaging.some(
+          (input) =>
+            input.localDataSource &&
+            (input.sourceUrl || input.netdriveInput || !input.deliveryLeaseId),
+        ))
+    )
+      return "Local inputs require leased restricted Sandbox execution";
+    if (dj.restrictedNoEgress && !this.hasTrustedRestrictedExecutionProfile())
+      return "Restricted no-egress dispatch requires a validated trusted execution profile";
+    if (dj.restrictedNoEgress && dj.expectedOutputs.length > 0)
+      return "Restricted no-egress dispatch cannot declare outputs";
+    if (dj.restrictedNoEgress && !dj.sandboxExecution)
+      return "Restricted no-egress dispatch rejects raw scheduler commands; a signed trusted profile is required";
+    if (dj.restrictedNoEgress && dj.sandboxExecution?.networkDisabled !== true)
+      return "Restricted no-egress dispatch requires a network-disabled trusted profile";
+    if (dj.restrictedNoEgress && dj.dataDeliveries.length > 0)
+      return "Restricted no-egress inputs must be materialized as signed Sandbox input mounts";
+    if (dj.licensedMaterialMounts.length > 0 && !dj.restrictedNoEgress)
+      return "Licensed material mounts require restricted no-egress execution";
+    if (dj.sandboxExecution && dj.licensedMaterialMounts.length > 0 && !dj.federationExecution)
+      return "Licensed Sandbox inputs require federation execution renewal";
+    return undefined;
+  }
+
   private async handleServerMessageNow(
     msg: ServerMessage,
     recoveredDispatchId?: string,
@@ -3725,485 +3755,7 @@ export class AgentStream {
     }
 
     if (payload.case === "dispatchJob") {
-      const dj = payload.value;
-      // A rejected dispatch can also receive a release request for its empty preparation set.
-      if (dj.sandboxExecution?.runtime?.kind === SandboxRuntimeKind.OCI)
-        await this.cleanupIntents?.observePvcJob(dj.jobId);
-      if (
-        dj.federationExecution &&
-        (!this.federationExecutionSupported || !this.federationExecutionCapable())
-      ) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Federation execution renewal is unavailable",
-        });
-        return;
-      }
-      const queueTargetMode = queueTargetModeFromProto(dj.queueTargetMode);
-      const queueValidationMode = queueValidationModeFromProto(dj.queueValidationMode);
-      const dispatchEpoch = Number(dj.dispatchEpoch);
-      if (!Number.isSafeInteger(dispatchEpoch) || dispatchEpoch < 0) {
-        this.logger.error({ jobId: dj.jobId }, "Rejecting dispatch with invalid epoch");
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Dispatch rejected: invalid dispatch epoch",
-        });
-        return;
-      }
-      if (!(await this.isDispatchEpochAllowed(dj.jobId, dispatchEpoch))) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Dispatch rejected: job was revoked before this dispatch epoch",
-        });
-        return;
-      }
-      if ((await this.activeRemoteJobs?.listActive())?.some((job) => job.jobId === dj.jobId)) {
-        this.logger.warn(
-          { jobId: dj.jobId },
-          "Ignoring dispatch with an existing durable scheduler record",
-        );
-        return;
-      }
-      this.logger.info({ jobId: dj.jobId, name: dj.name }, "Dispatching job");
-
-      // Persist the inbound dispatch BEFORE handing it to the runner. If the
-      // process crashes between this line and the first onStatusUpdate, the
-      // row stays acked_at=NULL and gets a replayed status report on the
-      // next reconnect (see generateOutbound). The proto has no separate
-      // dispatch_id field, so we use jobId — onConflictDoNothing makes the
-      // duplicate-delivery case (Server re-dispatches mid-recovery) safe.
-      const schedulerLimits = dj.schedulerLimits && {
-        nodeCount: dj.schedulerLimits.nodeCount,
-        maxCpuTime: dj.schedulerLimits.maxCpuTime,
-        stopTime:
-          dj.schedulerLimits.stopTime === undefined
-            ? undefined
-            : Number(dj.schedulerLimits.stopTime),
-      };
-      const forEachGroup = slurmForEachGroup(this.deps.adapter.type, dj);
-      const schedulerName = dj.federationExecution
-        ? federationSchedulerName(dj.dispatchEpoch)
-        : forEachGroup
-          ? `kqa-${forEachGroup}`
-          : schedulerSubmissionTag(dj.jobId);
-      const dispatchId = `${dj.jobId}:${dispatchEpoch}`;
-      if (this.inboundAcks && recoveredDispatchId !== dispatchId) {
-        try {
-          const accepted = await this.inboundAcks.persistInbound({
-            dispatchId,
-            jobId: dj.jobId,
-            payload: {
-              name: dj.name,
-              federationDispatchEpoch: dj.federationExecution
-                ? Number(dj.dispatchEpoch)
-                : undefined,
-              schedulerName,
-              command: dj.command,
-              ...(dj.spackExecution
-                ? {
-                    spackExecution: workflowSpackIntent(dj.spackExecution),
-                  }
-                : {}),
-              cpus: dj.cpus,
-              memoryMb: Number(dj.memoryMb),
-              gpus: dj.gpus,
-              wallTimeSec: Number(dj.wallTimeSec),
-              schedulerLimits,
-              workingDir: dj.workingDir,
-              queueName: dj.queueName,
-              queueTargetMode,
-              queueValidationMode,
-              qos: dj.qos,
-              stdinText: dj.stdinText,
-              federationExecution: dj.federationExecution,
-              ...(dj.federationExecution
-                ? { federationReceipt: federationDispatchReceipt(dj) }
-                : {}),
-            },
-          });
-          if (!accepted) {
-            this.logger.info({ dispatchId }, "Ignoring duplicate durable dispatch delivery");
-            return;
-          }
-        } catch (err) {
-          this.logger.error({ err, dispatchId }, "Failed to persist inbound dispatch");
-          await this.onJobTransition({
-            jobId: dj.jobId,
-            status: "failed",
-            message: "Agent could not durably persist the dispatch",
-          });
-          return;
-        }
-      }
-      if (this.dispatchIdsByJob.has(dj.jobId) || this.pool.get(dj.jobId)) {
-        this.logger.warn({ dispatchId }, "Ignoring concurrent dispatch for an active job");
-        return;
-      }
-      this.dispatchIdsByJob.set(dj.jobId, dispatchId);
-      if (dj.federationExecution)
-        this.federationDispatches.set(dj.jobId, {
-          dispatch: dj,
-          controller: new AbortController(),
-        });
-
-      if (dj.spackExecution && dj.sandboxExecution) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: SPACK_ACTIVATION_FAILURE,
-        });
-        return;
-      }
-      const expectedOutputs: ExpectedOutput[] = dj.expectedOutputs.map((o) => ({
-        descriptor: o.descriptor,
-        path: o.path,
-        isBatch: o.isBatch,
-        pathsOnly: o.pathsOnly,
-      }));
-      if (
-        dj.inputStaging.some((input) => input.localDataSource) &&
-        (!dj.federationExecution ||
-          !dj.restrictedNoEgress ||
-          !dj.sandboxExecution ||
-          dj.inputStaging.some(
-            (input) =>
-              input.localDataSource &&
-              (input.sourceUrl || input.netdriveInput || !input.deliveryLeaseId),
-          ))
-      ) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Local inputs require leased restricted Sandbox execution",
-        });
-        return;
-      }
-      if (dj.restrictedNoEgress && !this.hasTrustedRestrictedExecutionProfile()) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Restricted no-egress dispatch requires a validated trusted execution profile",
-        });
-        return;
-      }
-      if (dj.restrictedNoEgress && expectedOutputs.length > 0) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Restricted no-egress dispatch cannot declare outputs",
-        });
-        return;
-      }
-      if (dj.restrictedNoEgress && !dj.sandboxExecution) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message:
-            "Restricted no-egress dispatch rejects raw scheduler commands; a signed trusted profile is required",
-        });
-        return;
-      }
-      if (dj.restrictedNoEgress && dj.sandboxExecution?.networkDisabled !== true) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Restricted no-egress dispatch requires a network-disabled trusted profile",
-        });
-        return;
-      }
-      if (dj.restrictedNoEgress && dj.dataDeliveries.length > 0) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message:
-            "Restricted no-egress inputs must be materialized as signed Sandbox input mounts",
-        });
-        return;
-      }
-      if (dj.licensedMaterialMounts.length > 0 && !dj.restrictedNoEgress) {
-        await this.onJobTransition({
-          jobId: dj.jobId,
-          status: "failed",
-          message: "Licensed material mounts require restricted no-egress execution",
-        });
-        return;
-      }
-      if (dj.sandboxExecution) {
-        if (dj.licensedMaterialMounts.length > 0 && !dj.federationExecution) {
-          await this.onJobTransition({
-            jobId: dj.jobId,
-            status: "failed",
-            message: "Licensed Sandbox inputs require federation execution renewal",
-          });
-          return;
-        }
-        const processor = this.deps.sandboxProcessor;
-        if (!processor) {
-          await this.onJobTransition({
-            jobId: dj.jobId,
-            status: "failed",
-            message: "Sandbox execution is unsupported by this Agent",
-          });
-          return;
-        }
-        if (dj.restrictedNoEgress) {
-          await this.cleanupIntents?.recordRestrictedWorkRoot(dj.jobId);
-          this.restrictedWorkRoots.add(dj.jobId);
-        }
-        this.preparingDispatches.add(dispatchId);
-        const preparation = this.prepareWithFederationAuthorization(
-          dj,
-          async (current, signal) => {
-            const inputs = () =>
-              current().inputStaging.map((input) => ({
-                stagePath: input.stagePath,
-                sourceUrl: input.sourceUrl,
-                localDataSource: input.localDataSource,
-                ...(input.deliveryLeaseId
-                  ? {
-                      deliveryLeaseId: input.deliveryLeaseId,
-                      deliveryLeaseExpiresAtUnixMs: input.deliveryLeaseExpiresAtUnixMs,
-                    }
-                  : {}),
-              }));
-            return processor.prepare(
-              dj.jobId,
-              current().sandboxExecution,
-              { cpus: dj.cpus, memoryMb: dj.memoryMb },
-              inputs(),
-              {
-                signal,
-                restart: dj.federationExecution,
-                ...(dj.federationExecution
-                  ? {
-                      renewInput: async (source) => {
-                        const latest = inputs().find(
-                          (input) => input.stagePath === source.stagePath,
-                        );
-                        if (!latest)
-                          throw new Error("Sandbox input renewal lost its original binding");
-                        return latest;
-                      },
-                    }
-                  : {}),
-              },
-            );
-          },
-          () => processor.cleanup(dj.jobId),
-        )
-          .then(async (prepared) => {
-            const profile = this.deps.restrictedExecutionProfile;
-            if (
-              dj.restrictedNoEgress &&
-              (!profile?.ready ||
-                prepared.runtimeDigest !== profile.runtimeDigest ||
-                !profile.executionProfile ||
-                !prepared.sandbox.executionProfile ||
-                prepared.sandbox.executionProfile.profileId !==
-                  profile.executionProfile.profileId ||
-                prepared.sandbox.executionProfile.apptainerSha256 !==
-                  profile.executionProfile.apptainerSha256 ||
-                prepared.sandbox.executionProfile.sifSha256 !==
-                  profile.executionProfile.sifSha256 ||
-                prepared.sandbox.executionProfile.trustedWrapperSha256 !==
-                  profile.executionProfile.trustedWrapperSha256)
-            ) {
-              throw new Error(
-                "Restricted no-egress Sandbox runtime does not match the pinned profile",
-              );
-            }
-            if (dj.restrictedNoEgress && profile) {
-              await (
-                this.deps.assertRestrictedExecutionProfileIdentity ??
-                assertRestrictedExecutionProfileIdentity
-              )(profile);
-            }
-            const sandboxOutputs: ExpectedOutput[] = prepared.sandbox.mounts
-              .filter(
-                (mount) =>
-                  mount.mode === "WriteOnly" &&
-                  (mount.ioType === "Text" || mount.ioType === "JSON"),
-              )
-              .map((mount) => ({
-                descriptor: mount.descriptor,
-                path: mount.hostPath,
-                isBatch: false,
-              }));
-            if (
-              dj.restrictedNoEgress &&
-              prepared.sandbox.mounts.some((mount) => mount.mode === "WriteOnly")
-            ) {
-              throw new Error("Restricted no-egress Sandbox cannot expose output mounts");
-            }
-            if (
-              dj.restrictedNoEgress &&
-              (prepared.sandbox.identity.backend !== "Unix" ||
-                prepared.sandbox.identity.mode !== "MappedAccount")
-            ) {
-              throw new Error(
-                "Restricted no-egress Sandbox requires a mapped Unix execution identity",
-              );
-            }
-            if (dj.licensedMaterialMounts.length) {
-              const resolver = this.deps.licensedMaterialResolver;
-              if (
-                !resolver?.sandboxInputs ||
-                prepared.sandbox.runtimeKind !== "SIF" ||
-                prepared.sandbox.executionMode !== "RootImpersonation" ||
-                !prepared.sandbox.executionProfile
-              )
-                throw new Error("Licensed material execution profile is unavailable");
-              const resolve = resolver.sandboxInputs.bind(resolver);
-              prepared.sandbox.licensedInputs = await this.prepareWithFederationAuthorization(
-                dj,
-                async (current, signal) => {
-                  const mounts = current().licensedMaterialMounts;
-                  if (mounts.length !== dj.licensedMaterialMounts.length)
-                    throw new Error("Licensed input authority changed");
-                  try {
-                    return await resolve(
-                      mounts.map((m) => ({
-                        selectorId: m.selector,
-                        targetPath: m.targetPath,
-                        fingerprint: m.expectedFingerprint,
-                        requiredElements: m.requiredElements,
-                      })),
-                      signal,
-                    );
-                  } catch {
-                    signal.throwIfAborted();
-                    throw new Error("Provider could not verify licensed Sandbox inputs");
-                  }
-                },
-                async () => {},
-              );
-            }
-            const spec: JobSpec = {
-              jobId: dj.jobId,
-              name: dj.name,
-              federationDispatchEpoch: dj.federationExecution
-                ? Number(dj.dispatchEpoch)
-                : undefined,
-              schedulerName: dj.federationExecution
-                ? federationSchedulerName(dj.dispatchEpoch)
-                : schedulerSubmissionTag(dj.jobId),
-              command: "sandbox-manifest",
-              cpus: dj.cpus,
-              memoryMb: Number(dj.memoryMb),
-              gpus: dj.gpus,
-              wallTimeSec: Number(dj.wallTimeSec),
-              schedulerLimits,
-              workingDir: prepared.workingDir,
-              envVars: {},
-              queueName: dj.queueName || undefined,
-              ...(queueTargetMode ? { queueTargetMode } : {}),
-              ...(queueValidationMode ? { queueValidationMode } : {}),
-              qos: dj.qos || undefined,
-              sandbox: prepared.sandbox,
-              restrictedNoEgress: dj.restrictedNoEgress,
-            };
-            await this.assertDispatchEpochAllowed(dj.jobId, dispatchEpoch);
-            const pvc = await this.deps.adapter.identifySandboxPvc?.(prepared.sandbox, dj.jobId);
-            if (pvc) {
-              if (!this.cleanupIntents) throw new Error("Missing durable Sandbox PVC journal");
-              await this.cleanupIntents.recordPvc(pvc);
-              prepared.sandbox.kubernetesArtifactPvcUid = pvc.binding.claimUid;
-            }
-            this.sandboxRuntimeDigests.set(spec, prepared.runtimeDigest);
-            if (dj.federationExecution) this.federationSpecs.add(spec);
-            return this.pool.submit(spec, { expectedOutputs: sandboxOutputs });
-          })
-          .catch(async (err) => {
-            if (
-              dj.restrictedNoEgress &&
-              !this.unreconciledSubmittedJobs.has(dj.jobId) &&
-              !this.pool.get(dj.jobId)
-            ) {
-              try {
-                const intent = await this.findCleanupIntent(dj.jobId);
-                if (intent) await this.cleanupCancellationIntent(intent);
-                else {
-                  await this.removeRestrictedWorkRoot(dj.jobId);
-                  this.restrictedWorkRoots.delete(dj.jobId);
-                }
-              } catch (cleanupError) {
-                this.logger.error(
-                  { err: cleanupError, jobId: dj.jobId },
-                  "Restricted Sandbox cleanup remains pending",
-                );
-              }
-            }
-            if (!this.running) {
-              this.logger.info({ jobId: dj.jobId }, "Sandbox preparation stopped for shutdown");
-              return;
-            }
-            if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
-            const message = err instanceof Error ? err.message : "Sandbox dispatch rejected";
-            this.logger.warn({ jobId: dj.jobId, err }, "Sandbox dispatch rejected");
-            await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
-          })
-          .finally(() => {
-            this.preparingDispatches.delete(dispatchId);
-          });
-        this.trackJobPreparation(dj.jobId, preparation);
-        return;
-      }
-      const spec: JobSpec = {
-        jobId: dj.jobId,
-        name: dj.name,
-        federationDispatchEpoch: dj.federationExecution ? Number(dj.dispatchEpoch) : undefined,
-        schedulerName,
-        forEachGroup,
-        command: dj.command,
-        cpus: dj.cpus,
-        memoryMb: Number(dj.memoryMb),
-        gpus: dj.gpus,
-        wallTimeSec: Number(dj.wallTimeSec),
-        schedulerLimits,
-        workingDir: dj.workingDir,
-        envVars: Object.fromEntries(Object.entries(dj.envVars)),
-        queueName: dj.queueName || undefined,
-        ...(queueTargetMode ? { queueTargetMode } : {}),
-        ...(queueValidationMode ? { queueValidationMode } : {}),
-        qos: dj.qos || undefined,
-        stdinText: dj.stdinText || undefined,
-        restrictedNoEgress: dj.restrictedNoEgress,
-      };
-      this.preparingDispatches.add(dispatchId);
-      const preparation = this.submitManagedJob(dj, spec, expectedOutputs, dispatchEpoch)
-        .catch(async (err) => {
-          if (!this.running) {
-            this.logger.info({ jobId: dj.jobId }, "Job preparation stopped for shutdown");
-            return;
-          }
-          if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
-          const message = dj.spackExecution
-            ? err instanceof Error && err.message === SPACK_ACTIVATION_TIMEOUT
-              ? SPACK_ACTIVATION_TIMEOUT
-              : SPACK_ACTIVATION_FAILURE
-            : err instanceof Error
-              ? err.message
-              : "Licensed material preparation failed";
-          this.logger.error(
-            { jobId: dj.jobId, ...(dj.spackExecution ? {} : { err }) },
-            "Job dispatch rejected",
-          );
-          await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
-        })
-        .finally(() => {
-          this.preparingDispatches.delete(dispatchId);
-        });
-      const tracked = this.trackJobPreparation(dj.jobId, preparation);
-      if (dj.spackExecution) {
-        this.pendingSpackPreparations.add(tracked);
-        void tracked.then(() => {
-          this.pendingSpackPreparations.delete(tracked);
-        });
-      }
-      return;
+      return this.handleDispatchJob(payload.value, recoveredDispatchId);
     }
 
     if (payload.case === "cancelJob") {
@@ -4796,6 +4348,402 @@ export class AgentStream {
       { case: (payload as { case: string }).case },
       "Unknown ServerMessage payload case — ignoring",
     );
+  }
+
+  private async handleDispatchJob(dj: DispatchJob, recoveredDispatchId?: string): Promise<void> {
+    // A rejected dispatch can also receive a release request for its empty preparation set.
+    if (dj.sandboxExecution?.runtime?.kind === SandboxRuntimeKind.OCI)
+      await this.cleanupIntents?.observePvcJob(dj.jobId);
+    if (
+      dj.federationExecution &&
+      (!this.federationExecutionSupported || !this.federationExecutionCapable())
+    ) {
+      await this.onJobTransition({
+        jobId: dj.jobId,
+        status: "failed",
+        message: "Federation execution renewal is unavailable",
+      });
+      return;
+    }
+    const queueTargetMode = queueTargetModeFromProto(dj.queueTargetMode);
+    const queueValidationMode = queueValidationModeFromProto(dj.queueValidationMode);
+    const dispatchEpoch = Number(dj.dispatchEpoch);
+    if (!Number.isSafeInteger(dispatchEpoch) || dispatchEpoch < 0) {
+      this.logger.error({ jobId: dj.jobId }, "Rejecting dispatch with invalid epoch");
+      await this.onJobTransition({
+        jobId: dj.jobId,
+        status: "failed",
+        message: "Dispatch rejected: invalid dispatch epoch",
+      });
+      return;
+    }
+    if (!(await this.isDispatchEpochAllowed(dj.jobId, dispatchEpoch))) {
+      await this.onJobTransition({
+        jobId: dj.jobId,
+        status: "failed",
+        message: "Dispatch rejected: job was revoked before this dispatch epoch",
+      });
+      return;
+    }
+    if ((await this.activeRemoteJobs?.listActive())?.some((job) => job.jobId === dj.jobId)) {
+      this.logger.warn(
+        { jobId: dj.jobId },
+        "Ignoring dispatch with an existing durable scheduler record",
+      );
+      return;
+    }
+    this.logger.info({ jobId: dj.jobId, name: dj.name }, "Dispatching job");
+
+    // Persist the inbound dispatch BEFORE handing it to the runner. If the
+    // process crashes between this line and the first onStatusUpdate, the
+    // row stays acked_at=NULL and gets a replayed status report on the
+    // next reconnect (see generateOutbound). The proto has no separate
+    // dispatch_id field, so we use jobId — onConflictDoNothing makes the
+    // duplicate-delivery case (Server re-dispatches mid-recovery) safe.
+    const schedulerLimits = dj.schedulerLimits && {
+      nodeCount: dj.schedulerLimits.nodeCount,
+      maxCpuTime: dj.schedulerLimits.maxCpuTime,
+      stopTime:
+        dj.schedulerLimits.stopTime === undefined ? undefined : Number(dj.schedulerLimits.stopTime),
+    };
+    const forEachGroup = slurmForEachGroup(this.deps.adapter.type, dj);
+    const schedulerName = dj.federationExecution
+      ? federationSchedulerName(dj.dispatchEpoch)
+      : forEachGroup
+        ? `kqa-${forEachGroup}`
+        : schedulerSubmissionTag(dj.jobId);
+    const dispatchId = `${dj.jobId}:${dispatchEpoch}`;
+    if (this.inboundAcks && recoveredDispatchId !== dispatchId) {
+      try {
+        const accepted = await this.inboundAcks.persistInbound({
+          dispatchId,
+          jobId: dj.jobId,
+          payload: {
+            name: dj.name,
+            federationDispatchEpoch: dj.federationExecution ? Number(dj.dispatchEpoch) : undefined,
+            schedulerName,
+            command: dj.command,
+            ...(dj.spackExecution
+              ? {
+                  spackExecution: workflowSpackIntent(dj.spackExecution),
+                }
+              : {}),
+            cpus: dj.cpus,
+            memoryMb: Number(dj.memoryMb),
+            gpus: dj.gpus,
+            wallTimeSec: Number(dj.wallTimeSec),
+            schedulerLimits,
+            workingDir: dj.workingDir,
+            queueName: dj.queueName,
+            queueTargetMode,
+            queueValidationMode,
+            qos: dj.qos,
+            stdinText: dj.stdinText,
+            federationExecution: dj.federationExecution,
+            ...(dj.federationExecution ? { federationReceipt: federationDispatchReceipt(dj) } : {}),
+          },
+        });
+        if (!accepted) {
+          this.logger.info({ dispatchId }, "Ignoring duplicate durable dispatch delivery");
+          return;
+        }
+      } catch (err) {
+        this.logger.error({ err, dispatchId }, "Failed to persist inbound dispatch");
+        await this.onJobTransition({
+          jobId: dj.jobId,
+          status: "failed",
+          message: "Agent could not durably persist the dispatch",
+        });
+        return;
+      }
+    }
+    if (this.dispatchIdsByJob.has(dj.jobId) || this.pool.get(dj.jobId)) {
+      this.logger.warn({ dispatchId }, "Ignoring concurrent dispatch for an active job");
+      return;
+    }
+    this.dispatchIdsByJob.set(dj.jobId, dispatchId);
+    if (dj.federationExecution)
+      this.federationDispatches.set(dj.jobId, {
+        dispatch: dj,
+        controller: new AbortController(),
+      });
+
+    if (dj.spackExecution && dj.sandboxExecution) {
+      await this.onJobTransition({
+        jobId: dj.jobId,
+        status: "failed",
+        message: SPACK_ACTIVATION_FAILURE,
+      });
+      return;
+    }
+    const expectedOutputs: ExpectedOutput[] = dj.expectedOutputs.map((o) => ({
+      descriptor: o.descriptor,
+      path: o.path,
+      isBatch: o.isBatch,
+      pathsOnly: o.pathsOnly,
+    }));
+    const inputRejection = this.dispatchInputRejection(dj);
+    if (inputRejection) {
+      await this.onJobTransition({ jobId: dj.jobId, status: "failed", message: inputRejection });
+      return;
+    }
+    if (dj.sandboxExecution) {
+      const processor = this.deps.sandboxProcessor;
+      if (!processor) {
+        await this.onJobTransition({
+          jobId: dj.jobId,
+          status: "failed",
+          message: "Sandbox execution is unsupported by this Agent",
+        });
+        return;
+      }
+      if (dj.restrictedNoEgress) {
+        await this.cleanupIntents?.recordRestrictedWorkRoot(dj.jobId);
+        this.restrictedWorkRoots.add(dj.jobId);
+      }
+      this.preparingDispatches.add(dispatchId);
+      const preparation = this.prepareWithFederationAuthorization(
+        dj,
+        async (current, signal) => {
+          const inputs = () =>
+            current().inputStaging.map((input) => ({
+              stagePath: input.stagePath,
+              sourceUrl: input.sourceUrl,
+              localDataSource: input.localDataSource,
+              ...(input.deliveryLeaseId
+                ? {
+                    deliveryLeaseId: input.deliveryLeaseId,
+                    deliveryLeaseExpiresAtUnixMs: input.deliveryLeaseExpiresAtUnixMs,
+                  }
+                : {}),
+            }));
+          return processor.prepare(
+            dj.jobId,
+            current().sandboxExecution,
+            { cpus: dj.cpus, memoryMb: dj.memoryMb },
+            inputs(),
+            {
+              signal,
+              restart: dj.federationExecution,
+              ...(dj.federationExecution
+                ? {
+                    renewInput: async (source) => {
+                      const latest = inputs().find((input) => input.stagePath === source.stagePath);
+                      if (!latest)
+                        throw new Error("Sandbox input renewal lost its original binding");
+                      return latest;
+                    },
+                  }
+                : {}),
+            },
+          );
+        },
+        () => processor.cleanup(dj.jobId),
+      )
+        .then(async (prepared) => {
+          const profile = this.deps.restrictedExecutionProfile;
+          if (
+            dj.restrictedNoEgress &&
+            (!profile?.ready ||
+              prepared.runtimeDigest !== profile.runtimeDigest ||
+              !profile.executionProfile ||
+              !prepared.sandbox.executionProfile ||
+              prepared.sandbox.executionProfile.profileId !== profile.executionProfile.profileId ||
+              prepared.sandbox.executionProfile.apptainerSha256 !==
+                profile.executionProfile.apptainerSha256 ||
+              prepared.sandbox.executionProfile.sifSha256 !== profile.executionProfile.sifSha256 ||
+              prepared.sandbox.executionProfile.trustedWrapperSha256 !==
+                profile.executionProfile.trustedWrapperSha256)
+          ) {
+            throw new Error(
+              "Restricted no-egress Sandbox runtime does not match the pinned profile",
+            );
+          }
+          if (dj.restrictedNoEgress && profile) {
+            await (
+              this.deps.assertRestrictedExecutionProfileIdentity ??
+              assertRestrictedExecutionProfileIdentity
+            )(profile);
+          }
+          const sandboxOutputs: ExpectedOutput[] = prepared.sandbox.mounts
+            .filter(
+              (mount) =>
+                mount.mode === "WriteOnly" && (mount.ioType === "Text" || mount.ioType === "JSON"),
+            )
+            .map((mount) => ({
+              descriptor: mount.descriptor,
+              path: mount.hostPath,
+              isBatch: false,
+            }));
+          if (
+            dj.restrictedNoEgress &&
+            prepared.sandbox.mounts.some((mount) => mount.mode === "WriteOnly")
+          ) {
+            throw new Error("Restricted no-egress Sandbox cannot expose output mounts");
+          }
+          if (
+            dj.restrictedNoEgress &&
+            (prepared.sandbox.identity.backend !== "Unix" ||
+              prepared.sandbox.identity.mode !== "MappedAccount")
+          ) {
+            throw new Error(
+              "Restricted no-egress Sandbox requires a mapped Unix execution identity",
+            );
+          }
+          if (dj.licensedMaterialMounts.length) {
+            const resolver = this.deps.licensedMaterialResolver;
+            if (
+              !resolver?.sandboxInputs ||
+              prepared.sandbox.runtimeKind !== "SIF" ||
+              prepared.sandbox.executionMode !== "RootImpersonation" ||
+              !prepared.sandbox.executionProfile
+            )
+              throw new Error("Licensed material execution profile is unavailable");
+            const resolve = resolver.sandboxInputs.bind(resolver);
+            prepared.sandbox.licensedInputs = await this.prepareWithFederationAuthorization(
+              dj,
+              async (current, signal) => {
+                const mounts = current().licensedMaterialMounts;
+                if (mounts.length !== dj.licensedMaterialMounts.length)
+                  throw new Error("Licensed input authority changed");
+                try {
+                  return await resolve(
+                    mounts.map((m) => ({
+                      selectorId: m.selector,
+                      targetPath: m.targetPath,
+                      fingerprint: m.expectedFingerprint,
+                      requiredElements: m.requiredElements,
+                    })),
+                    signal,
+                  );
+                } catch {
+                  signal.throwIfAborted();
+                  throw new Error("Provider could not verify licensed Sandbox inputs");
+                }
+              },
+              async () => {},
+            );
+          }
+          const spec: JobSpec = {
+            jobId: dj.jobId,
+            name: dj.name,
+            federationDispatchEpoch: dj.federationExecution ? Number(dj.dispatchEpoch) : undefined,
+            schedulerName: dj.federationExecution
+              ? federationSchedulerName(dj.dispatchEpoch)
+              : schedulerSubmissionTag(dj.jobId),
+            command: "sandbox-manifest",
+            cpus: dj.cpus,
+            memoryMb: Number(dj.memoryMb),
+            gpus: dj.gpus,
+            wallTimeSec: Number(dj.wallTimeSec),
+            schedulerLimits,
+            workingDir: prepared.workingDir,
+            envVars: {},
+            queueName: dj.queueName || undefined,
+            ...(queueTargetMode ? { queueTargetMode } : {}),
+            ...(queueValidationMode ? { queueValidationMode } : {}),
+            qos: dj.qos || undefined,
+            sandbox: prepared.sandbox,
+            restrictedNoEgress: dj.restrictedNoEgress,
+          };
+          await this.assertDispatchEpochAllowed(dj.jobId, dispatchEpoch);
+          const pvc = await this.deps.adapter.identifySandboxPvc?.(prepared.sandbox, dj.jobId);
+          if (pvc) {
+            if (!this.cleanupIntents) throw new Error("Missing durable Sandbox PVC journal");
+            await this.cleanupIntents.recordPvc(pvc);
+            prepared.sandbox.kubernetesArtifactPvcUid = pvc.binding.claimUid;
+          }
+          this.sandboxRuntimeDigests.set(spec, prepared.runtimeDigest);
+          if (dj.federationExecution) this.federationSpecs.add(spec);
+          return this.pool.submit(spec, { expectedOutputs: sandboxOutputs });
+        })
+        .catch(async (err) => {
+          if (
+            dj.restrictedNoEgress &&
+            !this.unreconciledSubmittedJobs.has(dj.jobId) &&
+            !this.pool.get(dj.jobId)
+          ) {
+            try {
+              const intent = await this.findCleanupIntent(dj.jobId);
+              if (intent) await this.cleanupCancellationIntent(intent);
+              else {
+                await this.removeRestrictedWorkRoot(dj.jobId);
+                this.restrictedWorkRoots.delete(dj.jobId);
+              }
+            } catch (cleanupError) {
+              this.logger.error(
+                { err: cleanupError, jobId: dj.jobId },
+                "Restricted Sandbox cleanup remains pending",
+              );
+            }
+          }
+          if (!this.running) {
+            this.logger.info({ jobId: dj.jobId }, "Sandbox preparation stopped for shutdown");
+            return;
+          }
+          if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
+          const message = err instanceof Error ? err.message : "Sandbox dispatch rejected";
+          this.logger.warn({ jobId: dj.jobId, err }, "Sandbox dispatch rejected");
+          await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
+        })
+        .finally(() => {
+          this.preparingDispatches.delete(dispatchId);
+        });
+      this.trackJobPreparation(dj.jobId, preparation);
+      return;
+    }
+    const spec: JobSpec = {
+      jobId: dj.jobId,
+      name: dj.name,
+      federationDispatchEpoch: dj.federationExecution ? Number(dj.dispatchEpoch) : undefined,
+      schedulerName,
+      forEachGroup,
+      command: dj.command,
+      cpus: dj.cpus,
+      memoryMb: Number(dj.memoryMb),
+      gpus: dj.gpus,
+      wallTimeSec: Number(dj.wallTimeSec),
+      schedulerLimits,
+      workingDir: dj.workingDir,
+      envVars: Object.fromEntries(Object.entries(dj.envVars)),
+      queueName: dj.queueName || undefined,
+      ...(queueTargetMode ? { queueTargetMode } : {}),
+      ...(queueValidationMode ? { queueValidationMode } : {}),
+      qos: dj.qos || undefined,
+      stdinText: dj.stdinText || undefined,
+      restrictedNoEgress: dj.restrictedNoEgress,
+    };
+    this.preparingDispatches.add(dispatchId);
+    const preparation = this.submitManagedJob(dj, spec, expectedOutputs, dispatchEpoch)
+      .catch(async (err) => {
+        if (!this.running) {
+          this.logger.info({ jobId: dj.jobId }, "Job preparation stopped for shutdown");
+          return;
+        }
+        if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
+        const message = dj.spackExecution
+          ? err instanceof Error && err.message === SPACK_ACTIVATION_TIMEOUT
+            ? SPACK_ACTIVATION_TIMEOUT
+            : SPACK_ACTIVATION_FAILURE
+          : err instanceof Error
+            ? err.message
+            : "Licensed material preparation failed";
+        this.logger.error(
+          { jobId: dj.jobId, ...(dj.spackExecution ? {} : { err }) },
+          "Job dispatch rejected",
+        );
+        await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
+      })
+      .finally(() => {
+        this.preparingDispatches.delete(dispatchId);
+      });
+    const tracked = this.trackJobPreparation(dj.jobId, preparation);
+    if (dj.spackExecution) {
+      this.pendingSpackPreparations.add(tracked);
+      void tracked.then(() => {
+        this.pendingSpackPreparations.delete(tracked);
+      });
+    }
   }
 
   private handleDataScanRequest(request: CpLocalDataScanRequest): void {

@@ -1,4 +1,4 @@
-import { createLogger } from "../../packages/shared/src/utils/logger";
+import { createLogger } from "@kuintessence/shared";
 import type { SeedMode } from "./catalog";
 import { seedDatabase, type SeedStore } from "./seed";
 import { connectSeedStore } from "./store";

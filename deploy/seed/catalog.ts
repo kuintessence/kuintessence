@@ -1,5 +1,5 @@
-import type { orgs, users, workflowTemplates } from "../../packages/db/src/pg/schema";
-import { validateWorkflow, WorkflowSchema } from "../../packages/shared/src/workflow-dsl";
+import type { orgs, users, workflowTemplates } from "@kuintessence/db";
+import { workflowDsl } from "@kuintessence/shared";
 
 export type SeedMode = "minimal" | "demo";
 export type SeedOrganization = Pick<typeof orgs.$inferInsert, "id" | "name"> & { id: string };
@@ -55,7 +55,7 @@ function template(
   nodes: string[],
   edges: readonly (readonly [string, string])[],
 ): SeedTemplate {
-  const workflow = WorkflowSchema.parse({
+  const workflow = workflowDsl.WorkflowSchema.parse({
     name,
     description,
     parameters: [],
@@ -64,7 +64,7 @@ function template(
       nodeRelations: edges.map(([fromId, toId]) => ({ fromId, toId, slotRelations: [] })),
     },
   });
-  if (validateWorkflow(workflow).length > 0) throw new Error("Invalid seed workflow");
+  if (workflowDsl.validateWorkflow(workflow).length > 0) throw new Error("Invalid seed workflow");
   return {
     id,
     name,

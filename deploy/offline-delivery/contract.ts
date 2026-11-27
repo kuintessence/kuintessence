@@ -1,12 +1,12 @@
 import {
   OfflineDeliverySchema,
+  SignedEcosystemBundleEnvelopeSchema,
   SignedOfflineDeliverySchema,
   SpackMaterialImportSchema,
   SpackMaterialManifestSchema,
   SpackMaterialPublishSchema,
 } from "@kuintessence/shared";
 import { z } from "zod";
-import { SignedEcosystemBundleEnvelopeSchema } from "../../packages/registry/src/services/ecosystem-release-service";
 
 const argument = process.argv[2];
 if (argument === "--schema") {

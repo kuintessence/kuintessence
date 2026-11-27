@@ -21,6 +21,10 @@ import {
   SandboxCgroupCheckSchema,
 } from "../sandbox/cgroup-command";
 
+import { shellQuote } from "../shell-quote";
+
+export { shellQuote } from "../shell-quote";
+
 export interface JobSpec {
   jobId: string;
   name: string;
@@ -608,10 +612,6 @@ export function heredocDelimiter(
     delimiter = `${base}_${i}`;
   }
   return delimiter;
-}
-
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function isRetainedSchedulerLogJobId(value: string | undefined): value is string {

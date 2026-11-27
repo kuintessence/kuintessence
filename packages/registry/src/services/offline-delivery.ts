@@ -33,6 +33,7 @@ import {
   type RegistryRole,
 } from "./namespace";
 import { isDeliveryBinary, type OfflineDeliveryBinaries } from "./offline-delivery-binaries";
+import { DeliveryError } from "./offline-delivery-error";
 import type { DeliveryReceipts } from "./offline-delivery-receipts";
 import { RecipeStoreError } from "./recipe-git";
 import { RecipeGitStore } from "./recipe-git-store";
@@ -42,17 +43,10 @@ import { SpackMaterialError } from "./spack-material-storage";
 import type { SpackMaterialStore } from "./spack-material-store";
 import { authorizeMaterialRecipe } from "./spack-material-visibility";
 
+export { DeliveryError } from "./offline-delivery-error";
+
 export function deliveryDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(ecosystemCanonicalJson(value)).digest("hex")}`;
-}
-export class DeliveryError extends Error {
-  constructor(
-    readonly code: string,
-    readonly status = 422,
-    readonly details?: unknown,
-  ) {
-    super(code);
-  }
 }
 function fail(code: string, status = 422): never {
   throw new DeliveryError(code, status);

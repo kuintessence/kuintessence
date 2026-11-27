@@ -1,4 +1,4 @@
-import { siteReleaseSchema } from "../../packages/server/src/routes/site-releases";
+import { siteReleaseSchema } from "@kuintessence/shared";
 
 /** The bootstrap downloader reserves each artifact's .part sibling while resuming. */
 export const siteReleaseManifestSchema = siteReleaseSchema.superRefine((manifest, ctx) => {

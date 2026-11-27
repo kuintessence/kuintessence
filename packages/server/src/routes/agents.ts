@@ -8,6 +8,7 @@ import {
   ErrorCode,
   hasRole,
   type RoleName,
+  siteReleaseSchema,
 } from "@kuintessence/shared";
 import { type Context, Hono } from "hono";
 import {
@@ -21,7 +22,6 @@ import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import type { AgentManager } from "../services/agent-manager";
 import type { AgentUpdateService } from "../services/agent-update";
-import { siteReleaseSchema } from "./site-releases";
 
 export interface AgentRouteOptions {
   authz?: AuthzService;

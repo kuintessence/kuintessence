@@ -1,12 +1,13 @@
 import { and, eq, or, sql } from "drizzle-orm";
-import { createPgDb, type PgDb } from "../../packages/db/src/pg";
 import {
   auditLog,
+  createPgDb,
+  type PgDb,
   orgs,
   userOrgMemberships,
   users,
   workflowTemplates,
-} from "../../packages/db/src/pg/schema";
+} from "@kuintessence/db";
 import {
   checkpoints,
   type SeedMode,
