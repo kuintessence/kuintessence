@@ -6,11 +6,11 @@ import { dirname } from "node:path";
 import { canonicalJson, createLogger } from "@kuintessence/shared";
 import { z } from "zod";
 import type { Spawner } from "../adapters/base";
-import { shellQuote } from "../adapters/base";
 import { PbsProAdapter } from "../adapters/pbs-pro";
 import { SlurmAdapter } from "../adapters/slurm";
 import { TorqueAdapter } from "../adapters/torque";
 import type { AgentConfig } from "../config";
+import { shellQuote } from "../shell-quote";
 import { buildHpcCgroupCommand, type SandboxCgroupCheck } from "./cgroup-command";
 import { runNativeRuntimeProbe } from "./native-runtime-probe";
 

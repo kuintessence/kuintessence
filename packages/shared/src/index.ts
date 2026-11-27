@@ -8,6 +8,7 @@ export * from "./constants/roles";
 export * from "./data-market";
 // Control-flow DSL JSON Schema export.
 export * from "./dsl-schema";
+export * from "./ecosystem-manifest";
 export * from "./ecosystem-materials";
 export * from "./interconnect";
 // NetDrive shared schemas (PRD F18).
@@ -34,6 +35,7 @@ export * from "./schemas/template";
 export * from "./schemas/terminal";
 export * from "./site-operations";
 export * from "./site-protocol";
+export * from "./site-release";
 export * from "./software-governance";
 export * from "./spack";
 export * from "./spack-install-bindings";

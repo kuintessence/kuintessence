@@ -24,3 +24,15 @@ export function sourceLabel(
   };
   return t(keys[source]);
 }
+
+export function suggestNextTemplateVersion(version: string): string {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version.trim());
+  if (!match) return "";
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (![major, minor, patch].every(Number.isSafeInteger) || patch >= Number.MAX_SAFE_INTEGER) {
+    return "";
+  }
+  return `${major}.${minor}.${patch + 1}`;
+}

@@ -6,6 +6,9 @@ import {
   CancelJobAckSchema,
   DataScanResultSchema,
   FederationAccountingResponseSchema,
+  FederationMediaExportLeaseRequestSchema,
+  FederationMediaImportGrantResponseSchema,
+  FederationMediaImportKeyRequestSchema,
   FileTransferProgressSchema,
   HeartbeatSchema,
   JobLogsResponseSchema,
@@ -22,6 +25,7 @@ import {
   UploadedPartSchema,
 } from "@kuintessence/proto";
 import pino from "pino";
+import { runWithMtlsContext } from "../auth/mtls-context";
 import type { AgentManager } from "../services/agent-manager";
 import type { JobLogsService } from "../services/job-logs-service";
 import type { JobService, SchedulerRuntimeDetails } from "../services/job-service";
@@ -87,6 +91,76 @@ function registerMsg(agentId: string) {
 }
 
 describe("agent-handler identity pinning", () => {
+  test("import and export share the two pending transfer slots, including during retries", async () => {
+    const { router, handlers } = createMockRouter();
+    const calls: string[] = [];
+    const release = Promise.withResolvers<void>();
+    const agentId = "agent-transfer";
+    registerAgentHandler(router, {
+      agentManager: {
+        getById: async () => ({ agentId }),
+        register: async () => {},
+      } as unknown as AgentManager,
+      jobService: {} as JobService,
+      dispatcher: new AgentDispatcher(),
+      logger: silent,
+      federationMediaExports: {
+        grant: async (_, { requestId }) => {
+          calls.push(`export ${requestId}`);
+          await release.promise;
+          throw new Error("grant unavailable");
+        },
+        report: async () => {},
+      },
+      federationMediaImports: {
+        grant: async (_, { requestId }) => {
+          calls.push(`import ${requestId}`);
+          await release.promise;
+          return create(FederationMediaImportGrantResponseSchema, { requestId });
+        },
+        report: async () => {},
+      },
+    });
+
+    function request(kind: "import" | "export", requestId: string) {
+      return create(AgentMessageSchema, {
+        payload:
+          kind === "import"
+            ? {
+                case: "federationMediaImportKeyRequest",
+                value: create(FederationMediaImportKeyRequestSchema, { requestId }),
+              }
+            : {
+                case: "federationMediaExportLeaseRequest",
+                value: create(FederationMediaExportLeaseRequestSchema, { requestId }),
+              },
+      });
+    }
+    async function* messages() {
+      const registration = registerMsg(agentId);
+      if (registration.payload.case !== "register") throw new Error("Expected registration");
+      registration.payload.value.federationMediaExportV1 = true;
+      registration.payload.value.federationMediaImportV1 = true;
+      yield registration;
+      yield request("export", "a".repeat(129));
+      yield request("export", "first");
+      yield request("import", "first");
+      yield request("import", "second");
+      yield request("export", "third");
+      await settle();
+      release.resolve();
+      await settle();
+      yield request("import", "first");
+      await settle();
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    await runWithMtlsContext({ agentId, fingerprintSha256: "verified" }, () =>
+      drain(connect(messages())),
+    );
+    expect(calls).toEqual(["export first", "import second", "import first"]);
+  });
+
   test.each([
     false,
     true,

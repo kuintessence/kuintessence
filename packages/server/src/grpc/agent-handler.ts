@@ -506,6 +506,23 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
           await leave?.();
         }
       };
+      const runTransferRequest = (
+        agentId: string,
+        key: string,
+        failureMessage: string,
+        work: () => Promise<void>,
+      ) => {
+        if (
+          key.length > 128 ||
+          pendingTransferRequests.has(key) ||
+          pendingTransferRequests.size >= 2
+        )
+          return;
+        pendingTransferRequests.add(key);
+        void runForSession(agentId, work)
+          .catch(() => logger.warn({ agentId }, failureMessage))
+          .finally(() => pendingTransferRequests.delete(key));
+      };
       // Process inbound messages in background so outbound generator can run concurrently.
       // The IIFE result is consumed by the surrounding bidi handler; any rejection
       // (AbortError on agent disconnect, malformed payload, etc.) must NOT propagate
@@ -1365,14 +1382,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 request.case === "federationMediaExportLeaseRequest"
                   ? request.value.requestId
                   : "media-export-report";
-              if (
-                key.length > 128 ||
-                pendingTransferRequests.has(key) ||
-                pendingTransferRequests.size >= 2
-              )
-                continue;
-              pendingTransferRequests.add(key);
-              void runForSession(agentId, async () => {
+              runTransferRequest(agentId, key, "Media export response unavailable", async () => {
                 try {
                   if (request.case === "federationMediaExportLeaseRequest") {
                     const response = await transport.grant(agentId, request.value);
@@ -1396,9 +1406,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       }),
                     );
                 }
-              })
-                .catch(() => logger.warn({ agentId }, "Media export response unavailable"))
-                .finally(() => pendingTransferRequests.delete(key));
+              });
               continue;
             }
 
@@ -1423,14 +1431,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 request.case === "federationMediaImportKeyRequest"
                   ? request.value.requestId
                   : "media-import-report";
-              if (
-                key.length > 128 ||
-                pendingTransferRequests.has(key) ||
-                pendingTransferRequests.size >= 2
-              )
-                continue;
-              pendingTransferRequests.add(key);
-              void runForSession(agentId, async () => {
+              runTransferRequest(agentId, key, "Media import response unavailable", async () => {
                 try {
                   if (request.case === "federationMediaImportKeyRequest") {
                     const response = await transport.grant(agentId, request.value);
@@ -1454,9 +1455,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       }),
                     );
                 }
-              })
-                .catch(() => logger.warn({ agentId }, "Media import response unavailable"))
-                .finally(() => pendingTransferRequests.delete(key));
+              });
               continue;
             }
 
@@ -1481,48 +1480,44 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 request.case === "federationResultGrantRequest"
                   ? request.value.requestId
                   : request.value.generation;
-              if (
-                key.length > 128 ||
-                pendingTransferRequests.has(key) ||
-                pendingTransferRequests.size >= 2
-              )
-                continue;
-              pendingTransferRequests.add(key);
               const transport = deps.federationResults;
-              void runForSession(agentId, async () => {
-                try {
-                  if (request.case === "federationResultGrantRequest") {
-                    if (
-                      !request.value.verificationJson &&
-                      !request.value.upload &&
-                      (!channel.federationResultCopyV1 || !transport.canCopy)
-                    )
-                      throw new Error("SOURCE_DOWNLOAD_DISABLED");
-                    const response = await transport.grant(agentId, request.value);
-                    if (current())
+              runTransferRequest(
+                agentId,
+                key,
+                "Federation result response unavailable",
+                async () => {
+                  try {
+                    if (request.case === "federationResultGrantRequest") {
+                      if (
+                        !request.value.verificationJson &&
+                        !request.value.upload &&
+                        (!channel.federationResultCopyV1 || !transport.canCopy)
+                      )
+                        throw new Error("SOURCE_DOWNLOAD_DISABLED");
+                      const response = await transport.grant(agentId, request.value);
+                      if (current())
+                        channel.push(
+                          create(ServerMessageSchema, {
+                            payload: { case: "federationResultGrantResponse", value: response },
+                          }),
+                        );
+                    } else await transport.report(agentId, request.value);
+                  } catch {
+                    if (request.case === "federationResultGrantRequest" && current())
                       channel.push(
                         create(ServerMessageSchema, {
-                          payload: { case: "federationResultGrantResponse", value: response },
+                          payload: {
+                            case: "federationResultGrantResponse",
+                            value: create(FederationResultGrantResponseSchema, {
+                              requestId: request.value.requestId,
+                            }),
+                          },
                         }),
                       );
-                  } else await transport.report(agentId, request.value);
-                } catch {
-                  if (request.case === "federationResultGrantRequest" && current())
-                    channel.push(
-                      create(ServerMessageSchema, {
-                        payload: {
-                          case: "federationResultGrantResponse",
-                          value: create(FederationResultGrantResponseSchema, {
-                            requestId: request.value.requestId,
-                          }),
-                        },
-                      }),
-                    );
-                  // Never log request bodies, presigned grants or raw storage errors.
-                }
-              })
-                .catch(() => logger.warn({ agentId }, "Federation result response unavailable"))
-                .finally(() => pendingTransferRequests.delete(key));
+                    // Never log request bodies, presigned grants or raw storage errors.
+                  }
+                },
+              );
               continue;
             }
 
@@ -1547,48 +1542,44 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 request.case === "federationInputGrantRequest"
                   ? request.value.requestId
                   : request.value.generation;
-              if (
-                key.length > 128 ||
-                pendingTransferRequests.has(key) ||
-                pendingTransferRequests.size >= 2
-              )
-                continue;
-              pendingTransferRequests.add(key);
               const transport = deps.federationInputs;
-              void runForSession(agentId, async () => {
-                try {
-                  if (request.case === "federationInputGrantRequest") {
-                    if (
-                      !request.value.verificationJson &&
-                      !request.value.upload &&
-                      (!channel.federationInputCopyV1 || !transport.canCopy)
-                    )
-                      throw new Error("SOURCE_DOWNLOAD_DISABLED");
-                    const response = await transport.grant(agentId, request.value);
-                    if (current())
+              runTransferRequest(
+                agentId,
+                key,
+                "Federation input response unavailable",
+                async () => {
+                  try {
+                    if (request.case === "federationInputGrantRequest") {
+                      if (
+                        !request.value.verificationJson &&
+                        !request.value.upload &&
+                        (!channel.federationInputCopyV1 || !transport.canCopy)
+                      )
+                        throw new Error("SOURCE_DOWNLOAD_DISABLED");
+                      const response = await transport.grant(agentId, request.value);
+                      if (current())
+                        channel.push(
+                          create(ServerMessageSchema, {
+                            payload: { case: "federationInputGrantResponse", value: response },
+                          }),
+                        );
+                    } else await transport.report(agentId, request.value);
+                  } catch {
+                    if (request.case === "federationInputGrantRequest" && current())
                       channel.push(
                         create(ServerMessageSchema, {
-                          payload: { case: "federationInputGrantResponse", value: response },
+                          payload: {
+                            case: "federationInputGrantResponse",
+                            value: create(FederationInputGrantResponseSchema, {
+                              requestId: request.value.requestId,
+                            }),
+                          },
                         }),
                       );
-                  } else await transport.report(agentId, request.value);
-                } catch {
-                  if (request.case === "federationInputGrantRequest" && current())
-                    channel.push(
-                      create(ServerMessageSchema, {
-                        payload: {
-                          case: "federationInputGrantResponse",
-                          value: create(FederationInputGrantResponseSchema, {
-                            requestId: request.value.requestId,
-                          }),
-                        },
-                      }),
-                    );
-                  // Never log request bodies, presigned grants or raw storage errors.
-                }
-              })
-                .catch(() => logger.warn({ agentId }, "Federation input response unavailable"))
-                .finally(() => pendingTransferRequests.delete(key));
+                    // Never log request bodies, presigned grants or raw storage errors.
+                  }
+                },
+              );
               continue;
             }
 

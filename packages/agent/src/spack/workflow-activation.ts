@@ -7,6 +7,7 @@ import {
   SpackExecutionSchema,
 } from "@kuintessence/shared";
 import { realSpawner, type Spawner } from "../adapters/base";
+import { shellQuote } from "../shell-quote";
 import type { SpackManager } from "./index";
 
 export { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "@kuintessence/shared";
@@ -137,8 +138,4 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
     clearTimeout(timer);
     removeAbortListener();
   }
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

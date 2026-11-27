@@ -1,7 +1,7 @@
 import { unwrapApiResponse } from "@kuintessence/shared/browser";
 import { clearAuth, setAuth } from "./auth";
 import { redirectToLogin } from "./auth-redirect";
-import { localApiBase, localToken } from "./local-mode";
+import { localApiBase, localToken } from "./local-runtime";
 import { PLATFORM_API_BASE } from "./platform-paths";
 
 interface AuthSessionResponse {

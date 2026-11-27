@@ -13,7 +13,7 @@ import {
 import { and, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseNamespace, type RbacPrincipal } from "./namespace";
-import { DeliveryError } from "./offline-delivery";
+import { DeliveryError } from "./offline-delivery-error";
 import { nativeSpackMetadataSchema, RegistryError, type RegistryService } from "./registry-service";
 import { materialDigest } from "./spack-material-storage";
 import type { SpackMaterialStore } from "./spack-material-store";

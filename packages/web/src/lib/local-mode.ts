@@ -2,28 +2,9 @@ import { useEffect, useState } from "react";
 import { api } from "./api-client";
 import { getAuthState, setAuth } from "./auth";
 
-export interface KqLocal {
-  baseUrl: string;
-  token?: string;
-}
+import { isLocalMode, localToken } from "./local-runtime";
 
-declare global {
-  interface Window {
-    __KQ_LOCAL__?: KqLocal;
-  }
-}
-
-export function isLocalMode(): boolean {
-  return typeof window !== "undefined" && !!window.__KQ_LOCAL__;
-}
-
-export function localApiBase(): string | undefined {
-  return typeof window !== "undefined" ? window.__KQ_LOCAL__?.baseUrl : undefined;
-}
-
-export function localToken(): string | undefined {
-  return typeof window !== "undefined" ? window.__KQ_LOCAL__?.token : undefined;
-}
+export { isLocalMode, type KqLocal, localApiBase, localToken } from "./local-runtime";
 
 /**
  * In local mode the desktop shell (`kq gui`) has already injected a trusted
